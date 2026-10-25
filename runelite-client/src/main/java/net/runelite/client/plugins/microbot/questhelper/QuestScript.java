@@ -286,7 +286,12 @@ public class QuestScript extends Script {
 						return;
 					}
 
-					if (QuestCombatDetector.isKillStep(questStep) && combat.prepareForKill(slotsReservedForStep(questStep))) {
+					if (combat.recoverHealth(questStep, slotsReservedForStep(questStep))) {
+						return;
+					}
+
+					if ((QuestCombatDetector.isKillStep(questStep) || QuestCombatDetector.hasFights(selectedQuest))
+							&& combat.prepareForKill(slotsReservedForStep(questStep))) {
 						return;
 					}
 

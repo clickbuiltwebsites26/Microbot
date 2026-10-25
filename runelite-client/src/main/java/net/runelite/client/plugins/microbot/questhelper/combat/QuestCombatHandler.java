@@ -1,15 +1,24 @@
 package net.runelite.client.plugins.microbot.questhelper.combat;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.ToIntFunction;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperConfig;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
+import net.runelite.client.plugins.microbot.questhelper.steps.DetailedQuestStep;
+import net.runelite.client.plugins.microbot.questhelper.requirements.Requirement;
+import net.runelite.client.plugins.microbot.questhelper.requirements.item.ItemRequirement;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
 import net.runelite.client.plugins.microbot.util.Rs2InventorySetup;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
@@ -17,6 +26,9 @@ import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.magic.Rs2CombatSpells;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
+import net.runelite.client.plugins.microbot.util.misc.Rs2Food;
+import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
+import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2Prayer;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2PrayerEnum;
@@ -64,6 +76,15 @@ public class QuestCombatHandler
 	private volatile boolean prayerOnByUs;
 	private volatile long lastInCombatMs;
 	private volatile long lastConsumeMs;
+	private volatile WorldPoint lastSafeTile;
+	private boolean recovering;
+	private int recoveryBankAttempts;
+
+	private volatile QuestHelper activeQuest;
+	private volatile QuestStep activeStep;
+	private volatile Set<Integer> protectedIds = Collections.emptySet();
+	private volatile QuestStep protectedIdsStep;
+	private volatile QuestHelper protectedIdsQuest;
 
 	public QuestCombatHandler(Supplier<QuestHelperConfig> config, Supplier<ScheduledFuture<?>> scheduler,
 		Consumer<String> stopper)
@@ -89,6 +110,8 @@ public class QuestCombatHandler
 		bankAttempts = 0;
 		restocks = 0;
 		lastConsumeMs = 0;
+		recovering = false;
+		recoveryBankAttempts = 0;
 	}
 
 	/**
@@ -104,6 +127,7 @@ public class QuestCombatHandler
 			reset();
 			questKey = key;
 		}
+		activeQuest = quest;
 
 		switch (phase)
 		{
@@ -351,7 +375,22 @@ public class QuestCombatHandler
 
 	private int foodCount(QuestCombatLoadout current)
 	{
-		return Rs2Inventory.count(current.getFood(), true);
+		return namedFood(current).stream().mapToInt(Rs2ItemModel::getQuantity).sum();
+	}
+
+	/** Inventory stacks of the loadout food that are not quest items. */
+	private List<Rs2ItemModel> namedFood(QuestCombatLoadout current)
+	{
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> out = new ArrayList<>();
+		for (Rs2ItemModel item : Rs2Inventory.items(i -> i.getName() != null && i.getName().equalsIgnoreCase(current.getFood())).collect(java.util.stream.Collectors.toList()))
+		{
+			if (!item.isNoted() && !keep.contains(item.getId()))
+			{
+				out.add(item);
+			}
+		}
+		return out;
 	}
 
 	private int potionCount(QuestCombatLoadout current)
@@ -372,10 +411,347 @@ public class QuestCombatHandler
 		return false;
 	}
 
-	/** Eat, drink and pray for the current fight. Runs on its own task, not the quest script loop. */
-	public void fightTick(QuestStep activeStep)
+
+	private int eatThreshold()
 	{
 		QuestCombatLoadout current = loadout;
+		return current != null && !current.isSkip() ? current.getEatAtPercent() : 50;
+	}
+
+	/** Edible inventory food that is not a quest item. */
+	private List<Rs2ItemModel> edibleFood()
+	{
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> out = new ArrayList<>();
+		for (Rs2ItemModel item : Rs2Inventory.getInventoryFood())
+		{
+			if (!keep.contains(item.getId()))
+			{
+				out.add(item);
+			}
+		}
+		return out;
+	}
+
+	private boolean hasEdibleFood()
+	{
+		return !edibleFood().isEmpty();
+	}
+
+	/**
+	 * Picks the item to eat: the highest-healing candidate (per {@link Rs2Food}) that is not protected, else the first
+	 * unprotected one, else null.
+	 */
+	static <T> T pickEdible(List<T> candidates, ToIntFunction<T> idOf, ToIntFunction<T> healOf, Set<Integer> protectedIds)
+	{
+		T best = null;
+		int bestHeal = -1;
+		for (T candidate : candidates)
+		{
+			if (candidate == null || protectedIds.contains(idOf.applyAsInt(candidate)))
+			{
+				continue;
+			}
+			int heal = healOf.applyAsInt(candidate);
+			if (best == null || heal > bestHeal)
+			{
+				best = candidate;
+				bestHeal = heal;
+			}
+		}
+		return best;
+	}
+
+	private static int healOf(Rs2ItemModel item)
+	{
+		for (Rs2Food food : Rs2Food.values())
+		{
+			if (food.getId() == item.getId())
+			{
+				return food.getHeal();
+			}
+		}
+		return 0;
+	}
+
+	/** Eats the best non-quest inventory food (Drink for jugs of wine); never touches protected items. */
+	private boolean eatBest()
+	{
+		Rs2ItemModel food = pickEdible(Rs2Inventory.getInventoryFood(), Rs2ItemModel::getId,
+			QuestCombatHandler::healOf, protectedItemIds());
+		if (food == null)
+		{
+			return false;
+		}
+		String action = food.getName() != null && food.getName().toLowerCase().contains("jug of wine") ? "drink" : "eat";
+		return Rs2Inventory.interact(food, action);
+	}
+
+	/** Eats the loadout food if held, else the best non-quest food. */
+	private boolean eatAnyFood(long now)
+	{
+		if (!hasEdibleFood())
+		{
+			return false;
+		}
+		if (now - lastConsumeMs < CONSUME_COOLDOWN_MS)
+		{
+			return true;
+		}
+		lastConsumeMs = now;
+		QuestCombatLoadout current = loadout;
+		if (current != null && !current.isSkip() && current.wantsFood())
+		{
+			List<Rs2ItemModel> named = namedFood(current);
+			if (!named.isEmpty() && Rs2Inventory.interact(named.get(0), "Eat"))
+			{
+				return true;
+			}
+		}
+		return eatBest();
+	}
+
+	/**
+	 * Ids of every item the quest needs (quest-level and active-step item requirements with their alternates, plus the
+	 * step icon item). Recommended items are excluded on purpose: those are the normal food the player wants eaten.
+	 * Cached per quest and step.
+	 */
+	private Set<Integer> protectedItemIds()
+	{
+		QuestHelper quest = activeQuest;
+		QuestStep step = activeStep;
+		if (quest == protectedIdsQuest && step == protectedIdsStep)
+		{
+			return protectedIds;
+		}
+		Set<Integer> ids = new HashSet<>();
+		try
+		{
+			if (quest != null)
+			{
+				addIds(ids, quest.getItemRequirements());
+			}
+			QuestStep active = step;
+			if (active instanceof DetailedQuestStep)
+			{
+				for (Requirement requirement : ((DetailedQuestStep) active).getRequirements())
+				{
+					if (requirement instanceof ItemRequirement)
+					{
+						addIds(ids, Collections.singletonList((ItemRequirement) requirement));
+					}
+				}
+			}
+			if (active != null && active.getIconItemID() > 0)
+			{
+				ids.add(active.getIconItemID());
+			}
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not list quest items to protect from eating: " + e.getMessage(), Level.WARN);
+		}
+		protectedIds = ids;
+		protectedIdsQuest = quest;
+		protectedIdsStep = step;
+		return ids;
+	}
+
+	private static void addIds(Set<Integer> ids, List<ItemRequirement> requirements)
+	{
+		if (requirements == null)
+		{
+			return;
+		}
+		for (ItemRequirement requirement : requirements)
+		{
+			if (requirement == null)
+			{
+				continue;
+			}
+			for (Integer id : requirement.getAllIds())
+			{
+				if (id != null && id > 0)
+				{
+					ids.add(id);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Low-HP safety net that works with or without a loadout. With food it eats; with none and out of combat it
+	 * banks for food and eats back up before the quest resumes.
+	 *
+	 * @return true when this tick was used and quest steps should pause
+	 */
+	public boolean recoverHealth(QuestStep step, int reservedSlots)
+	{
+		activeStep = step;
+		if (!Microbot.isLoggedIn())
+		{
+			return false;
+		}
+		int threshold = eatThreshold();
+		double hp = Rs2Player.getHealthPercentage();
+		boolean hasFood = hasEdibleFood();
+		boolean fighting = Rs2Combat.inCombat();
+
+		if (recovering && hasFood && hp < Math.min(100, threshold + 25))
+		{
+			Microbot.status = "Quest helper: eating back up";
+			eatAnyFood(System.currentTimeMillis());
+			return true;
+		}
+		if (hp > threshold || (recovering && (!hasFood || hp >= Math.min(100, threshold + 25))))
+		{
+			if (hp > threshold)
+			{
+				recovering = false;
+				recoveryBankAttempts = 0;
+			}
+			if (hp > threshold || hasFood)
+			{
+				return false;
+			}
+		}
+
+		if (hasFood)
+		{
+			// fightTick eats on its own task; just give it the tick when not fighting
+			if (!fighting)
+			{
+				eatAnyFood(System.currentTimeMillis());
+				return true;
+			}
+			return false;
+		}
+
+		if (fighting)
+		{
+			Microbot.status = "Quest helper: low HP and no food, backing away";
+			WorldPoint retreat = lastSafeTile;
+			if (step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null
+				&& ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint() != null)
+			{
+				retreat = ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint();
+			}
+			if (retreat != null)
+			{
+				Rs2Walker.walkTo(retreat, 2);
+			}
+			return true;
+		}
+
+		Microbot.status = "Quest helper: low HP, fetching food";
+		if (!Rs2Bank.isOpen())
+		{
+			Rs2Bank.walkToBankAndUseBank();
+			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
+			{
+				if (++recoveryBankAttempts >= MAX_BANK_ATTEMPTS)
+				{
+					stopper.accept("Low HP and could not reach a bank for food");
+				}
+				return true;
+			}
+		}
+		if (!Rs2Bank.setWithdrawAsItem())
+		{
+			Rs2Bank.closeBank();
+			stopper.accept("Failed to set bank withdraw mode to Item. Toggle it manually and restart.");
+			return true;
+		}
+
+		QuestCombatLoadout current = loadout;
+		boolean named = current != null && !current.isSkip() && current.wantsFood()
+			&& Rs2Bank.count(current.getFood(), true) > 0 && !bankItemProtected(current.getFood());
+		if (named)
+		{
+			int target = carry(current.getFoodQty(), 0, reservedSlots);
+			withdraw(current.getFood(), true, target);
+		}
+		else
+		{
+			String best = bestBankFood();
+			if (best != null)
+			{
+				withdraw(best, true, carry(10, 0, reservedSlots));
+			}
+		}
+		boolean got = hasEdibleFood();
+		Rs2Bank.closeBank();
+		sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+		if (!got)
+		{
+			stopper.accept("Low HP and no food in the bank");
+			return true;
+		}
+		recovering = true;
+		return true;
+	}
+
+	private boolean bankItemProtected(String name)
+	{
+		Set<Integer> keep = protectedItemIds();
+		for (Rs2ItemModel item : Rs2Bank.bankItems())
+		{
+			if (item != null && name.equalsIgnoreCase(item.getName()) && keep.contains(item.getId()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Name of the best-healing food in the bank, by Rs2Food heal values; any edible item as a last resort. */
+	private String bestBankFood()
+	{
+		Set<Integer> keep = protectedItemIds();
+		String bestName = null;
+		int bestHeal = 0;
+		String anyEdible = null;
+		for (Rs2ItemModel item : Rs2Bank.bankItems())
+		{
+			if (item == null || item.isNoted() || item.getName() == null || keep.contains(item.getId()))
+			{
+				continue;
+			}
+			for (Rs2Food food : Rs2Food.values())
+			{
+				if (food.getId() == item.getId() && food.getHeal() > bestHeal)
+				{
+					bestHeal = food.getHeal();
+					bestName = item.getName();
+				}
+			}
+			if (anyEdible == null && item.isFood())
+			{
+				anyEdible = item.getName();
+			}
+		}
+		return bestName != null ? bestName : anyEdible;
+	}
+
+	/** Eat, drink and pray for the current fight. Runs on its own task, not the quest script loop. */
+	public void fightTick(QuestStep step)
+	{
+		activeStep = step;
+		QuestCombatLoadout current = loadout;
+		long tickNow = System.currentTimeMillis();
+		if (!Rs2Combat.inCombat() && Microbot.isLoggedIn())
+		{
+			WorldPoint here = Rs2Player.getWorldLocation();
+			if (here != null)
+			{
+				lastSafeTile = here;
+			}
+		}
+		// Safety net regardless of loadout: any food in the inventory is eaten at the threshold
+		if (Rs2Player.getHealthPercentage() <= eatThreshold() && eatAnyFood(tickNow))
+		{
+			return;
+		}
 		if (phase != Phase.ACTIVE || current == null || current.isSkip())
 		{
 			return;
@@ -409,8 +785,9 @@ public class QuestCombatHandler
 
 	private boolean eat(QuestCombatLoadout current, long now)
 	{
-		boolean hasNamed = current.wantsFood() && foodCount(current) > 0;
-		boolean hasAny = !Rs2Inventory.getInventoryFood().isEmpty();
+		List<Rs2ItemModel> named = current.wantsFood() ? namedFood(current) : Collections.emptyList();
+		boolean hasNamed = !named.isEmpty();
+		boolean hasAny = hasEdibleFood();
 		if (!hasNamed && !hasAny)
 		{
 			if (current.wantsFood())
@@ -425,7 +802,7 @@ public class QuestCombatHandler
 			return true;
 		}
 		lastConsumeMs = now;
-		return hasNamed ? Rs2Inventory.interact(current.getFood(), "Eat", true) : Rs2Player.useFood();
+		return hasNamed ? Rs2Inventory.interact(named.get(0), "Eat") : eatBest();
 	}
 
 	private void managePrayer(QuestCombatLoadout current, long now)
