@@ -851,6 +851,7 @@ curl -X POST -H "Content-Type: application/json" \
  "inventory": [{"name": "Law rune", "qty": 50, "stackable": true}, {"name": "Games necklace", "qty": 1}],
  "reserveSlots": 6,
  "stamina": {"type": "stamina", "qty": 2, "drinkAtEnergy": 30},
+ "boosts": {"type": "super_attack_strength", "defence": false, "qty": 1},
  "fights": {"Temple Guardian": {"style": "ranged", "gear": {"setup": "Quest ranged"}},
             "Monk of Zamorak": {"style": "melee"}}}
 ```
@@ -859,6 +860,7 @@ curl -X POST -H "Content-Type: application/json" \
 - `gear` (main gear): `"worn"` (snapshot of what is equipped now), `{"setup": "<Inventory Setup name>"}`, or `{"items": [{"id": 1163, "slot": "head"}, {"name": "Rune scimitar", "slot": "weapon"}]}` (id or name; slot is head, cape, amulet, weapon, body, shield, legs, gloves, boots, ring or ammo). Pieces not worn are put on from the inventory or withdrawn from the bank before the fight.
 - `inventory`: items to bring, withdrawn in the supply bank trip (`stackable` counts as one slot). `reserveSlots` (0-27): free slots always kept for quest items; omitted means the quest's own estimate.
 - `stamina`: `{"type": "none|stamina|energy", "qty": 2, "drinkAtEnergy": 30}`; fetched in the same trip as food and drunk when run energy falls to the threshold. Works for quests without fights.
+- `boosts`: `{"type": "none|super_attack_strength|combat|attack_strength", "defence": false, "qty": 1}`; `defence: true` adds Super defence. Any dose; bought in preflight and withdrawn in the supply trip when the quest has fights; one is drunk in a kill step's fight whenever its skill's boosted level is at most 2 above the real level.
 - `fights`: keyed by fight name (case and "(level N)" ignored), each `{"style": ..., "gear": ...}` (or `"gearSetup": "<name>"`). A fight without an entry uses the main style and gear.
 - `obtainMissingItems`: `"YES"`, `"NO"` or `"ASK"`; whether the quester buys/withdraws missing quest items (the "Obtain Missing Items" Quest Helper setting, also offered as "Buy missing items" in the setup dialog). Saved to that setting. With `NO` the quester never buys: a step needing a missing must-be-worn item waits with a status message instead of proceeding, and preflight only reports. `ASK` (default) pauses the quester until the prompt is answered.
 - `preflight`: `false` skips the quest items check for this start (default `true`, also controlled by the "Check and buy all quest items before starting" Quest Helper toggle).

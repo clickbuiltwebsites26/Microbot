@@ -59,6 +59,8 @@ public class QuestCombatHandler
 	private static final int MAX_RESTOCKS = 3;
 	private static final int MAX_GEAR_ATTEMPTS = 3;
 	private static final long CONSUME_COOLDOWN_MS = 1800L;
+	/** Gap between boost potion sips, so the level update lands before the next check. */
+	private static final long BOOST_COOLDOWN_MS = 3000L;
 	private static final long PRAYER_OFF_DELAY_MS = 4000L;
 	private static final int MIN_RUN_ENERGY_TO_TOGGLE = 10;
 
@@ -107,6 +109,7 @@ public class QuestCombatHandler
 	private volatile long lastInCombatMs;
 	private volatile long lastConsumeMs;
 	private volatile long lastStaminaMs;
+	private volatile long lastBoostMs;
 	private volatile WorldPoint lastSafeTile;
 	private boolean recovering;
 	/** Epoch ms when an escape from combat without food began; 0 when not escaping. */
@@ -189,6 +192,7 @@ public class QuestCombatHandler
 		foodFallback = null;
 		lastConsumeMs = 0;
 		lastStaminaMs = 0;
+		lastBoostMs = 0;
 		recovering = false;
 		recoveryBankAttempts = 0;
 		escapeStartMs = 0;
@@ -197,6 +201,15 @@ public class QuestCombatHandler
 		defaultFoodTried = false;
 		antifireTried = false;
 		safeSpotFailures = 0;
+		swapPlan = null;
+		swapPlanFight = null;
+		swapBlocked = false;
+		swapKitTrips = 0;
+		lastSwapMs = 0;
+		lastTargetProgressMs = 0;
+		lastTargetHealth = -1;
+		primaryWeaponId = -1;
+		primaryWeaponName = "";
 	}
 
 	/**
@@ -376,6 +389,9 @@ public class QuestCombatHandler
 			Microbot.log("Quest helper: could not list fights for the setup dialog: " + e.getMessage(), Level.WARN);
 		}
 		context.wornGear = wornGear();
+		context.meleeLevel = Math.max(Rs2Player.getRealSkillLevel(Skill.ATTACK), Rs2Player.getRealSkillLevel(Skill.STRENGTH));
+		context.rangedLevel = Rs2Player.getRealSkillLevel(Skill.RANGED);
+		context.magicLevel = Rs2Player.getRealSkillLevel(Skill.MAGIC);
 		try
 		{
 			Set<Integer> questIds = new HashSet<>();
@@ -851,6 +867,14 @@ public class QuestCombatHandler
 			applyStyle(current, step);
 		}
 
+		prepareSwap(current, step);
+		QuestStyleSwap.Plan kitPlan = swapPlan;
+		if (kitPlan != null && !swapBlocked && swapKitTrips < MAX_SWAP_KIT_TRIPS && swapKitMissing(kitPlan))
+		{
+			swapKitTrips++;
+			return restock(current, reservedSlots);
+		}
+
 		if (isDragonFight(step) && !antifireTried && antifireCount() == 0)
 		{
 			antifireTried = true;
@@ -1236,6 +1260,12 @@ public class QuestCombatHandler
 		for (QuestCombatLoadout.InventoryItem item : current.getInventoryItems())
 		{
 			withdrawCustom(item, reserved);
+		}
+		withdrawSwapKit(swapPlan, reserved);
+		for (QuestBoosts.Potion boost : current.boostPotions())
+		{
+			int held = boostCount(boost);
+			withdrawPotion(boost.itemName(), carry(current.getBoostQty(), held, reserved) - held);
 		}
 		boolean wantFood = current.wantsFood();
 		if (wantFood)
@@ -1677,7 +1707,7 @@ public class QuestCombatHandler
 			boolean protectedItem = keep.contains(item.getId()) || (wantsRunPotion && isRunPotion(item))
 				|| (lowHp && item.isFood()) || (current != null && isCustomItem(current, item))
 				|| (current != null && !fights && isFoodOrPotion(current, item));
-			return shouldDeposit(protectedItem, current != null && isSupply(current, item), fights);
+			return shouldDeposit(protectedItem, current != null && (isSupply(current, item) || isSwapKitItem(item)), fights);
 		};
 		Microbot.status = "Quest helper: banking items the quest no longer needs";
 		boolean deposited = Rs2Bank.depositAll(deposit);
@@ -1761,7 +1791,91 @@ public class QuestCombatHandler
 				return true;
 			}
 		}
+		if (current.wantsBoosts() && isBoostPotion(current, item))
+		{
+			return true;
+		}
 		return current.wantsStamina() && isRunPotion(item);
+	}
+
+	/** True for an unnoted potion of the loadout's boost choice (any dose). */
+	private static boolean isBoostPotion(QuestCombatLoadout current, Rs2ItemModel item)
+	{
+		if (item.isNoted() || item.getName() == null)
+		{
+			return false;
+		}
+		QuestBoosts.Potion potion = QuestBoosts.byItemName(item.getName());
+		return potion != null && current.boostPotions().contains(potion);
+	}
+
+	/** Inventory potions of one boost kind (any dose) that are not quest items. */
+	private List<Rs2ItemModel> boostItems(QuestBoosts.Potion boost)
+	{
+		Set<Integer> keep = protectedItemIds();
+		return Rs2Inventory.items(i -> !i.isNoted() && i.getName() != null && !keep.contains(i.getId())
+			&& QuestBoosts.byItemName(i.getName()) == boost).collect(Collectors.toList());
+	}
+
+	private int boostCount(QuestBoosts.Potion boost)
+	{
+		return boostItems(boost).size();
+	}
+
+	/**
+	 * Tradable needs for the loadout's boost potions (any dose, bought as the 4-dose) when the quest has a kill step
+	 * among {@code steps}, so the preflight buys them. Empty when there is no active loadout or no boosts chosen.
+	 */
+	public List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> boostPreflightNeeds(
+		List<DetailedQuestStep> steps)
+	{
+		List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> out = new ArrayList<>();
+		QuestCombatLoadout current = loadout;
+		if (steps == null || phase != Phase.ACTIVE || current == null || !current.wantsBoosts()
+			|| steps.stream().noneMatch(QuestCombatDetector::isKillStep))
+		{
+			return out;
+		}
+		for (QuestBoosts.Potion boost : current.boostPotions())
+		{
+			out.add(new net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need(boost.itemName(),
+				boost.doseIds(), current.getBoostQty(), true));
+		}
+		return out;
+	}
+
+	/**
+	 * In a kill step's fight: drinks each chosen boost potion whose skill is back to its real level (boost absent or
+	 * expired), one per call, rate limited. Quest items are never drunk.
+	 */
+	private void boostTick(QuestCombatLoadout current, long now)
+	{
+		if (!current.wantsBoosts() || Rs2Bank.isOpen() || now - lastConsumeMs < 600L)
+		{
+			return;
+		}
+		Skill[] skills = Skill.values();
+		int[] boosted = new int[skills.length];
+		int[] real = new int[skills.length];
+		for (QuestBoosts.Potion boost : current.boostPotions())
+		{
+			for (Skill skill : boost.skills())
+			{
+				boosted[skill.ordinal()] = Rs2Player.getBoostedSkillLevel(skill);
+				real[skill.ordinal()] = Rs2Player.getRealSkillLevel(skill);
+			}
+			List<Rs2ItemModel> held = boostItems(boost);
+			if (!QuestBoosts.shouldDrink(boost, boosted, real, !held.isEmpty(), false, now - lastBoostMs,
+				BOOST_COOLDOWN_MS))
+			{
+				continue;
+			}
+			held.sort(Comparator.comparingInt(QuestCombatHandler::dose));
+			lastBoostMs = now;
+			lastConsumeMs = now;
+			Rs2Inventory.interact(held.get(0), "Drink");
+			return;
+		}
 	}
 
 	/** Keeps one run potion for a bulk trip: the one already held, else a single dose potion from the bank. */
@@ -2100,6 +2214,407 @@ public class QuestCombatHandler
 		withdraw(pick, true, missing);
 	}
 
+	// ---- style swapping (targets that protect against the style we use) ----
+
+	private volatile QuestStyleSwap.Plan swapPlan;
+	private volatile String swapPlanFight;
+	private volatile boolean swapBlocked;
+	private volatile long lastSwapMs;
+	private volatile long lastTargetProgressMs;
+	private volatile int lastTargetHealth = -1;
+	private volatile int primaryWeaponId = -1;
+	private volatile String primaryWeaponName = "";
+	private int swapKitTrips;
+	private static final int MAX_SWAP_KIT_TRIPS = 2;
+
+	/** One client-thread read of the player's target. */
+	private static final class TargetRead
+	{
+		/** Styles the target's overhead icon protects against; null when it reports no overhead data. */
+		final Set<QuestCombatLoadout.Style> protectedStyles;
+		final int health;
+
+		TargetRead(Set<QuestCombatLoadout.Style> protectedStyles, int health)
+		{
+			this.protectedStyles = protectedStyles;
+			this.health = health;
+		}
+	}
+
+	private QuestCombatLoadout.Style primaryStyleOf(QuestCombatLoadout current, String fightKey)
+	{
+		QuestCombatLoadout.Style style = current.styleFor(fightKey);
+		if (style != QuestCombatLoadout.Style.AUTO)
+		{
+			return style;
+		}
+		for (QuestCombatLoadout.GearItem item : current.gearFor(fightKey).getItems())
+		{
+			if ("weapon".equals(item.getSlot()))
+			{
+				return QuestCombatLoadout.styleOfWeapon(item.getName());
+			}
+		}
+		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+		return QuestCombatLoadout.styleOfWeapon(weapon == null ? null : weapon.getName());
+	}
+
+	/** The swap plan for a kill step's fight, or null when the fight is not swapped. */
+	private QuestStyleSwap.Plan buildSwapPlan(QuestCombatLoadout current, QuestStep step, String fightKey)
+	{
+		if (fightKey == null || current == null)
+		{
+			return null;
+		}
+		List<String> restriction = QuestCombatDetector.restrictionTextsFor(activeQuest, step, fightKey);
+		boolean detected = QuestCombatDetector.stepNeedsSwap(step) || QuestStyleSwap.textNeedsSwap(restriction);
+		int melee = Math.max(Rs2Player.getRealSkillLevel(Skill.ATTACK), Rs2Player.getRealSkillLevel(Skill.STRENGTH));
+		QuestStyleSwap.Plan plan = current.swapPlanFor(fightKey, detected, primaryStyleOf(current, fightKey), melee,
+			Rs2Player.getRealSkillLevel(Skill.RANGED), Rs2Player.getRealSkillLevel(Skill.MAGIC), restriction);
+		if (plan != null && plan.hasSetup())
+		{
+			plan = resolveSetupKit(plan);
+		}
+		return plan;
+	}
+
+	/** Reads the weapon and ammo out of the plan's Inventory Setup. */
+	private QuestStyleSwap.Plan resolveSetupKit(QuestStyleSwap.Plan plan)
+	{
+		try
+		{
+			List<net.runelite.client.plugins.microbot.inventorysetups.InventorySetup> setups =
+				net.runelite.client.plugins.microbot.inventorysetups.MInventorySetupsPlugin.getInventorySetups();
+			if (setups != null)
+			{
+				int weaponIdx = EquipmentInventorySlot.WEAPON.getSlotIdx();
+				int ammoIdx = EquipmentInventorySlot.AMMO.getSlotIdx();
+				for (net.runelite.client.plugins.microbot.inventorysetups.InventorySetup setup : new ArrayList<>(setups))
+				{
+					if (setup == null || !plan.setup.equalsIgnoreCase(setup.getName()) || setup.getEquipment() == null)
+					{
+						continue;
+					}
+					List<net.runelite.client.plugins.microbot.inventorysetups.InventorySetupsItem> worn = setup.getEquipment();
+					String weapon = "";
+					String ammo = "";
+					int qty = 0;
+					if (worn.size() > weaponIdx && worn.get(weaponIdx) != null && worn.get(weaponIdx).getId() != -1)
+					{
+						weapon = worn.get(weaponIdx).getName();
+					}
+					if (worn.size() > ammoIdx && worn.get(ammoIdx) != null && worn.get(ammoIdx).getId() != -1)
+					{
+						ammo = worn.get(ammoIdx).getName();
+						qty = worn.get(ammoIdx).getQuantity();
+					}
+					return plan.withKit(weapon, ammo, qty);
+				}
+			}
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not read the swap setup '" + plan.setup + "': " + e.getMessage(), Level.WARN);
+		}
+		warnOnce("swapsetup:" + plan.setup, "Quest helper: inventory setup '" + plan.setup
+			+ "' not found for the style swap, using the default kit");
+		String[] kit = QuestStyleSwap.defaultKit(plan.secondary);
+		return plan.withKit(kit[0], kit[1], Integer.parseInt(kit[2]));
+	}
+
+	/** Item id for a swap kit name: a default-kit id, else an exact tradable-name match, else -1. */
+	private static int resolveItemId(String name)
+	{
+		int known = QuestStyleSwap.knownItemId(name);
+		if (known > 0 || name == null || name.isEmpty())
+		{
+			return known;
+		}
+		try
+		{
+			for (net.runelite.http.api.item.ItemPrice price : Microbot.getItemManager().search(name))
+			{
+				if (price.getName().equalsIgnoreCase(name.trim()))
+				{
+					return price.getId();
+				}
+			}
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not look up '" + name + "': " + e.getMessage(), Level.WARN);
+		}
+		return -1;
+	}
+
+	/**
+	 * Tradable needs for the secondary weapon and ammo/runes of every swapped fight among {@code steps}, so the
+	 * preflight buys them. Empty when there is no active loadout.
+	 */
+	public List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> swapPreflightNeeds(
+		List<DetailedQuestStep> steps)
+	{
+		List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> out = new ArrayList<>();
+		QuestCombatLoadout current = loadout;
+		if (steps == null || phase != Phase.ACTIVE || current == null || current.isSkip())
+		{
+			return out;
+		}
+		Set<String> seen = new HashSet<>();
+		for (DetailedQuestStep step : steps)
+		{
+			String key = QuestCombatDetector.fightKeyOf(step);
+			if (key == null || !seen.add(key))
+			{
+				continue;
+			}
+			QuestStyleSwap.Plan plan = buildSwapPlan(current, step, key);
+			if (plan == null)
+			{
+				continue;
+			}
+			addSwapNeed(out, plan.weapon, 1);
+			addSwapNeed(out, plan.ammo, plan.ammoQty);
+		}
+		return out;
+	}
+
+	private void addSwapNeed(List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> out,
+		String name, int qty)
+	{
+		if (name == null || name.isEmpty() || qty <= 0)
+		{
+			return;
+		}
+		int id = resolveItemId(name);
+		if (id <= 0)
+		{
+			warnOnce("swapitem:" + name, "Quest helper: could not find an item called '" + name
+				+ "' for the style swap, not buying it");
+			return;
+		}
+		out.add(new net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need(name,
+			Collections.singletonList(id), qty, true));
+	}
+
+	/** True when the plan's weapon and ammo are not both held (inventory or worn). */
+	private boolean swapKitMissing(QuestStyleSwap.Plan plan)
+	{
+		if (!plan.weapon.isEmpty() && !Rs2Inventory.hasItem(plan.weapon, true)
+			&& !Rs2Equipment.isWearing(plan.weapon, true))
+		{
+			return true;
+		}
+		return !plan.ammo.isEmpty() && plan.ammoQty > 0 && swapAmmoHeld(plan) < plan.ammoQty;
+	}
+
+	private static int swapAmmoHeld(QuestStyleSwap.Plan plan)
+	{
+		int held = Rs2Inventory.count(plan.ammo, true);
+		Rs2ItemModel worn = Rs2Equipment.get(EquipmentInventorySlot.AMMO);
+		if (worn != null && worn.getName() != null && worn.getName().equalsIgnoreCase(plan.ammo))
+		{
+			held += worn.getQuantity();
+		}
+		return held;
+	}
+
+	/** True for the swap weapon and ammo/runes, and the primary weapon while it sits in the inventory. */
+	private boolean isSwapKitItem(Rs2ItemModel item)
+	{
+		QuestStyleSwap.Plan plan = swapPlan;
+		String name = item.getName();
+		if (plan == null || name == null || item.isNoted())
+		{
+			return false;
+		}
+		return name.equalsIgnoreCase(plan.weapon) || name.equalsIgnoreCase(plan.ammo)
+			|| item.getId() == primaryWeaponId && primaryWeaponId > 0;
+	}
+
+	/** Withdraws the swap kit during a restock; quest slots are reserved first and the carry is capped. */
+	private void withdrawSwapKit(QuestStyleSwap.Plan plan, int reserved)
+	{
+		if (plan == null || swapBlocked)
+		{
+			return;
+		}
+		if (!plan.weapon.isEmpty() && !Rs2Inventory.hasItem(plan.weapon, true)
+			&& !Rs2Equipment.isWearing(plan.weapon, true))
+		{
+			withdrawCustom(new QuestCombatLoadout.InventoryItem(plan.weapon, QuestStyleSwap.knownItemId(plan.weapon), 1,
+				false), reserved);
+		}
+		if (!plan.ammo.isEmpty() && plan.ammoQty > 0 && plan.ammoQty - swapAmmoHeld(plan) > 0)
+		{
+			withdrawCustom(new QuestCombatLoadout.InventoryItem(plan.ammo, QuestStyleSwap.knownItemId(plan.ammo),
+				plan.ammoQty - swapAmmoHeld(plan), true), reserved);
+		}
+	}
+
+	/** Called from prepareForKill once the fight's gear is on: builds the plan and notes the primary weapon. */
+	private void prepareSwap(QuestCombatLoadout current, QuestStep step)
+	{
+		if (currentFight == null || currentFight.equals(swapPlanFight))
+		{
+			return;
+		}
+		swapPlanFight = currentFight;
+		swapPlan = null;
+		swapBlocked = false;
+		swapKitTrips = 0;
+		lastSwapMs = 0;
+		lastTargetProgressMs = 0;
+		QuestStyleSwap.Plan plan = buildSwapPlan(current, step, currentFight);
+		if (plan == null)
+		{
+			return;
+		}
+		Set<String> questSlots = questGearSlots();
+		for (String slot : plan.slotsUsed())
+		{
+			if (QuestFightSupport.slotConflicts(slot, questSlots))
+			{
+				warnOnce("swapslot:" + currentFight, "Quest helper: the quest needs the " + slot
+					+ " slot worn, so " + currentFight + " will not swap combat styles");
+				swapBlocked = true;
+			}
+		}
+		if (plan.weapon.isEmpty())
+		{
+			warnOnce("swapweapon:" + currentFight, "Quest helper: no weapon for the " + plan.secondary
+				+ " style of " + currentFight + "; set one in the Fights tab. Not swapping.");
+			swapBlocked = true;
+		}
+		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+		if (weapon != null && QuestCombatLoadout.styleOfWeapon(weapon.getName()) == plan.primary)
+		{
+			primaryWeaponId = weapon.getId();
+			primaryWeaponName = weapon.getName() == null ? "" : weapon.getName();
+		}
+		Microbot.log("Quest helper: " + currentFight + " needs a style swap: " + plan.primary + " / " + plan.secondary
+			+ (plan.hasSetup() ? " (setup " + plan.setup + ")" : " (" + plan.weapon
+			+ (plan.ammo.isEmpty() ? "" : " + " + plan.ammoQty + " " + plan.ammo) + ")"), Level.INFO);
+		swapPlan = plan;
+	}
+
+	private static TargetRead readTarget()
+	{
+		return Microbot.getClientThread().runOnClientThreadOptional(() ->
+		{
+			net.runelite.api.Actor target = Microbot.getClient().getLocalPlayer() == null ? null
+				: Microbot.getClient().getLocalPlayer().getInteracting();
+			if (!(target instanceof net.runelite.api.NPC))
+			{
+				return null;
+			}
+			net.runelite.api.NPC npc = (net.runelite.api.NPC) target;
+			return new TargetRead(QuestStyleSwap.protectedStyles(new net.runelite.client.plugins.microbot.util.npc.Rs2NpcModel(npc).getOverheadSpriteIds()), npc.getHealthRatio());
+		}).orElse(null);
+	}
+
+	/**
+	 * Fight tick: swap to the style the target is not protecting against, at most once per two ticks. Without
+	 * overhead data, alternates after the target stops losing health.
+	 */
+	private void swapTick(long now)
+	{
+		QuestStyleSwap.Plan plan = swapPlan;
+		if (plan == null || swapBlocked || !plan.fightKey.equals(currentFight))
+		{
+			return;
+		}
+		TargetRead target = readTarget();
+		if (target == null)
+		{
+			return;
+		}
+		if (target.health != lastTargetHealth || lastTargetProgressMs == 0)
+		{
+			lastTargetHealth = target.health;
+			lastTargetProgressMs = now;
+		}
+		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+		QuestCombatLoadout.Style wielded = QuestCombatLoadout.styleOfWeapon(weapon == null ? null : weapon.getName());
+		QuestCombatLoadout.Style wanted;
+		if (target.protectedStyles != null)
+		{
+			wanted = QuestStyleSwap.swapTarget(wielded, plan.primary, plan.secondary, target.protectedStyles);
+		}
+		else
+		{
+			wanted = QuestStyleSwap.fallbackDue(lastTargetProgressMs, now)
+				? QuestStyleSwap.fallbackTarget(wielded, plan.primary, plan.secondary) : null;
+		}
+		if (wanted == null || wanted == wielded || !QuestStyleSwap.swapAllowed(lastSwapMs, now))
+		{
+			return;
+		}
+		swapTo(plan, wanted, now);
+	}
+
+	private void swapTo(QuestStyleSwap.Plan plan, QuestCombatLoadout.Style wanted, long now)
+	{
+		Microbot.status = "Quest helper: swapping to " + wanted;
+		lastSwapMs = now;
+		lastTargetProgressMs = now;
+		if (wanted == plan.secondary)
+		{
+			if (plan.secondary == QuestCombatLoadout.Style.RANGED && !plan.ammo.isEmpty()
+				&& Rs2Inventory.hasItem(plan.ammo, true))
+			{
+				Rs2Inventory.wield(plan.ammo);
+				sleepUntil(() -> !Rs2Inventory.hasItem(plan.ammo, true), 1_200);
+			}
+			if (!Rs2Inventory.wield(plan.weapon))
+			{
+				warnOnce("swapkit:" + plan.fightKey, "Quest helper: the " + plan.weapon
+					+ " is not in the inventory, cannot swap styles");
+				return;
+			}
+			if (!sleepUntil(() -> Rs2Equipment.isWearing(plan.weapon, true), 1_800))
+			{
+				return;
+			}
+			if (plan.secondary == QuestCombatLoadout.Style.MAGIC && !setAutocast())
+			{
+				warnOnce("swapcast:" + plan.fightKey, "Quest helper: no castable combat spell for the style swap");
+			}
+		}
+		else
+		{
+			final int id = primaryWeaponId;
+			final String name = primaryWeaponName;
+			boolean wielded = id > 0 ? Rs2Inventory.wield(id) : !name.isEmpty() && Rs2Inventory.wield(name);
+			if (!wielded || !sleepUntil(() -> id > 0 ? Rs2Equipment.isWearing(id) : Rs2Equipment.isWearing(name, true),
+				1_800))
+			{
+				return;
+			}
+		}
+		reattack();
+	}
+
+	/** After a weapon change: re-attacks the kill step's target when the game dropped it. */
+	private void reattack()
+	{
+		if (Rs2Player.getInteracting() != null)
+		{
+			return;
+		}
+		QuestStep step = activeStep;
+		if (step instanceof net.runelite.client.plugins.microbot.questhelper.steps.NpcStep)
+		{
+			net.runelite.client.plugins.microbot.util.npc.Rs2NpcModel npc =
+				net.runelite.client.plugins.microbot.util.npc.Rs2Npc.getNpc(
+					((net.runelite.client.plugins.microbot.questhelper.steps.NpcStep) step).getNpcID());
+			if (npc != null)
+			{
+				net.runelite.client.plugins.microbot.util.npc.Rs2Npc.interact(npc, "Attack");
+			}
+		}
+	}
+
 	/** Eat, drink and pray for the current fight. Runs on its own task, not the quest script loop. */
 	public void fightTick(QuestStep step)
 	{
@@ -2163,6 +2678,11 @@ public class QuestCombatHandler
 		if (current.usesPrayer() && QuestCombatDetector.isKillStep(step))
 		{
 			managePrayer(current, now);
+		}
+		if (QuestCombatDetector.isKillStep(step))
+		{
+			boostTick(current, now);
+			swapTick(now);
 		}
 	}
 

@@ -85,6 +85,10 @@ public final class QuestCombatSetupDialog
 		public String wornWeapon = "";
 		public List<InventoryItem> inventory = new ArrayList<>();
 		public int defaultReserve = 4;
+		/** Combat skill levels (melee is the higher of Attack and Strength); drive the default second style. */
+		public int meleeLevel = 1;
+		public int rangedLevel = 1;
+		public int magicLevel = 1;
 		/** Best-healing food held in the bank or inventory; null when none is known. */
 		public String bestOwnedFood;
 		/** Whether the bank contents were seen this session. */
@@ -286,6 +290,9 @@ public final class QuestCombatSetupDialog
 		private JComboBox<QuestCombatLoadout.StaminaType> staminaType;
 		private JSpinner staminaQty;
 		private JSpinner staminaAt;
+		private JComboBox<QuestCombatLoadout.BoostType> boostType;
+		private JCheckBox boostDefence;
+		private JSpinner boostQty;
 		private JSpinner reserve;
 		private JComboBox<String> obtainMissing;
 		private DefaultTableModel itemModel;
@@ -457,6 +464,9 @@ public final class QuestCombatSetupDialog
 			staminaType.setSelectedItem(QuestCombatLoadout.StaminaType.NONE);
 			staminaQty = spinner(2, 0, 27, 1);
 			staminaAt = spinner(30, 1, 99, 5);
+			boostType = new JComboBox<>(QuestCombatLoadout.BoostType.values());
+			boostDefence = new JCheckBox("Include Super defence");
+			boostQty = spinner(1, 0, 27, 1);
 			reserve = spinner(ctx.defaultReserve, 0, 27, 1);
 
 			row = addRow(panel, row, "Food", food);
@@ -467,6 +477,10 @@ public final class QuestCombatSetupDialog
 			row = addRow(panel, row, "Prayer", prayer);
 			row = addRow(panel, row, "Drink at prayer points", drinkAt);
 			combatOnly.addAll(java.util.Arrays.asList(prayer, drinkAt));
+			row = addRow(panel, row, "Boost potions", boostType);
+			row = addRow(panel, row, "Boost defence too", boostDefence);
+			row = addRow(panel, row, "Boost potion quantity (each)", boostQty);
+			combatOnly.addAll(java.util.Arrays.asList(boostType, boostDefence, boostQty));
 			row = addRow(panel, row, "Run energy potions", staminaType);
 			row = addRow(panel, row, "Potion quantity (stamina/energy)", staminaQty);
 			row = addRow(panel, row, "Drink at run energy %", staminaAt);
@@ -476,14 +490,15 @@ public final class QuestCombatSetupDialog
 			obtainMissing.setToolTipText("Buy or withdraw missing quest items from the bank and Grand Exchange");
 			row = addRow(panel, row, "Buy missing items", obtainMissing);
 			filler(panel, row);
-			for (JSpinner s : new JSpinner[]{foodQty, eatAt, potionQty, drinkAt, staminaQty, staminaAt, reserve})
+			for (JSpinner s : new JSpinner[]{foodQty, eatAt, potionQty, drinkAt, staminaQty, staminaAt, boostQty, reserve})
 			{
 				s.addChangeListener(e -> refresh());
 			}
-			for (JComboBox<?> c : new JComboBox<?>[]{potion, prayer, staminaType})
+			for (JComboBox<?> c : new JComboBox<?>[]{potion, prayer, staminaType, boostType})
 			{
 				c.addActionListener(e -> refresh());
 			}
+			boostDefence.addActionListener(e -> refresh());
 			food.addActionListener(e -> refresh());
 			return panel;
 		}
@@ -556,7 +571,8 @@ public final class QuestCombatSetupDialog
 				addCell(panel, 2, y, fightRow.style, 0);
 				addCell(panel, 3, y, fightRow.gear.combo, 0);
 				addCell(panel, 1, y + 1, fightRow.warning, 1);
-				y += 2;
+				addCell(panel, 1, y + 2, fightRow.swapPanel(), 1);
+				y += 3;
 			}
 			JPanel wrap = new JPanel(new BorderLayout());
 			wrap.add(panel, BorderLayout.NORTH);
@@ -574,10 +590,125 @@ public final class QuestCombatSetupDialog
 			final GearPicker gear = new GearPicker(true);
 			final JLabel warning = new JLabel(" ");
 			boolean touched;
+			final JComboBox<QuestCombatLoadout.SecondaryStyle> secondary =
+				new JComboBox<>(QuestCombatLoadout.SecondaryStyle.values());
+			final JTextField weapon = new JTextField(12);
+			final JTextField ammo = new JTextField(12);
+			final JSpinner ammoQty = spinner(0, 0, 100_000, 10);
+			final JComboBox<String> swapSetup = new JComboBox<>();
+			final JLabel swapNote = new JLabel(" ");
+			boolean kitTouched;
+			private boolean fillingKit;
+
+			/** Secondary style controls: style, weapon, ammo/runes and quantity, or an Inventory Setup. */
+			JPanel swapPanel()
+			{
+				JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+				panel.add(new JLabel("Swap to"));
+				panel.add(secondary);
+				panel.add(new JLabel("Weapon"));
+				panel.add(weapon);
+				panel.add(new JLabel("Ammo/runes"));
+				panel.add(ammo);
+				panel.add(ammoQty);
+				panel.add(new JLabel("or setup"));
+				panel.add(swapSetup);
+				panel.add(swapNote);
+				return panel;
+			}
+
+			Style primaryStyle()
+			{
+				Style primary = effective();
+				return primary == null ? Style.MELEE : primary;
+			}
+
+			/** The second style this row resolves to now, or null when the fight is not swapped. */
+			Style resolvedSecondary()
+			{
+				QuestCombatLoadout.SecondaryStyle chosen = (QuestCombatLoadout.SecondaryStyle) secondary.getSelectedItem();
+				if (chosen == QuestCombatLoadout.SecondaryStyle.NONE
+					|| chosen == QuestCombatLoadout.SecondaryStyle.AUTO && !fight.needsSwap)
+				{
+					return null;
+				}
+				if (chosen != QuestCombatLoadout.SecondaryStyle.AUTO)
+				{
+					return chosen.style();
+				}
+				return QuestStyleSwap.defaultSecondary(primaryStyle(), ctx.meleeLevel, ctx.rangedLevel, ctx.magicLevel,
+					QuestCombatLoadout.forbiddenStyles(fight.restrictionTexts));
+			}
+
+			void refreshSwap()
+			{
+				Style second = resolvedSecondary();
+				if (!kitTouched)
+				{
+					String[] kit = QuestStyleSwap.defaultKit(second);
+					fillingKit = true;
+					try
+					{
+						weapon.setText(kit[0]);
+						ammo.setText(kit[1]);
+						ammoQty.setValue(Integer.parseInt(kit[2]));
+					}
+					finally
+					{
+						fillingKit = false;
+					}
+				}
+				swapNote.setText(second == null ? (fight.needsSwap ? "No second style available"
+					: "") : "Swaps " + primaryStyle() + " / " + second + (fight.needsSwap ? " (prayers detected)" : ""));
+			}
 
 			FightRow(QuestCombatDetector.Fight fight)
 			{
 				this.fight = fight;
+				swapSetup.addItem("");
+				for (String name : setups)
+				{
+					swapSetup.addItem(name);
+				}
+				javax.swing.event.DocumentListener kitListener = new javax.swing.event.DocumentListener()
+				{
+					private void changed()
+					{
+						if (!fillingKit)
+						{
+							kitTouched = true;
+						}
+					}
+
+					@Override
+					public void insertUpdate(javax.swing.event.DocumentEvent e)
+					{
+						changed();
+					}
+
+					@Override
+					public void removeUpdate(javax.swing.event.DocumentEvent e)
+					{
+						changed();
+					}
+
+					@Override
+					public void changedUpdate(javax.swing.event.DocumentEvent e)
+					{
+						changed();
+					}
+				};
+				weapon.getDocument().addDocumentListener(kitListener);
+				ammo.getDocument().addDocumentListener(kitListener);
+				ammoQty.addChangeListener(e ->
+				{
+					if (!fillingKit)
+					{
+						kitTouched = true;
+					}
+				});
+				secondary.addActionListener(e -> refreshSwap());
+				refreshSwap();
 				style.setSelectedItem(QuestCombatLoadout.defaultStyle(Style.AUTO, fight.restrictionTexts));
 				warning.setForeground(new Color(190, 40, 40));
 				style.addActionListener(e ->
@@ -650,7 +781,8 @@ public final class QuestCombatSetupDialog
 
 		private void refresh()
 		{
-			if (mainGear == null || slots == null || reserve == null || itemModel == null || potion == null || staminaType == null)
+			if (mainGear == null || slots == null || reserve == null || itemModel == null || potion == null || staminaType == null
+				|| boostType == null || boostDefence == null || boostQty == null)
 			{
 				return;
 			}
@@ -665,6 +797,11 @@ public final class QuestCombatSetupDialog
 			{
 				supplies += (Integer) staminaQty.getValue();
 			}
+			if (boostType.getSelectedItem() != QuestCombatLoadout.BoostType.NONE)
+			{
+				supplies += QuestBoosts.potionsFor((QuestCombatLoadout.BoostType) boostType.getSelectedItem(),
+					boostDefence.isSelected()).size() * (Integer) boostQty.getValue();
+			}
 			for (InventoryItem item : readItems())
 			{
 				supplies += item.isStackable() ? 1 : item.getQty();
@@ -677,6 +814,7 @@ public final class QuestCombatSetupDialog
 
 			for (FightRow row : rows)
 			{
+				row.refreshSwap();
 				if (row.forbidden())
 				{
 					row.warning.setText("Warning: " + row.effective().toString().replace(" (from worn weapon)", "")
@@ -813,6 +951,17 @@ public final class QuestCombatSetupDialog
 					GearSpec own = row.gear.spec();
 					setup.setGearSetup(own.getSetup());
 					setup.setGearItems(own.getItems());
+					QuestCombatLoadout.SecondaryStyle chosen =
+						(QuestCombatLoadout.SecondaryStyle) row.secondary.getSelectedItem();
+					setup.setSecondaryStyle(chosen == QuestCombatLoadout.SecondaryStyle.AUTO ? null : chosen);
+					Object setupChoice = row.swapSetup.getSelectedItem();
+					setup.setSecondaryGearSetup(setupChoice == null ? "" : setupChoice.toString());
+					if (row.kitTouched)
+					{
+						setup.setSecondaryWeapon(row.weapon.getText());
+						setup.setSecondaryAmmo(row.ammo.getText());
+						setup.setSecondaryAmmoQty((Integer) row.ammoQty.getValue());
+					}
 					loadout.getFights().put(row.fight.key, setup);
 				}
 			}
@@ -830,6 +979,9 @@ public final class QuestCombatSetupDialog
 			}
 			loadout.setStaminaQty((Integer) staminaQty.getValue());
 			loadout.setDrinkStaminaAtEnergy((Integer) staminaAt.getValue());
+			loadout.setBoostType((QuestCombatLoadout.BoostType) boostType.getSelectedItem());
+			loadout.setBoostDefence(boostDefence.isSelected());
+			loadout.setBoostQty((Integer) boostQty.getValue());
 			loadout.setInventoryItems(readItems());
 			loadout.setReserveSlots((Integer) reserve.getValue());
 			return loadout;

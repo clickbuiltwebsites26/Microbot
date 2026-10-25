@@ -940,6 +940,10 @@ public class QuestScript extends Script {
 				&& QuestFightSupport.isDragonFight(QuestCombatDetector.fightKeyOf(step), step.getText()))) {
 			needs.add(QuestPreflight.antifireNeed());
 		}
+		if (steps != null) {
+			needs.addAll(combat.swapPreflightNeeds(steps));
+			needs.addAll(combat.boostPreflightNeeds(steps));
+		}
 		for (Requirement requirement : candidates) {
 			// Subclasses (keyrings, followers, composites) have their own ownership rules; leave them to the steps
 			if (requirement == null || requirement.getClass() != ItemRequirement.class) {
