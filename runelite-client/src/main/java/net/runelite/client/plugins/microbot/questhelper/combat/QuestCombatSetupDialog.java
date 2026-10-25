@@ -85,6 +85,10 @@ public final class QuestCombatSetupDialog
 		public String wornWeapon = "";
 		public List<InventoryItem> inventory = new ArrayList<>();
 		public int defaultReserve = 4;
+		/** Best-healing food held in the bank or inventory; null when none is known. */
+		public String bestOwnedFood;
+		/** Whether the bank contents were seen this session. */
+		public boolean bankSeen;
 		/** Current "Obtain Missing Items" setting (ASK, YES or NO). */
 		public String obtainMissingItems = "ASK";
 	}
@@ -138,6 +142,14 @@ public final class QuestCombatSetupDialog
 	static String skipLabel(boolean hasFights)
 	{
 		return hasFights ? "Skip combat setup" : "Skip setup";
+	}
+
+	static final String FOOD_PLACEHOLDER = "best food in bank";
+
+	/** Default food: the best-healing food owned when known, else the old Lobster default. */
+	static String defaultFood(Context ctx)
+	{
+		return ctx != null && ctx.bestOwnedFood != null && !ctx.bestOwnedFood.trim().isEmpty() ? ctx.bestOwnedFood : "Lobster";
 	}
 
 	/** Inventory slots the entered food and potions take. */
@@ -421,7 +433,20 @@ public final class QuestCombatSetupDialog
 			{
 				row = addSpan(panel, row, noFightsNote());
 			}
-			food = new JTextField("Lobster", 14);
+			food = new JTextField(defaultFood(ctx), 14)
+			{
+				@Override
+				protected void paintComponent(java.awt.Graphics g)
+				{
+					super.paintComponent(g);
+					if (getText().isEmpty())
+					{
+						g.setColor(Color.GRAY);
+						g.drawString(FOOD_PLACEHOLDER, getInsets().left + 2, getHeight() / 2 + g.getFontMetrics().getAscent() / 2 - 1);
+					}
+				}
+			};
+			food.setToolTipText(ctx.bankSeen ? "Defaults to the best food you own" : "Bank not seen yet: " + FOOD_PLACEHOLDER);
 			foodQty = spinner(ctx.hasFights ? 10 : 0, 0, 27, 1);
 			eatAt = spinner(50, 1, 99, 5);
 			potion = new JComboBox<>(QuestCombatLoadout.Potion.values());

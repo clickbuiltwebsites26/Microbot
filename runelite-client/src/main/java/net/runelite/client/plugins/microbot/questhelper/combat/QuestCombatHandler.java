@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
@@ -98,6 +99,8 @@ public class QuestCombatHandler
 	private int bankAttempts;
 	private int restocks;
 	private int defaultReserve = -1;
+	/** Food withdrawn instead of the chosen one because the chosen one was not in the bank. */
+	private String foodFallback;
 	private final Set<String> warned = new HashSet<>();
 
 	private volatile boolean prayerOnByUs;
@@ -183,6 +186,7 @@ public class QuestCombatHandler
 		restocks = 0;
 		defaultReserve = -1;
 		warned.clear();
+		foodFallback = null;
 		lastConsumeMs = 0;
 		lastStaminaMs = 0;
 		recovering = false;
@@ -372,6 +376,18 @@ public class QuestCombatHandler
 			Microbot.log("Quest helper: could not list fights for the setup dialog: " + e.getMessage(), Level.WARN);
 		}
 		context.wornGear = wornGear();
+		try
+		{
+			Set<Integer> questIds = new HashSet<>();
+			addIds(questIds, quest.getItemRequirements());
+			List<Rs2ItemModel> bank = Rs2Bank.bankItems();
+			context.bankSeen = bank != null && !bank.isEmpty();
+			context.bestOwnedFood = ownedBestFood(bank, Rs2Inventory.items().collect(Collectors.toList()), questIds);
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not read owned food for the setup dialog: " + e.getMessage(), Level.WARN);
+		}
 		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
 		context.wornWeapon = weapon == null || weapon.getName() == null ? "" : weapon.getName();
 
@@ -1200,7 +1216,7 @@ public class QuestCombatHandler
 			if (current.wantsFood())
 			{
 				int held = foodCount(current);
-				withdraw(current.getFood(), true, carry(current.getFoodQty(), held, reserved) - held);
+				withdrawLoadoutFood(current, carry(current.getFoodQty(), held, reserved) - held);
 			}
 			Rs2Bank.closeBank();
 			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
@@ -1226,7 +1242,7 @@ public class QuestCombatHandler
 		{
 			int held = foodCount(current);
 			int target = carry(current.getFoodQty(), held, reserved);
-			withdraw(current.getFood(), true, target - held);
+			withdrawLoadoutFood(current, target - held);
 		}
 
 		boolean gotFood = !wantFood || foodCount(current) > 0;
@@ -1377,7 +1393,7 @@ public class QuestCombatHandler
 	{
 		Set<Integer> keep = protectedItemIds();
 		List<Rs2ItemModel> out = new ArrayList<>();
-		for (Rs2ItemModel item : Rs2Inventory.items(i -> i.getName() != null && i.getName().equalsIgnoreCase(current.getFood())).collect(java.util.stream.Collectors.toList()))
+		for (Rs2ItemModel item : Rs2Inventory.items(i -> i.getName() != null && (i.getName().equalsIgnoreCase(current.getFood()) || i.getName().equalsIgnoreCase(foodFallback))).collect(java.util.stream.Collectors.toList()))
 		{
 			if (!item.isNoted() && !keep.contains(item.getId()))
 			{
@@ -1993,30 +2009,95 @@ public class QuestCombatHandler
 	/** Name of the best-healing food in the bank, by Rs2Food heal values; any edible item as a last resort. */
 	private String bestBankFood()
 	{
-		Set<Integer> keep = protectedItemIds();
+		return bestFoodName(Rs2Bank.bankItems(), protectedItemIds());
+	}
+
+	static String bestFoodName(List<Rs2ItemModel> items, Set<Integer> keep)
+	{
+		return bestFoodName(items, Rs2ItemModel::getName, Rs2ItemModel::getId, QuestCombatHandler::healOf,
+			Rs2ItemModel::isFood, Rs2ItemModel::isNoted, keep);
+	}
+
+	/** Pure core of {@link #bestBankFood()}: best-healing unprotected, un-noted food name, else any edible one. */
+	static <T> String bestFoodName(List<T> items, Function<T, String> nameOf, ToIntFunction<T> idOf,
+		ToIntFunction<T> healOf, Predicate<T> edible, Predicate<T> noted, Set<Integer> keep)
+	{
+		if (items == null)
+		{
+			return null;
+		}
 		String bestName = null;
 		int bestHeal = 0;
 		String anyEdible = null;
-		for (Rs2ItemModel item : Rs2Bank.bankItems())
+		for (T item : items)
 		{
-			if (item == null || item.isNoted() || item.getName() == null || keep.contains(item.getId()))
+			if (item == null || noted.test(item) || nameOf.apply(item) == null || keep.contains(idOf.applyAsInt(item)))
 			{
 				continue;
 			}
-			for (Rs2Food food : Rs2Food.values())
+			int heal = healOf.applyAsInt(item);
+			if (heal > bestHeal)
 			{
-				if (food.getId() == item.getId() && food.getHeal() > bestHeal)
-				{
-					bestHeal = food.getHeal();
-					bestName = item.getName();
-				}
+				bestHeal = heal;
+				bestName = nameOf.apply(item);
 			}
-			if (anyEdible == null && item.isFood())
+			if (anyEdible == null && edible.test(item))
 			{
-				anyEdible = item.getName();
+				anyEdible = nameOf.apply(item);
 			}
 		}
 		return bestName != null ? bestName : anyEdible;
+	}
+
+	/** Best-healing food the player owns across the bank and inventory; null when none is known. */
+	static String ownedBestFood(List<Rs2ItemModel> bank, List<Rs2ItemModel> inventory, Set<Integer> keep)
+	{
+		List<Rs2ItemModel> all = new ArrayList<>();
+		if (bank != null)
+		{
+			all.addAll(bank);
+		}
+		if (inventory != null)
+		{
+			all.addAll(inventory);
+		}
+		return bestFoodName(all, keep);
+	}
+
+	/** Food to withdraw: the chosen one if the bank (or inventory) has it, else the best bank food, else null. */
+	static String chooseFood(String chosen, boolean chosenInBank, boolean chosenHeld, String bestBank)
+	{
+		if (chosen != null && !chosen.trim().isEmpty() && (chosenInBank || chosenHeld))
+		{
+			return chosen;
+		}
+		return bestBank;
+	}
+
+	/** Withdraws {@code missing} of the loadout food, falling back to the best bank food when it is not banked. */
+	private void withdrawLoadoutFood(QuestCombatLoadout current, int missing)
+	{
+		if (missing <= 0)
+		{
+			return;
+		}
+		String chosen = current.getFood();
+		boolean inBank = Rs2Bank.count(chosen, true) > 0 && !bankItemProtected(chosen);
+		boolean held = !namedFood(current).isEmpty();
+		String pick = chooseFood(chosen, inBank, held, bestBankFood());
+		if (pick == null)
+		{
+			return;
+		}
+		if (!pick.equalsIgnoreCase(chosen))
+		{
+			foodFallback = pick;
+			if (warned.add("foodfallback:" + chosen))
+			{
+				Microbot.log("Quest helper: no " + chosen + " in the bank, bringing " + pick + " instead", Level.INFO);
+			}
+		}
+		withdraw(pick, true, missing);
 	}
 
 	/** Eat, drink and pray for the current fight. Runs on its own task, not the quest script loop. */
