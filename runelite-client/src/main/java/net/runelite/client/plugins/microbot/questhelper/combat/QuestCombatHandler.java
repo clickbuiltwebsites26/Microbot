@@ -17,6 +17,7 @@ import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.ItemID;
+import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout.GearSpec;
 import net.runelite.api.coords.WorldPoint;
@@ -1038,6 +1039,36 @@ public class QuestCombatHandler
 	 * Whether a bank visit should deposit an inventory item. Protected items (quest items, coins, kept run potions) are
 	 * never deposited; supplies (setup food, potions, custom items) are kept only while a fight still lies ahead.
 	 */
+	/**
+	 * Quest-level item requirements are protected only before the quest starts (the gathering phase) or when the
+	 * remaining steps cannot be read; otherwise the current and remaining steps decide.
+	 */
+	static boolean protectsQuestLevelItems(boolean notStartedOrUnknown, boolean remainingKnown)
+	{
+		return notStartedOrUnknown || !remainingKnown;
+	}
+
+	/** Ids of the step's item requirements (alternates included) and its icon item. */
+	private static Set<Integer> stepItemIds(QuestStep step)
+	{
+		Set<Integer> ids = new HashSet<>();
+		if (step instanceof DetailedQuestStep)
+		{
+			for (Requirement requirement : ((DetailedQuestStep) step).getRequirements())
+			{
+				if (requirement instanceof ItemRequirement)
+				{
+					addIds(ids, Collections.singletonList((ItemRequirement) requirement));
+				}
+			}
+		}
+		if (step != null && step.getIconItemID() > 0)
+		{
+			ids.add(step.getIconItemID());
+		}
+		return ids;
+	}
+
 	static boolean shouldDeposit(boolean protectedItem, boolean supplyItem, boolean fightsRemaining)
 	{
 		return !protectedItem && !(fightsRemaining && supplyItem);
@@ -1066,9 +1097,23 @@ public class QuestCombatHandler
 		boolean wantsRunPotion = current != null && current.wantsStamina();
 		boolean lowHp = recovering || Rs2Player.getHealthPercentage() <= eatThreshold();
 
-		Set<Integer> keep = new HashSet<>(protectedItemIds());
+		Set<Integer> remaining = QuestCombatDetector.remainingStepItemIds(quest);
+		QuestState state = Microbot.getClientThread().runOnClientThreadOptional(() -> quest.getState(Microbot.getClient()))
+			.orElse(null);
+		Set<Integer> keep = new HashSet<>();
+		if (protectsQuestLevelItems(state == QuestState.NOT_STARTED || state == null, remaining != null))
+		{
+			keep.addAll(protectedItemIds());
+		}
+		else
+		{
+			keep.addAll(stepItemIds(activeStep));
+		}
 		keep.add(ItemID.COINS_995);
-		keep.addAll(QuestCombatDetector.remainingStepItemIds(quest));
+		if (remaining != null)
+		{
+			keep.addAll(remaining);
+		}
 
 		Predicate<Rs2ItemModel> deposit = item ->
 		{

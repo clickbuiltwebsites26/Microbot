@@ -133,22 +133,20 @@ public final class QuestCombatDetector
 		return result;
 	}
 
-	/** Item ids required by the quest's steps that are still ahead (the current one included), alternates too. */
+	/**
+	 * Item ids required by the quest's steps that are still ahead (the current one included), alternates too, or null
+	 * when the step map or the progress cannot be read.
+	 */
 	public static Set<Integer> remainingStepItemIds(QuestHelper quest)
 	{
+		Map<Integer, QuestStep> all = quest instanceof BasicQuestHelper ? ((BasicQuestHelper) quest).getStepList() : null;
+		Integer progress = all == null ? null : progressOf(quest);
+		if (progress == null)
+		{
+			return null;
+		}
 		Set<Integer> ids = new HashSet<>();
-		if (quest == null)
-		{
-			return ids;
-		}
-		Collection<QuestStep> steps = Collections.emptyList();
-		if (quest instanceof BasicQuestHelper && ((BasicQuestHelper) quest).getStepList() != null)
-		{
-			Map<Integer, QuestStep> all = ((BasicQuestHelper) quest).getStepList();
-			Integer progress = progressOf(quest);
-			// unreadable progress keeps every step's items rather than risk banking one that is still needed
-			steps = progress == null ? all.values() : valuesFrom(all, progress);
-		}
+		Collection<QuestStep> steps = valuesFrom(all, progress);
 		Set<QuestStep> seen = Collections.newSetFromMap(new IdentityHashMap<>());
 		collectItemIds(steps, seen, ids);
 		if (quest.getCurrentStep() != null)

@@ -52,4 +52,12 @@ public class QuestCombatRemainingTest
 		assertTrue(QuestCombatHandler.shouldDeposit(false, false, true));
 		assertTrue(QuestCombatHandler.shouldDeposit(false, false, false));
 	}
+
+	@Test
+	public void questLevelItemsProtectedOnlyBeforeStartOrWhenUnknown()
+	{
+		assertTrue(QuestCombatHandler.protectsQuestLevelItems(true, true));
+		assertTrue(QuestCombatHandler.protectsQuestLevelItems(false, false));
+		assertFalse(QuestCombatHandler.protectsQuestLevelItems(false, true));
+	}
 }
