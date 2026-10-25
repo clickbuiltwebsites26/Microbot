@@ -44,6 +44,7 @@ public final class ChargedItemNames
 		return m.find() ? Integer.parseInt(m.group(1)) : 0;
 	}
 
+	/** True when both names are the same item apart from the dose or charge suffix. */
 	public static boolean sameFamily(String a, String b)
 	{
 		String base = baseName(a);

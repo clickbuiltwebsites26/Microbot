@@ -28,10 +28,12 @@ public final class DialogueChoiceProvider {
 		supplier = wanted;
 	}
 
+	/** Drops the wanted options. */
 	public static void clear() {
 		supplier = null;
 	}
 
+	/** True while a wanted-options supplier is set. */
 	public static boolean isActive() {
 		return supplier != null;
 	}

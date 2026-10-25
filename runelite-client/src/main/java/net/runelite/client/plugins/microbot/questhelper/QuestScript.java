@@ -754,18 +754,7 @@ public class QuestScript extends Script {
 		addContainer(onPlayer, QuestContainerManager.getInventoryData());
 		Map<Integer, Integer> owned = new HashMap<>(onPlayer);
 		addContainer(owned, bank);
-		for (QuestPreflight.Need need : needs) {
-			for (Integer id : need.ids) {
-				int notedId = notedVariantId(id);
-				if (notedId > 0) {
-					int noted = onPlayer.getOrDefault(notedId, 0);
-					if (noted > 0) {
-						onPlayer.merge(id, noted, Integer::sum);
-						owned.merge(id, noted, Integer::sum);
-					}
-				}
-			}
-		}
+		QuestPreflight.foldNoted(needs, this::notedVariantId, onPlayer, owned);
 
 		List<QuestPreflight.Shortfall> shortfalls = QuestPreflight.compute(needs, owned);
 		List<ItemRequirement> toBuy = new ArrayList<>();

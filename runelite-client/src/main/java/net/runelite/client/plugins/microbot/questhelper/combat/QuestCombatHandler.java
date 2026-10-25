@@ -1171,6 +1171,11 @@ public class QuestCombatHandler
 		}
 		if (!fights)
 		{
+			// food and combat potions are skipped, but the user's custom items are still carried (reserved slots respected)
+			for (QuestCombatLoadout.InventoryItem item : current.getInventoryItems())
+			{
+				withdrawCustom(item, reserved);
+			}
 			Rs2Bank.closeBank();
 			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
 			supplied = true;
@@ -1578,6 +1583,7 @@ public class QuestCombatHandler
 		return ids;
 	}
 
+	/** Whether the bank prep deposits an item: never a protected one, and not a fight supply while fights remain. */
 	static boolean shouldDeposit(boolean protectedItem, boolean supplyItem, boolean fightsRemaining)
 	{
 		return !protectedItem && !(fightsRemaining && supplyItem);
@@ -1627,7 +1633,7 @@ public class QuestCombatHandler
 		Predicate<Rs2ItemModel> deposit = item ->
 		{
 			boolean protectedItem = keep.contains(item.getId()) || (wantsRunPotion && isRunPotion(item))
-				|| (lowHp && item.isFood());
+				|| (lowHp && item.isFood()) || (current != null && isCustomItem(current, item));
 			return shouldDeposit(protectedItem, current != null && isSupply(current, item), fights);
 		};
 		Microbot.status = "Quest helper: banking items the quest no longer needs";
@@ -1653,6 +1659,24 @@ public class QuestCombatHandler
 		String base = baseName(item);
 		return base.equalsIgnoreCase("Stamina potion") || base.equalsIgnoreCase("Energy potion")
 			|| base.equalsIgnoreCase("Super energy");
+	}
+
+	/** True for an item configured in the dialog's inventory tab; the bank prep never deposits these. */
+	private static boolean isCustomItem(QuestCombatLoadout current, Rs2ItemModel item)
+	{
+		if (item.isNoted())
+		{
+			return false;
+		}
+		String name = item.getName();
+		for (QuestCombatLoadout.InventoryItem wanted : current.getInventoryItems())
+		{
+			if (wanted.getId() > 0 ? item.getId() == wanted.getId() : name != null && name.equalsIgnoreCase(wanted.getName()))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Setup food, potions and custom items: what a fight needs and the rest of the quest does not. */

@@ -51,6 +51,7 @@ import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadou
  */
 public final class QuestCombatSetupDialog
 {
+	/** How the setup dialog was closed. */
 	public enum Outcome
 	{
 		SAVE, SKIP,
@@ -60,6 +61,7 @@ public final class QuestCombatSetupDialog
 		DISMISSED
 	}
 
+	/** The dialog outcome and, when saved, the chosen loadout. */
 	public static final class Result
 	{
 		public final Outcome outcome;

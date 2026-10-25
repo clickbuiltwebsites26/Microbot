@@ -75,6 +75,7 @@ public final class QuestPreflight
 		/** False for items the quest does not use up ({@code isNotConsumed()}). */
 		public final boolean consumed;
 
+		/** A requirement satisfied by any of {@code ids}, needing {@code quantity} in total. */
 		public Need(String name, List<Integer> ids, int quantity, boolean consumed)
 		{
 			this.name = name;
@@ -168,6 +169,43 @@ public final class QuestPreflight
 		return out;
 	}
 
+	/**
+	 * Adds the noted stock the player carries to its unnoted id, once per item id however many needs list that id.
+	 *
+	 * @param notedVariant noted id for an unnoted id, or a value <= 0 when there is none
+	 * @param onPlayer inventory + equipment counts, updated in place
+	 * @param owned inventory + equipment + bank counts, updated in place
+	 */
+	static void foldNoted(List<Need> needs, java.util.function.IntUnaryOperator notedVariant,
+		Map<Integer, Integer> onPlayer, Map<Integer, Integer> owned)
+	{
+		Set<Integer> folded = new java.util.HashSet<>();
+		for (Need need : needs)
+		{
+			if (need == null || need.ids == null)
+			{
+				continue;
+			}
+			for (Integer id : need.ids)
+			{
+				if (id == null || !folded.add(id))
+				{
+					continue;
+				}
+				int notedId = notedVariant.applyAsInt(id);
+				if (notedId > 0)
+				{
+					int noted = onPlayer.getOrDefault(notedId, 0);
+					if (noted > 0)
+					{
+						onPlayer.merge(id, noted, Integer::sum);
+						owned.merge(id, noted, Integer::sum);
+					}
+				}
+			}
+		}
+	}
+
 	/** Total held of the given ids (each id counted once). */
 	public static int countOwned(Iterable<Integer> ids, Map<Integer, Integer> owned)
 	{
@@ -189,11 +227,13 @@ public final class QuestPreflight
 		return status;
 	}
 
+	/** Sets the status reported to the Agent Server. */
 	static void setStatus(String value)
 	{
 		status = value;
 	}
 
+	/** True while the preflight is counting or buying. */
 	static boolean isInProgress()
 	{
 		return CHECKING.equals(status) || BUYING.equals(status);
@@ -205,6 +245,7 @@ public final class QuestPreflight
 		SKIP_NEXT.set(skip);
 	}
 
+	/** Reads and clears the skip flag set by {@link #skipNextStart(boolean)}. */
 	static boolean consumeSkip()
 	{
 		return SKIP_NEXT.getAndSet(false);

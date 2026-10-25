@@ -60,16 +60,19 @@ public final class QuestCombatDetector
 	{
 	}
 
+	/** True when the step text asks the player to kill something. */
 	public static boolean isKillText(List<String> text)
 	{
 		return net.runelite.client.plugins.microbot.questhelper.KillStepRule.isKillText(text);
 	}
 
+	/** True for an NPC step whose text asks the player to kill something. */
 	public static boolean isKillStep(QuestStep step)
 	{
 		return step instanceof NpcStep && isKillText(step.getText());
 	}
 
+	/** True when the quest has any fight, from its combat requirements or its kill steps. */
 	public static boolean hasFights(QuestHelper quest)
 	{
 		List<String> requirements = quest.getCombatRequirements();
@@ -289,6 +292,7 @@ public final class QuestCombatDetector
 		return null;
 	}
 
+	/** The first level number found in the text, or 0 when none. */
 	static int parseLevel(List<String> text)
 	{
 		if (text != null)
