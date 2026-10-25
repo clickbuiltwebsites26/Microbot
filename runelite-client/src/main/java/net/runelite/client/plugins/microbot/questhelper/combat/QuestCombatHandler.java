@@ -1171,10 +1171,21 @@ public class QuestCombatHandler
 		}
 		if (!fights)
 		{
-			// food and combat potions are skipped, but the user's custom items are still carried (reserved slots respected)
+			// no fights: no antifire or prayer, but custom items and the optional food/potions are still carried
+			// (reserved slots and quest items come first, so these only use what is left)
 			for (QuestCombatLoadout.InventoryItem item : current.getInventoryItems())
 			{
 				withdrawCustom(item, reserved);
+			}
+			if (current.wantsPotions())
+			{
+				int held = potionCount(current);
+				withdrawPotion(current.getPotion().getItemName(), carry(current.getPotionQty(), held, reserved) - held);
+			}
+			if (current.wantsFood())
+			{
+				int held = foodCount(current);
+				withdraw(current.getFood(), true, carry(current.getFoodQty(), held, reserved) - held);
 			}
 			Rs2Bank.closeBank();
 			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
@@ -1633,7 +1644,8 @@ public class QuestCombatHandler
 		Predicate<Rs2ItemModel> deposit = item ->
 		{
 			boolean protectedItem = keep.contains(item.getId()) || (wantsRunPotion && isRunPotion(item))
-				|| (lowHp && item.isFood()) || (current != null && isCustomItem(current, item));
+				|| (lowHp && item.isFood()) || (current != null && isCustomItem(current, item))
+				|| (current != null && !fights && isFoodOrPotion(current, item));
 			return shouldDeposit(protectedItem, current != null && isSupply(current, item), fights);
 		};
 		Microbot.status = "Quest helper: banking items the quest no longer needs";
@@ -1677,6 +1689,18 @@ public class QuestCombatHandler
 			}
 		}
 		return false;
+	}
+
+	/** The setup's optional food or combat potion; kept (not deposited) even when no fights remain. */
+	private static boolean isFoodOrPotion(QuestCombatLoadout current, Rs2ItemModel item)
+	{
+		String name = item.getName();
+		if (name == null || item.isNoted())
+		{
+			return false;
+		}
+		return (current.wantsFood() && name.equalsIgnoreCase(current.getFood()))
+			|| (current.wantsPotions() && baseName(item).equalsIgnoreCase(current.getPotion().getItemName()));
 	}
 
 	/** Setup food, potions and custom items: what a fight needs and the rest of the quest does not. */

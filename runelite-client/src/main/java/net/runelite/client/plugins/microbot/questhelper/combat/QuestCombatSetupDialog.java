@@ -124,6 +124,36 @@ public final class QuestCombatSetupDialog
 		}
 	}
 
+	/** Shown on the Supplies and Gear tabs when the quest has no fights. */
+	static final String NO_FIGHTS_NOTE =
+		"No fights detected in this quest — combat options are not needed. Food and potions are optional.";
+
+	/** Prayer, gear, style and per-fight rows only matter when the quest has fights. Food and potions are always editable. */
+	static boolean combatControlsEnabled(boolean hasFights)
+	{
+		return hasFights;
+	}
+
+	/** The skip button label; it stays enabled either way. */
+	static String skipLabel(boolean hasFights)
+	{
+		return hasFights ? "Skip combat setup" : "Skip setup";
+	}
+
+	/** Inventory slots the entered food and potions take. */
+	static int foodAndPotionSlots(String food, int foodQty, boolean hasPotion, int potionQty)
+	{
+		return (food != null && !food.trim().isEmpty() ? Math.max(0, foodQty) : 0)
+			+ (hasPotion ? Math.max(0, potionQty) : 0);
+	}
+
+	private static JLabel noFightsNote()
+	{
+		JLabel note = new JLabel("<html><body style='width:640px'>" + NO_FIGHTS_NOTE + "</body></html>");
+		note.setForeground(new Color(190, 120, 20));
+		return note;
+	}
+
 	private static volatile JDialog openDialog;
 	/** Bumped by {@link #dismissOpen()}; a dialog request made under an older epoch is stale. */
 	private static final java.util.concurrent.atomic.AtomicInteger EPOCH = new java.util.concurrent.atomic.AtomicInteger();
@@ -276,9 +306,9 @@ public final class QuestCombatSetupDialog
 			}
 
 			JButton save = new JButton("Save & start");
-			JButton skip = new JButton("Skip combat setup");
+			JButton skip = new JButton(skipLabel(ctx.hasFights));
 			JButton cancel = new JButton("Cancel");
-			skip.setEnabled(ctx.hasFights);
+			skip.setEnabled(true);
 			save.addActionListener(e -> finish(Outcome.SAVE));
 			skip.addActionListener(e -> finish(Outcome.SKIP));
 			cancel.addActionListener(e ->
@@ -305,7 +335,14 @@ public final class QuestCombatSetupDialog
 
 			if (!ctx.hasFights)
 			{
-				combatOnly.forEach(component -> component.setEnabled(false));
+				combatOnly.forEach(component ->
+				{
+					component.setEnabled(combatControlsEnabled(ctx.hasFights));
+					if (component instanceof javax.swing.JComponent)
+					{
+						((javax.swing.JComponent) component).setToolTipText(NO_FIGHTS_NOTE);
+					}
+				});
 			}
 			refresh();
 
@@ -361,7 +398,7 @@ public final class QuestCombatSetupDialog
 			}
 			else
 			{
-				row = addRow(panel, row, "Combat", new JLabel("This quest has no fights, so combat settings are off."));
+				row = addSpan(panel, row, noFightsNote());
 			}
 			mainGear = new GearPicker(false);
 			row = addRow(panel, row, "Gear", mainGear.combo);
@@ -380,8 +417,12 @@ public final class QuestCombatSetupDialog
 		{
 			JPanel panel = new JPanel(new GridBagLayout());
 			int row = 0;
+			if (!ctx.hasFights)
+			{
+				row = addSpan(panel, row, noFightsNote());
+			}
 			food = new JTextField("Lobster", 14);
-			foodQty = spinner(10, 0, 27, 1);
+			foodQty = spinner(ctx.hasFights ? 10 : 0, 0, 27, 1);
 			eatAt = spinner(50, 1, 99, 5);
 			potion = new JComboBox<>(QuestCombatLoadout.Potion.values());
 			potionQty = spinner(2, 0, 27, 1);
@@ -400,7 +441,7 @@ public final class QuestCombatSetupDialog
 			row = addRow(panel, row, "Potion quantity", potionQty);
 			row = addRow(panel, row, "Prayer", prayer);
 			row = addRow(panel, row, "Drink at prayer points", drinkAt);
-			combatOnly.addAll(java.util.Arrays.asList(food, foodQty, eatAt, potion, potionQty, prayer, drinkAt));
+			combatOnly.addAll(java.util.Arrays.asList(prayer, drinkAt));
 			row = addRow(panel, row, "Run energy potions", staminaType);
 			row = addRow(panel, row, "Potion quantity (stamina/energy)", staminaQty);
 			row = addRow(panel, row, "Drink at run energy %", staminaAt);
@@ -593,11 +634,8 @@ public final class QuestCombatSetupDialog
 				+ (mainDetected == null ? "set by the Inventory Setup" : mainDetected.toString().replace(" (from worn weapon)", "")));
 
 			int supplies = 0;
-			if (ctx.hasFights)
-			{
-				supplies += !food.getText().trim().isEmpty() ? (Integer) foodQty.getValue() : 0;
-				supplies += potion.getSelectedItem() != QuestCombatLoadout.Potion.NONE ? (Integer) potionQty.getValue() : 0;
-			}
+			supplies += foodAndPotionSlots(food.getText(), (Integer) foodQty.getValue(),
+				potion.getSelectedItem() != QuestCombatLoadout.Potion.NONE, (Integer) potionQty.getValue());
 			if (staminaType.getSelectedItem() != QuestCombatLoadout.StaminaType.NONE)
 			{
 				supplies += (Integer) staminaQty.getValue();
@@ -740,11 +778,6 @@ public final class QuestCombatSetupDialog
 				GearSpec gear = mainGear.spec();
 				loadout.setGearSetup(gear.getSetup());
 				loadout.setGearItems(gear.getItems());
-				loadout.setFood(food.getText());
-				loadout.setFoodQty((Integer) foodQty.getValue());
-				loadout.setEatAtPercent((Integer) eatAt.getValue());
-				loadout.setPotion((QuestCombatLoadout.Potion) potion.getSelectedItem());
-				loadout.setPotionQty((Integer) potionQty.getValue());
 				loadout.setPrayer((QuestCombatLoadout.Prayer) prayer.getSelectedItem());
 				loadout.setDrinkAtPrayer((Integer) drinkAt.getValue());
 				loadout.setStyle((Style) style.getSelectedItem());
@@ -758,12 +791,12 @@ public final class QuestCombatSetupDialog
 					loadout.getFights().put(row.fight.key, setup);
 				}
 			}
-			else
-			{
-				loadout.setSkip(true);
-				loadout.setFoodQty(0);
-				loadout.setPotionQty(0);
-			}
+			// food and potions are optional supplies for every quest; without fights only they apply (skip stays off)
+			loadout.setFood(food.getText());
+			loadout.setFoodQty((Integer) foodQty.getValue());
+			loadout.setEatAtPercent((Integer) eatAt.getValue());
+			loadout.setPotion((QuestCombatLoadout.Potion) potion.getSelectedItem());
+			loadout.setPotionQty((Integer) potionQty.getValue());
 			QuestCombatLoadout.StaminaType type = (QuestCombatLoadout.StaminaType) staminaType.getSelectedItem();
 			loadout.setUseStamina(type != QuestCombatLoadout.StaminaType.NONE);
 			if (type != QuestCombatLoadout.StaminaType.NONE)
@@ -934,6 +967,20 @@ public final class QuestCombatSetupDialog
 		c.anchor = GridBagConstraints.NORTHWEST;
 		c.insets = new Insets(3, 3, 3, 6);
 		panel.add(component, c);
+	}
+
+	private static int addSpan(JPanel panel, int row, Component component)
+	{
+		GridBagConstraints c = new GridBagConstraints();
+		c.gridx = 0;
+		c.gridy = row;
+		c.gridwidth = 2;
+		c.fill = GridBagConstraints.HORIZONTAL;
+		c.weightx = 1;
+		c.anchor = GridBagConstraints.WEST;
+		c.insets = new Insets(6, 6, 6, 6);
+		panel.add(component, c);
+		return row + 1;
 	}
 
 	private static int addRow(JPanel panel, int row, String label, Component field)
