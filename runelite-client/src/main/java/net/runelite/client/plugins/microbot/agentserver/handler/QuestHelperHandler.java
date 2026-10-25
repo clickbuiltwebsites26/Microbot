@@ -150,7 +150,7 @@ public class QuestHelperHandler extends AgentHandler
 			return;
 		}
 
-		Microbot.getConfigManager().setRSProfileConfiguration(
+		Microbot.getConfigManager().setConfiguration(
 			QuestHelperConfig.QUEST_HELPER_GROUP,
 			"TurnOn",
 			true);
@@ -184,6 +184,10 @@ public class QuestHelperHandler extends AgentHandler
 			.runOnClientThreadOptional(() ->
 			{
 				plugin.getQuestManager().shutDownQuest(true);
+				Microbot.getConfigManager().setConfiguration(
+					QuestHelperConfig.QUEST_HELPER_GROUP,
+					"TurnOn",
+					false);
 				return true;
 			})
 			.orElse(false);

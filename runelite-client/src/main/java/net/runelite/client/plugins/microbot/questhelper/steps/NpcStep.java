@@ -60,6 +60,7 @@ public class NpcStep extends DetailedQuestStep
 	@Inject
 	protected Client client;
 
+	@Getter
 	protected final int npcID;
 	protected final List<Integer> alternateNpcIDs = new ArrayList<>();
 
@@ -78,6 +79,7 @@ public class NpcStep extends DetailedQuestStep
 	protected List<Integer> mustBeFocusedOnNpcs = new ArrayList<>();
 
 	@Setter
+	@Getter
 	protected String npcName;
 
 	public NpcStep(QuestHelper questHelper, int npcID, String text, Requirement... requirements)

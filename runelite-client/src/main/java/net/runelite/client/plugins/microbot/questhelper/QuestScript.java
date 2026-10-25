@@ -7,6 +7,7 @@ import net.runelite.api.events.ChatMessage;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.TileObjectType;
 import net.runelite.client.plugins.microbot.questhelper.logic.PiratesTreasure;
@@ -140,16 +141,15 @@ public class QuestScript extends Script {
                     var dialogOptions = Rs2Widget.getWidget(ComponentID.DIALOG_OPTION_OPTIONS);
                     var dialogChoices = dialogOptions.getDynamicChildren();
 
-                    for (var choice : questStep.getChoices().getChoices()) {
-                        if (choice.getExpectedPreviousLine() != null)
-                            continue; // TODO
+                    if (dialogChoices != null) {
+                        for (var choice : questStep.getChoices().getChoices()) {
+                            if (choice.getExpectedPreviousLine() != null)
+                                continue; // TODO
 
-                        if (choice.getExcludedStrings() != null && choice.getExcludedStrings().stream().anyMatch(Rs2Widget::hasWidget))
-                            continue;
+                            if (choice.getExcludedStrings() != null && choice.getExcludedStrings().stream().anyMatch(Rs2Widget::hasWidget))
+                                continue;
 
-                        for (var dialogChoice : dialogChoices) {
-                            if (dialogChoice.getText().endsWith(choice.getChoice())) {
-                                Rs2Keyboard.keyPress(dialogChoice.getOnKeyListener()[7].toString().charAt(0));
+                            if (selectDialogChoice(dialogChoices, choice.getChoice())) {
                                 return;
                             }
                         }
@@ -233,7 +233,10 @@ public class QuestScript extends Script {
                         dialogueStartedStep = questStep;
                     }
 
-                    if (Rs2Dialogue.isInDialogue() && dialogueStartedStep == questStep) {
+                    // Never space through a menu: space only advances "Click here to continue" and would
+                    // leave an options widget (e.g. the quest-start choice) unanswered forever.
+                    if (Rs2Dialogue.isInDialogue() && dialogueStartedStep == questStep
+                            && !Rs2Widget.isWidgetVisible(ComponentID.DIALOG_OPTION_OPTIONS)) {
                         Rs2Walker.clearWalkingRoute("quest-helper:dialogue-space-step");
                         Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
                         return;
@@ -1537,6 +1540,12 @@ public class QuestScript extends Script {
                     System.currentTimeMillis());
         }
 
+        // The step tracked nothing (wrong/cutscene-only id, NPC not yet scanned): look the NPC up by name
+        // near the step's point instead of silently standing there.
+        if (npc == null && npcs.isEmpty()) {
+            npc = findNpcByStepName(step);
+        }
+
         // canReach() pathfinds through closed doors (the walker opens them en route), so canReach==true
         // doesn't mean a direct click will succeed. Require line-of-sight too, or we walk instead.
         if (npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation())
@@ -1609,6 +1618,102 @@ public class QuestScript extends Script {
         return true;
     }
 
+
+    private static final int FALLBACK_NPC_RADIUS = 10;
+    private static final long NO_NPC_LOG_INTERVAL_MS = 30_000;
+    private final Map<Integer, String> npcNameById = new HashMap<>();
+    private QuestStep lastNoNpcLoggedStep = null;
+    private long lastNoNpcLoggedAt = 0;
+
+    /** Name of the NPC an {@link NpcStep} targets: the explicit step name, else the primary id's composition name. */
+    private String resolveStepNpcName(NpcStep step) {
+        if (step.getNpcName() != null && !step.getNpcName().isEmpty()) {
+            return step.getNpcName();
+        }
+        int id = step.getNpcID();
+        String cached = npcNameById.get(id);
+        if (cached != null) {
+            return cached;
+        }
+        String name = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            NPCComposition composition = Microbot.getClient().getNpcDefinition(id);
+            return composition == null ? null : composition.getName();
+        }).orElse(null);
+        if (name != null && !name.isEmpty() && !"null".equalsIgnoreCase(name)) {
+            npcNameById.put(id, name);
+            return name;
+        }
+        return null;
+    }
+
+    /** Finds the step's NPC by name within FALLBACK_NPC_RADIUS tiles of its defined point; logs (rate-limited) when absent. */
+    private Rs2NpcModel findNpcByStepName(NpcStep step) {
+        if (step.getDefinedPoint() == null || step.getDefinedPoint().getWorldPoint() == null) {
+            return null;
+        }
+        WorldPoint point = step.getDefinedPoint().getWorldPoint();
+        String name = resolveStepNpcName(step);
+        Rs2NpcModel found = null;
+        if (name != null) {
+            found = Microbot.getRs2NpcCache().query()
+                    .withName(name)
+                    .nearestOnClientThread(point, FALLBACK_NPC_RADIUS);
+        }
+        if (found == null) {
+            long now = System.currentTimeMillis();
+            if (lastNoNpcLoggedStep != step || now - lastNoNpcLoggedAt > NO_NPC_LOG_INTERVAL_MS) {
+                lastNoNpcLoggedStep = step;
+                lastNoNpcLoggedAt = now;
+                Microbot.log("Quest helper: no NPC found for step " + String.join(" ", step.getText()), Level.WARN);
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Picks the dialogue option matching {@code wanted}: exact-suffix match first, then contains-ignore-case,
+     * both after stripping colour tags and any leading "[n]" marker. Presses the option's own key binding and
+     * falls back to Rs2Dialogue / a widget click when that binding cannot be read.
+     *
+     * @return true once an input was sent for a matching option
+     */
+    private boolean selectDialogChoice(Widget[] dialogChoices, String wanted) {
+        if (wanted == null || wanted.isEmpty()) {
+            return false;
+        }
+        String target = normalizeDialogText(wanted);
+        Widget match = null;
+        for (Widget dialogChoice : dialogChoices) {
+            String text = dialogChoice.getText();
+            if (text == null) continue;
+            if (text.endsWith(wanted) || normalizeDialogText(text).equalsIgnoreCase(target)) {
+                match = dialogChoice;
+                break;
+            }
+        }
+        if (match == null) {
+            for (Widget dialogChoice : dialogChoices) {
+                String text = dialogChoice.getText();
+                if (text != null && normalizeDialogText(text).toLowerCase().contains(target.toLowerCase())) {
+                    match = dialogChoice;
+                    break;
+                }
+            }
+        }
+        if (match == null) {
+            return false;
+        }
+        Object[] keyListener = match.getOnKeyListener();
+        if (keyListener != null && keyListener.length > 7 && keyListener[7] != null && !keyListener[7].toString().isEmpty()) {
+            Rs2Keyboard.keyPress(keyListener[7].toString().charAt(0));
+            return true;
+        }
+        return Rs2Dialogue.clickOption(target) || Rs2Widget.clickWidget(match);
+    }
+
+    private static String normalizeDialogText(String text) {
+        return Text.removeTags(text).replaceFirst("^\\[\\d+\\]\\s*", "").trim();
+    }
 
     /** Some quest NPCs (e.g. escorted guards) have no menu actions at all, so there is nothing to click. */
     private boolean hasNoActions(Rs2NpcModel npc) {
