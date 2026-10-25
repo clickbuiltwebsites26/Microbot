@@ -37,6 +37,8 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
+import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
+import net.runelite.client.plugins.microbot.questhelper.helpers.quests.priestinperil.MonumentKeyStep;
 import net.runelite.client.plugins.microbot.api.tileobject.Rs2TileObjectQueryable;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.api.tileitem.Rs2TileItemQueryable;
@@ -45,6 +47,7 @@ import net.runelite.client.plugins.microbot.api.tileitem.models.Rs2TileItemModel
 import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -52,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -71,6 +75,14 @@ public class QuestScript extends Script {
 
     public static List<ItemRequirement> itemsMissing = new ArrayList<>();
     public static List<ItemRequirement> grandExchangeItems = new ArrayList<>();
+
+	private static final int INVENTORY_SLOTS = 28;
+	/** Unstackable quest-level requirements above this are only gathered by the step that needs them. */
+	private static final int QUEST_LEVEL_PREGATHER_MAX = 20;
+	private final Map<Integer, Boolean> stackableCache = new HashMap<>();
+	private List<ItemRequirement> missingBatch = new ArrayList<>();
+	private List<Requirement> currentRequirements = new ArrayList<>();
+	private final Set<Long> monumentsTried = new HashSet<>();
 
     private static final AtomicBoolean valeTotemsPromptInFlight = new AtomicBoolean(false);
     private static volatile QuestHelperConfig.ValeTotemsWoodType valeTotemsSessionWoodType;
@@ -318,8 +330,20 @@ public class QuestScript extends Script {
 	private boolean handleMissingItemRequirements(DetailedQuestStep questStep) {
 		List<ItemRequirement> missing = new ArrayList<>();
 		List<ItemRequirement> needsUnnoting = new ArrayList<>();
+		List<Requirement> allRequirements = collectAllItemRequirements(questStep);
+		currentRequirements = allRequirements;
 
-		for (Requirement requirement : collectAllItemRequirements(questStep)) {
+		// Slots for the other still-missing items are reserved before capping an unstackable one to what fits
+		missingBatch = new ArrayList<>();
+		for (Requirement requirement : allRequirements) {
+			if (requirement instanceof ItemRequirement
+					&& !((ItemRequirement) requirement).mustBeEquipped()
+					&& !hasItemRequirementOnPlayer((ItemRequirement) requirement)) {
+				missingBatch.add((ItemRequirement) requirement);
+			}
+		}
+
+		for (Requirement requirement : allRequirements) {
 			if (!(requirement instanceof ItemRequirement)) {
 				continue;
 			}
@@ -333,7 +357,7 @@ public class QuestScript extends Script {
 				return true;
 			}
 
-			if (hasItemRequirementOnPlayer(itemRequirement)) {
+			if (hasItemRequirementOnPlayer(itemRequirement) || isFilledToCarryCapacity(itemRequirement)) {
 				continue;
 			}
 
@@ -353,6 +377,17 @@ public class QuestScript extends Script {
 			return false;
 		}
 
+		List<ItemRequirement> nonTradableInBank = new ArrayList<>();
+		for (ItemRequirement ir : missing) {
+			if (!isItemRequirementTradable(ir) && isHeldInBank(ir)) {
+				nonTradableInBank.add(ir);
+			}
+		}
+
+		if (!nonTradableInBank.isEmpty()) {
+			return withdrawNonTradablesFromBank(nonTradableInBank);
+		}
+
 		ItemRequirement nonTradable = missing.stream()
 				.filter(ir -> !isItemRequirementTradable(ir))
 				.findFirst()
@@ -363,6 +398,81 @@ public class QuestScript extends Script {
 		}
 
 		return acquireMissingTradableItems(missing);
+	}
+
+	/** Only true once the bank has been opened this session, so an unknown bank falls back to the old behaviour. */
+	private boolean isHeldInBank(ItemRequirement itemRequirement) {
+		return itemRequirement.checkTotalMatchesInContainers(QuestContainerManager.getBankData()) > 0;
+	}
+
+	private boolean withdrawNonTradablesFromBank(List<ItemRequirement> inBank) {
+		Microbot.status = "Quest helper: fetching " + inBank.get(0).getName() + " from the bank";
+
+		if (!Rs2Bank.isOpen()) {
+			Rs2Bank.walkToBankAndUseBank();
+			sleepUntil(Rs2Bank::isOpen, 15_000);
+			if (!Rs2Bank.isOpen()) {
+				return true;
+			}
+		}
+
+		if (makeRoomForCarryLimited(inBank)) {
+			return true;
+		}
+
+		for (ItemRequirement ir : inBank) {
+			int idToWithdraw = -1;
+			int bestCount = 0;
+			for (Integer id : ir.getAllIds()) {
+				if (id == null || id <= 0) {
+					continue;
+				}
+				int count = Rs2Bank.count(id);
+				if (count > bestCount) {
+					bestCount = count;
+					idToWithdraw = id;
+				}
+			}
+
+			int qty = Math.min(remainingQuantityNeeded(ir), bestCount);
+			if (idToWithdraw == -1 || qty <= 0) {
+				continue;
+			}
+
+			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
+			Rs2Bank.withdrawX(idToWithdraw, qty);
+			if (!sleepUntil(() -> hasItemRequirementOnPlayer(ir) || isFilledToCarryCapacity(ir), 2_000)) {
+				Microbot.log("Quest helper: bank withdrawal for " + ir.getName() + " did not land in time", Level.WARN);
+			}
+		}
+
+		return true;
+	}
+
+	/** With the bank open, clears unrelated items when a carry-limited item has no room at all. Returns true if it deposited. */
+	private boolean makeRoomForCarryLimited(List<ItemRequirement> candidates) {
+		boolean noRoom = candidates.stream().anyMatch(ir -> isCarryLimited(ir)
+				&& remainingQuantityNeeded(ir) <= 0
+				&& inventoryQuantity(ir) == 0);
+		if (!noRoom) {
+			return false;
+		}
+
+		Set<Integer> keep = new HashSet<>();
+		keep.add(ItemID.COINS_995);
+		for (Requirement requirement : currentRequirements) {
+			if (requirement instanceof ItemRequirement) {
+				for (Integer id : ((ItemRequirement) requirement).getAllIds()) {
+					if (id != null) {
+						keep.add(id);
+					}
+				}
+			}
+		}
+
+		Microbot.status = "Quest helper: banking unrelated items to make room";
+		Predicate<Rs2ItemModel> isKept = item -> keep.contains(item.getId());
+		return Rs2Bank.depositAllExcept(isKept);
 	}
 
 	private boolean acquireMissingTradableItems(List<ItemRequirement> missing) {
@@ -409,6 +519,10 @@ public class QuestScript extends Script {
 			}
 		}
 
+		if (makeRoomForCarryLimited(actionable)) {
+			return true;
+		}
+
 		List<ItemRequirement> fromBank = new ArrayList<>();
 		Map<ItemRequirement, Integer> bankWithdrawId = new HashMap<>();
 		List<ItemRequirement> toBuy = new ArrayList<>();
@@ -432,7 +546,8 @@ public class QuestScript extends Script {
 				}
 			}
 
-			if (bestBankCount >= needed) {
+			// An item that cannot all be carried is withdrawn in whatever amount the bank has; the rest is bought
+			if (bestBankCount >= needed || (bestBankCount > 0 && isCarryLimited(ir))) {
 				fromBank.add(ir);
 				bankWithdrawId.put(ir, bestBankId);
 			} else {
@@ -461,7 +576,8 @@ public class QuestScript extends Script {
 			}
 
 			int offerPrice = Math.max(1, (int) Math.ceil(basePrice * 1.2));
-			int qty = remainingQuantityNeeded(ir);
+			// Buying the full amount is fine, it lands in the bank and is withdrawn a trip at a time
+			int qty = uncappedQuantityNeeded(ir);
 			buyPrimaryIds.put(ir, primaryId);
 			offerPrices.put(ir, offerPrice);
 			buyQuantities.put(ir, qty);
@@ -525,13 +641,13 @@ public class QuestScript extends Script {
 			if (idToWithdraw == null || idToWithdraw <= 0) {
 				continue;
 			}
-			int qty = remainingQuantityNeeded(ir);
+			int qty = Math.min(remainingQuantityNeeded(ir), Rs2Bank.count(idToWithdraw));
 			if (qty <= 0) {
 				continue;
 			}
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
 			Rs2Bank.withdrawX(idToWithdraw, qty);
-			if (!sleepUntil(() -> hasItemRequirementOnPlayer(ir), 2_000)) {
+			if (!sleepUntil(() -> hasItemRequirementOnPlayer(ir) || isFilledToCarryCapacity(ir), 2_000)) {
 				Microbot.log("Quest helper: bank withdrawal for " + ir.getName() + " did not land in time",
 						Level.WARN);
 			}
@@ -768,9 +884,10 @@ public class QuestScript extends Script {
 				continue;
 			}
 
+			qty = Math.min(qty, Rs2Bank.count(idToWithdraw));
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
 			Rs2Bank.withdrawX(idToWithdraw, qty);
-			if (!sleepUntil(() -> hasItemRequirementOnPlayer(ir), 2_000)) {
+			if (!sleepUntil(() -> hasItemRequirementOnPlayer(ir) || isFilledToCarryCapacity(ir), 2_000)) {
 				Microbot.log("Quest helper: purchased item " + ir.getName() + " did not land in inventory after bank withdrawal",
 						Level.WARN);
 			}
@@ -831,7 +948,102 @@ public class QuestScript extends Script {
 		int onPlayer = itemRequirement.checkTotalMatchesInContainers(
 				QuestContainerManager.getEquippedData(),
 				QuestContainerManager.getInventoryData());
+		return Math.max(0, targetQuantity(itemRequirement) - onPlayer);
+	}
+
+	private int uncappedQuantityNeeded(ItemRequirement itemRequirement) {
+		int onPlayer = itemRequirement.checkTotalMatchesInContainers(
+				QuestContainerManager.getEquippedData(),
+				QuestContainerManager.getInventoryData());
 		return Math.max(0, itemRequirement.getQuantity() - onPlayer);
+	}
+
+	/**
+	 * What can be carried of an unstackable item that cannot all fit, never more than the requirement itself.
+	 *
+	 * @param wanted        quantity the requirement asks for
+	 * @param held          amount of it already in the inventory
+	 * @param freeSlots     empty inventory slots
+	 * @param reservedSlots free slots kept for the other items still missing
+	 */
+	static int carryCap(int wanted, int held, int freeSlots, int reservedSlots) {
+		return Math.min(wanted, held + Math.max(0, freeSlots - reservedSlots));
+	}
+
+	/** Quantity of the requirement to aim for, lowered when an unstackable item cannot physically be carried. */
+	private int targetQuantity(ItemRequirement itemRequirement) {
+		int wanted = itemRequirement.getQuantity();
+		if (wanted <= 1 || itemRequirement.mustBeEquipped() || isStackable(itemRequirement)) {
+			return wanted;
+		}
+
+		int reserved = 0;
+		for (ItemRequirement other : missingBatch) {
+			if (other == itemRequirement || other.getQuantity() <= 0) {
+				continue;
+			}
+			// Only items that fit on their own claim space, otherwise they would starve the rest
+			int otherNeeded = uncappedQuantityNeeded(other);
+			if (otherNeeded <= INVENTORY_SLOTS) {
+				reserved += isStackable(other) ? 1 : otherNeeded;
+			}
+		}
+
+		return carryCap(wanted, inventoryQuantity(itemRequirement), Rs2Inventory.emptySlotCount(), reserved);
+	}
+
+	private boolean isCarryLimited(ItemRequirement itemRequirement) {
+		return targetQuantity(itemRequirement) < itemRequirement.getQuantity();
+	}
+
+	/** True when holding all that fits of an item that cannot be carried in full, so the step can proceed. */
+	private boolean isFilledToCarryCapacity(ItemRequirement itemRequirement) {
+		return isCarryLimited(itemRequirement)
+				&& inventoryQuantity(itemRequirement) > 0
+				&& remainingQuantityNeeded(itemRequirement) <= 0;
+	}
+
+	private int inventoryQuantity(ItemRequirement itemRequirement) {
+		int total = 0;
+		for (Integer id : itemRequirement.getAllIds()) {
+			if (id != null && id > 0) {
+				total += Rs2Inventory.itemQuantity(id);
+			}
+		}
+		return total;
+	}
+
+	private boolean isStackable(ItemRequirement itemRequirement) {
+		for (Integer id : itemRequirement.getAllIds()) {
+			if (id == null || id <= 0) {
+				continue;
+			}
+			Boolean cached = stackableCache.get(id);
+			if (cached == null) {
+				cached = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+					ItemComposition def = Microbot.getClient().getItemDefinition(id);
+					return def != null && def.isStackable();
+				}).orElse(null);
+				if (cached == null) {
+					return true;
+				}
+				stackableCache.put(id, cached);
+			}
+			return cached;
+		}
+		return true;
+	}
+
+	/** A plain "pick up X" step requires X only as the thing to pick up, so it must not be banked or bought. */
+	private boolean isPickedUpByStep(DetailedQuestStep questStep, ItemRequirement itemRequirement) {
+		if (questStep.getClass() != DetailedQuestStep.class) {
+			return false;
+		}
+		int icon = questStep.getIconItemID();
+		if (icon != -1 && itemRequirement.getAllIds().contains(icon)) {
+			return true;
+		}
+		return questStep.getText().stream().anyMatch(x -> x != null && x.toLowerCase().startsWith("pick up"));
 	}
 
 	private List<Requirement> collectAllItemRequirements(DetailedQuestStep questStep) {
@@ -843,6 +1055,7 @@ public class QuestScript extends Script {
 				seenIds.add(((ItemRequirement) req).getId());
 			}
 		}
+		combined.removeIf(req -> req instanceof ItemRequirement && isPickedUpByStep(questStep, (ItemRequirement) req));
 
 		QuestHelper selectedQuest = getQuestHelperPlugin().getSelectedQuest();
 		if (selectedQuest != null) {
@@ -858,6 +1071,10 @@ public class QuestScript extends Script {
 						continue;
 					}
 					if (everHeldItemRequirementIds.contains(ir.getId())) {
+						continue;
+					}
+					// Bulk unstackables (e.g. 50 essence) would clog the inventory from step one; the step that needs them asks for them
+					if (ir.getQuantity() > QUEST_LEVEL_PREGATHER_MAX && !ir.mustBeEquipped() && !isStackable(ir)) {
 						continue;
 					}
 					combined.add(ir);
@@ -1357,6 +1574,13 @@ public class QuestScript extends Script {
                 }
             }
 
+            if (step.getIconItemID() == -1 && hasNoActions(npc)) {
+                if (npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) > 3) {
+                    Rs2Walker.walkTo(npc.getWorldLocation(), 2);
+                }
+                return true;
+            }
+
             var itemId = step.getIconItemID();
             if (itemId != -1) {
                 Rs2Inventory.use(itemId);
@@ -1385,6 +1609,17 @@ public class QuestScript extends Script {
         return true;
     }
 
+
+    /** Some quest NPCs (e.g. escorted guards) have no menu actions at all, so there is nothing to click. */
+    private boolean hasNoActions(Rs2NpcModel npc) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            NPCComposition composition = Microbot.getClient().getNpcDefinition(npc.getId());
+            if (composition == null || composition.getActions() == null) {
+                return false;
+            }
+            return Arrays.stream(composition.getActions()).noneMatch(x -> x != null && !x.isEmpty());
+        }).orElse(false);
+    }
 
     public boolean applyObjectStep(ObjectStep step) {
         Rs2TileObjectModel object = step.getObjects().stream()
@@ -1626,6 +1861,7 @@ public class QuestScript extends Script {
 
     private boolean applyDetailedQuestStep(DetailedQuestStep conditionalStep) {
         if (conditionalStep instanceof NpcStep) return false;
+        if (conditionalStep instanceof MonumentKeyStep) return applyMonumentKeyStep((MonumentKeyStep) conditionalStep);
 
         WorldPoint definedPoint = conditionalStep.getDefinedPoint() == null ? null : conditionalStep.getDefinedPoint().getWorldPoint();
 
@@ -1674,6 +1910,35 @@ public class QuestScript extends Script {
 
 		return usingItems;
 	}
+
+    private boolean applyMonumentKeyStep(MonumentKeyStep step) {
+        WorldPoint centre = step.getDefinedPoint().getWorldPoint();
+        if (Rs2Player.getWorldLocation().distanceTo(centre) > 6) {
+            Rs2Walker.walkTo(centre, 3);
+            return false;
+        }
+
+        if (Rs2Inventory.contains(net.runelite.api.gameval.ItemID.PIPKEY_IRON)) {
+            monumentsTried.clear();
+            return true;
+        }
+
+        Rs2TileObjectModel monument = new Rs2TileObjectQueryable()
+                .withName("Monument")
+                .within(centre, 12)
+                .where(x -> !monumentsTried.contains(x.getHash()))
+                .nearestOnClientThread();
+        if (monument == null) {
+            monumentsTried.clear();
+            return false;
+        }
+
+        Rs2Inventory.use(net.runelite.api.gameval.ItemID.PIPKEY_GOLD);
+        monument.click("");
+        monumentsTried.add(monument.getHash());
+        sleepUntil(() -> Rs2Inventory.contains(net.runelite.api.gameval.ItemID.PIPKEY_IRON) || Rs2Dialogue.isInDialogue(), 5_000);
+        return true;
+    }
 
     private boolean applyWidgetStep(WidgetStep step) {
         var widgetDetails = step.getWidgetDetails().get(0);
