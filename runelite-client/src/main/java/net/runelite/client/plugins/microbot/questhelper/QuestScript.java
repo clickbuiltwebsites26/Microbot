@@ -1657,7 +1657,11 @@ public class QuestScript extends Script {
     }
 
     public boolean applyNpcStep(NpcStep step) {
-        if (isKillNpcStep(step) && lootKillDrop(step)) {
+        boolean killStep = isKillNpcStep(step);
+        if (killStep && lootKillDrop(step)) {
+            return true;
+        }
+        if (killStep && fightOffAggressor(step)) {
             return true;
         }
 
@@ -1665,6 +1669,20 @@ public class QuestScript extends Script {
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());
         Rs2NpcModel npc = npcs.stream().findFirst().orElse(null);
+        if (killStep) {
+            Rs2NpcModel preferred = pickKillTarget(step, npcs);
+            if (preferred != null) {
+                npc = preferred;
+            }
+            if (npc != null && isOutsideKillArea(step, npc)) {
+                // Do not follow the target through doorways: go back to the step's point and wait for it.
+                WorldPoint home = step.getDefinedPoint().getWorldPoint();
+                if (home.distanceTo(Rs2Player.getWorldLocation()) > 3) {
+                    Rs2Walker.walkTo(home, 2);
+                }
+                return true;
+            }
+        }
 
         if (step.isAllowMultipleHighlights()) {
             npc = multiNpcTarget.select(step, npcs, Rs2NpcModel::getIndex, npcsHandled,
@@ -1750,6 +1768,91 @@ public class QuestScript extends Script {
         return true;
     }
 
+
+    private static final int KILL_AREA_RADIUS = 12;
+    private static final Pattern STEP_LEVEL = Pattern.compile("level\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
+
+    private static Set<Integer> stepNpcIds(NpcStep step) {
+        Set<Integer> ids = new HashSet<>();
+        ids.add(step.getNpcID());
+        ids.addAll(step.getAlternateNpcIDs());
+        return ids;
+    }
+
+    private static boolean isOutsideKillArea(NpcStep step, Rs2NpcModel npc) {
+        if (step.getDefinedPoint() == null || step.getDefinedPoint().getWorldPoint() == null) {
+            return false;
+        }
+        WorldPoint home = step.getDefinedPoint().getWorldPoint();
+        WorldPoint at = npc.getWorldLocation();
+        return at != null && home.getPlane() == at.getPlane() && home.distanceTo(at) > KILL_AREA_RADIUS;
+    }
+
+    /**
+     * While a non-target NPC is attacking the player (e.g. the weaker aggressive monks in Priest in Peril), let that
+     * fight finish instead of clicking the target, which just spams and drags the player out of the step's area.
+     * Returns true when this tick was spent on that fight.
+     */
+    private boolean fightOffAggressor(NpcStep step) {
+        if (Rs2Combat.inCombat()) {
+            return true;
+        }
+        Set<Integer> ids = stepNpcIds(step);
+        Rs2NpcModel attacker = Microbot.getRs2NpcCache().query()
+                .where(n -> n.isInteractingWithPlayer() && n.getHealthRatio() != 0 && !ids.contains(n.getId()))
+                .within(6)
+                .nearestOnClientThread();
+        if (attacker == null) {
+            return false;
+        }
+        attacker.click("Attack");
+        return true;
+    }
+
+    /**
+     * Picks the live NPC for a kill step among the step's tracked NPCs plus same-id NPCs near its point,
+     * preferring the combat level quoted in the step text "(level N)", else the highest level.
+     */
+    private Rs2NpcModel pickKillTarget(NpcStep step, List<Rs2NpcModel> tracked) {
+        Set<Integer> ids = stepNpcIds(step);
+        Map<Integer, Rs2NpcModel> candidates = new java.util.LinkedHashMap<>();
+        for (Rs2NpcModel n : tracked) {
+            if (n.getHealthRatio() != 0) {
+                candidates.put(n.getIndex(), n);
+            }
+        }
+        if (step.getDefinedPoint() != null && step.getDefinedPoint().getWorldPoint() != null) {
+            int[] idArray = ids.stream().mapToInt(Integer::intValue).toArray();
+            for (Rs2NpcModel n : Microbot.getRs2NpcCache().query()
+                    .withIds(idArray)
+                    .within(step.getDefinedPoint().getWorldPoint(), KILL_AREA_RADIUS)
+                    .toListOnClientThread()) {
+                if (n.getHealthRatio() != 0) {
+                    candidates.putIfAbsent(n.getIndex(), n);
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        int wanted = -1;
+        for (String line : step.getText()) {
+            if (line == null) continue;
+            java.util.regex.Matcher m = STEP_LEVEL.matcher(line);
+            if (m.find()) {
+                wanted = Integer.parseInt(m.group(1));
+                break;
+            }
+        }
+        final int wantedLevel = wanted;
+        WorldPoint me = Rs2Player.getWorldLocation();
+        return candidates.values().stream()
+                .min(Comparator
+                        .comparingInt((Rs2NpcModel n) -> wantedLevel > 0 && n.getCombatLevel() == wantedLevel ? 0 : 1)
+                        .thenComparingInt((Rs2NpcModel n) -> -n.getCombatLevel())
+                        .thenComparingInt(n -> n.getWorldLocation() == null ? Integer.MAX_VALUE : me.distanceTo(n.getWorldLocation())))
+                .orElse(null);
+    }
 
     private static final int FALLBACK_NPC_RADIUS = 10;
     private static final long NO_NPC_LOG_INTERVAL_MS = 30_000;

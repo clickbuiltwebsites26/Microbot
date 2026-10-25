@@ -62,6 +62,7 @@ public class NpcStep extends DetailedQuestStep
 
 	@Getter
 	protected final int npcID;
+	@Getter
 	protected final List<Integer> alternateNpcIDs = new ArrayList<>();
 
 	@Setter
