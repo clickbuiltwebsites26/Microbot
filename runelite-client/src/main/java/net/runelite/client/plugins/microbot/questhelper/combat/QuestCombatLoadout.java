@@ -319,6 +319,9 @@ public class QuestCombatLoadout
 	/** Potions of each kind to bring (any dose). */
 	private int boostQty = 1;
 
+	/** The potion list (type + count). Null in loadouts saved before the list existed: then the old fields stand in. */
+	private List<QuestPotions.Row> potions;
+
 	private List<InventoryItem> inventoryItems = new ArrayList<>();
 	/** Free slots to keep for quest items; negative means "work it out from the quest". */
 	private int reserveSlots = -1;
@@ -354,7 +357,62 @@ public class QuestCombatLoadout
 	/** True when combat potions should be brought. */
 	public boolean wantsPotions()
 	{
-		return !skip && potion != Potion.NONE && potionQty > 0;
+		return !skip && !potionRows().isEmpty();
+	}
+
+	/** The effective potion rows: the list when set, else what the old potion and boost fields stand for. */
+	public List<QuestPotions.Row> potionRows()
+	{
+		if (skip)
+		{
+			return new ArrayList<>();
+		}
+		return QuestPotions.clean(potions != null ? potions
+			: QuestPotions.migrate(potion, potionQty, boostType, boostDefence, boostQty));
+	}
+
+	/** Rows of one role. */
+	public List<QuestPotions.Row> potionRows(QuestPotions.Role role)
+	{
+		List<QuestPotions.Row> out = new ArrayList<>();
+		for (QuestPotions.Row row : potionRows())
+		{
+			if (row.kind().role() == role)
+			{
+				out.add(row);
+			}
+		}
+		return out;
+	}
+
+	/** True when a prayer potion or super restore is in the list. */
+	public boolean wantsPrayerPotions()
+	{
+		return !potionRows(QuestPotions.Role.PRAYER).isEmpty();
+	}
+
+	/** Count of one boost potion in the list; 0 when absent. */
+	public int boostQtyOf(QuestBoosts.Potion boost)
+	{
+		for (QuestPotions.Row row : potionRows(QuestPotions.Role.BOOST))
+		{
+			if (row.kind().boost() == boost)
+			{
+				return row.getQty();
+			}
+		}
+		return 0;
+	}
+
+	/** Inventory slots the potion list takes. */
+	public int potionSlots()
+	{
+		int sum = 0;
+		for (QuestPotions.Row row : potionRows())
+		{
+			sum += row.getQty();
+		}
+		return sum;
 	}
 
 	/** True when a protection prayer should be used. */
@@ -366,19 +424,33 @@ public class QuestCombatLoadout
 	/** True when run-energy potions should be brought. */
 	public boolean wantsStamina()
 	{
+		return wantsLegacyStamina() || !potionRows(QuestPotions.Role.ENERGY).isEmpty();
+	}
+
+	/** True when the old single run-energy choice asks for potions. */
+	public boolean wantsLegacyStamina()
+	{
 		return useStamina && staminaType != StaminaType.NONE && staminaQty > 0;
 	}
 
 	/** True when combat boost potions should be brought and drunk in fights. */
 	public boolean wantsBoosts()
 	{
-		return !skip && boostType != null && boostType != BoostType.NONE && boostQty > 0;
+		return !boostPotions().isEmpty();
 	}
 
 	/** The boost potions this loadout brings; empty when none. */
 	public List<QuestBoosts.Potion> boostPotions()
 	{
-		return wantsBoosts() ? QuestBoosts.potionsFor(boostType, boostDefence) : new ArrayList<>();
+		List<QuestBoosts.Potion> out = new ArrayList<>();
+		for (QuestPotions.Row row : potionRows(QuestPotions.Role.BOOST))
+		{
+			if (row.kind().boost() != null)
+			{
+				out.add(row.kind().boost());
+			}
+		}
+		return out;
 	}
 
 	/** True when custom inventory items are configured. */
@@ -454,6 +526,7 @@ public class QuestCombatLoadout
 		drinkStaminaAtEnergy = clamp(drinkStaminaAtEnergy, 1, 99);
 		boostType = boostType == null ? BoostType.NONE : boostType;
 		boostQty = clamp(boostQty, 0, 27);
+		potions = potions == null ? null : QuestPotions.clean(potions);
 		reserveSlots = reserveSlots < 0 ? -1 : Math.min(reserveSlots, 27);
 
 		List<InventoryItem> cleanItems = new ArrayList<>();
@@ -647,6 +720,10 @@ public class QuestCombatLoadout
 		{
 			applyBoosts(base, body.get("boosts"));
 		}
+		if (body.get("potions") != null)
+		{
+			applyPotions(base, body.get("potions"));
+		}
 		if (body.get("fights") != null)
 		{
 			Object raw = body.get("fights");
@@ -702,6 +779,37 @@ public class QuestCombatLoadout
 			base.fights = parsed;
 		}
 		return base.normalised();
+	}
+
+	private static void applyPotions(QuestCombatLoadout base, Object raw)
+	{
+		if (!(raw instanceof List))
+		{
+			throw new IllegalArgumentException("potions must be an array like [{\"type\":\"prayer_potion\",\"qty\":4}]");
+		}
+		List<QuestPotions.Row> rows = new ArrayList<>();
+		for (Object entry : (List<?>) raw)
+		{
+			if (!(entry instanceof Map))
+			{
+				throw new IllegalArgumentException("potions entries must be objects like {\"type\":\"prayer_potion\",\"qty\":4}");
+			}
+			Map<?, ?> row = (Map<?, ?>) entry;
+			QuestPotions.Kind kind = QuestPotions.kindOf(row.get("type") == null ? null : String.valueOf(row.get("type")));
+			if (kind == null)
+			{
+				throw new IllegalArgumentException("potions.type " + row.get("type") + " is unknown; use one of "
+					+ java.util.Arrays.stream(QuestPotions.Kind.values()).map(QuestPotions.Kind::key)
+						.collect(java.util.stream.Collectors.joining(", ")));
+			}
+			int qty = intValue(row, "qty", 1, "potions.");
+			if (qty < 0 || qty > 27)
+			{
+				throw new IllegalArgumentException("potions.qty must be between 0 and 27");
+			}
+			rows.add(new QuestPotions.Row(kind.key(), qty));
+		}
+		base.potions = rows;
 	}
 
 	private static void applyBoosts(QuestCombatLoadout base, Object raw)

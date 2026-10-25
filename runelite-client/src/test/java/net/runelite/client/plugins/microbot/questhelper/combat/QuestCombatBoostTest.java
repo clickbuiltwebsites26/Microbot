@@ -41,7 +41,8 @@ public class QuestCombatBoostTest
 	{
 		assertEquals(Potion.SUPER_ATTACK, QuestBoosts.byItemName("Super attack(3)"));
 		assertEquals(Potion.COMBAT, QuestBoosts.byItemName("Combat potion (4)"));
-		assertNull(QuestBoosts.byItemName("Super combat potion(4)"));
+		assertEquals(Potion.SUPER_COMBAT, QuestBoosts.byItemName("Super combat potion(4)"));
+		assertNull(QuestBoosts.byItemName("Prayer potion(4)"));
 		assertNull(QuestBoosts.byItemName(null));
 	}
 

@@ -284,16 +284,13 @@ public final class QuestCombatSetupDialog
 		private JTextField food;
 		private JSpinner foodQty;
 		private JSpinner eatAt;
-		private JComboBox<QuestCombatLoadout.Potion> potion;
-		private JSpinner potionQty;
+		private DefaultTableModel potionModel;
+		private JTable potionTable;
 		private JComboBox<QuestCombatLoadout.Prayer> prayer;
 		private JSpinner drinkAt;
 		private JComboBox<QuestCombatLoadout.StaminaType> staminaType;
 		private JSpinner staminaQty;
 		private JSpinner staminaAt;
-		private JComboBox<QuestCombatLoadout.BoostType> boostType;
-		private JCheckBox boostDefence;
-		private JSpinner boostQty;
 		private JSpinner reserve;
 		private JComboBox<String> obtainMissing;
 		private DefaultTableModel itemModel;
@@ -457,8 +454,38 @@ public final class QuestCombatSetupDialog
 			food.setToolTipText(ctx.bankSeen ? "Defaults to the best food you own" : "Bank not seen yet: " + FOOD_PLACEHOLDER);
 			foodQty = spinner(ctx.hasFights ? 10 : 0, 0, 27, 1);
 			eatAt = spinner(50, 1, 99, 5);
-			potion = new JComboBox<>(QuestCombatLoadout.Potion.values());
-			potionQty = spinner(2, 0, 27, 1);
+			potionModel = new DefaultTableModel(new Object[]{"Potion", "Count"}, 0)
+			{
+				@Override
+				public Class<?> getColumnClass(int column)
+				{
+					return column == 1 ? Integer.class : QuestPotions.Kind.class;
+				}
+			};
+			potionTable = new JTable(potionModel);
+			potionTable.setRowHeight(22);
+			potionTable.getColumnModel().getColumn(0).setCellEditor(
+				new DefaultCellEditor(new JComboBox<>(QuestPotions.Kind.values())));
+			potionTable.setPreferredScrollableViewportSize(new Dimension(420, 110));
+			potionModel.addTableModelListener(e -> refresh());
+			potionModel.addRow(new Object[]{QuestPotions.Kind.PRAYER_POTION, 2});
+			JButton addPotion = new JButton("Add potion");
+			addPotion.addActionListener(e -> potionModel.addRow(new Object[]{QuestPotions.Kind.SUPER_RESTORE, 1}));
+			JButton removePotion = new JButton("Remove potion");
+			removePotion.addActionListener(e ->
+			{
+				int selected = potionTable.getSelectedRow();
+				if (selected >= 0)
+				{
+					potionModel.removeRow(selected);
+				}
+			});
+			JPanel potionPanel = new JPanel(new BorderLayout());
+			potionPanel.add(new JScrollPane(potionTable), BorderLayout.CENTER);
+			JPanel potionBar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+			potionBar.add(addPotion);
+			potionBar.add(removePotion);
+			potionPanel.add(potionBar, BorderLayout.SOUTH);
 			prayer = new JComboBox<>(QuestCombatLoadout.Prayer.values());
 			prayer.setSelectedItem(QuestPrayer.defaultPrayer(ctx.hasFights, ctx.prayerLevel));
 			drinkAt = spinner(20, 1, 98, 1);
@@ -466,23 +493,15 @@ public final class QuestCombatSetupDialog
 			staminaType.setSelectedItem(QuestCombatLoadout.StaminaType.NONE);
 			staminaQty = spinner(2, 0, 27, 1);
 			staminaAt = spinner(30, 1, 99, 5);
-			boostType = new JComboBox<>(QuestCombatLoadout.BoostType.values());
-			boostDefence = new JCheckBox("Include Super defence");
-			boostQty = spinner(1, 0, 27, 1);
 			reserve = spinner(ctx.defaultReserve, 0, 27, 1);
 
 			row = addRow(panel, row, "Food", food);
 			row = addRow(panel, row, "Food quantity", foodQty);
 			row = addRow(panel, row, "Eat at HP %", eatAt);
-			row = addRow(panel, row, "Potions", potion);
-			row = addRow(panel, row, "Potion quantity", potionQty);
+			row = addRow(panel, row, "Potions (type and count; bought or withdrawn)", potionPanel);
 			row = addRow(panel, row, "Prayer", prayer);
 			row = addRow(panel, row, "Drink at prayer points", drinkAt);
 			combatOnly.addAll(java.util.Arrays.asList(prayer, drinkAt));
-			row = addRow(panel, row, "Boost potions", boostType);
-			row = addRow(panel, row, "Boost defence too", boostDefence);
-			row = addRow(panel, row, "Boost potion quantity (each)", boostQty);
-			combatOnly.addAll(java.util.Arrays.asList(boostType, boostDefence, boostQty));
 			row = addRow(panel, row, "Run energy potions", staminaType);
 			row = addRow(panel, row, "Potion quantity (stamina/energy)", staminaQty);
 			row = addRow(panel, row, "Drink at run energy %", staminaAt);
@@ -492,15 +511,14 @@ public final class QuestCombatSetupDialog
 			obtainMissing.setToolTipText("Buy or withdraw missing quest items from the bank and Grand Exchange");
 			row = addRow(panel, row, "Buy missing items", obtainMissing);
 			filler(panel, row);
-			for (JSpinner s : new JSpinner[]{foodQty, eatAt, potionQty, drinkAt, staminaQty, staminaAt, boostQty, reserve})
+			for (JSpinner s : new JSpinner[]{foodQty, eatAt, drinkAt, staminaQty, staminaAt, reserve})
 			{
 				s.addChangeListener(e -> refresh());
 			}
-			for (JComboBox<?> c : new JComboBox<?>[]{potion, prayer, staminaType, boostType})
+			for (JComboBox<?> c : new JComboBox<?>[]{prayer, staminaType})
 			{
 				c.addActionListener(e -> refresh());
 			}
-			boostDefence.addActionListener(e -> refresh());
 			food.addActionListener(e -> refresh());
 			return panel;
 		}
@@ -781,10 +799,28 @@ public final class QuestCombatSetupDialog
 			return QuestCombatLoadout.styleOfWeapon(ctx.wornWeapon);
 		}
 
+		private List<QuestPotions.Row> readPotions()
+		{
+			if (potionTable != null && potionTable.isEditing())
+			{
+				potionTable.getCellEditor().stopCellEditing();
+			}
+			List<QuestPotions.Row> rows = new ArrayList<>();
+			for (int i = 0; i < potionModel.getRowCount(); i++)
+			{
+				Object kind = potionModel.getValueAt(i, 0);
+				Object qty = potionModel.getValueAt(i, 1);
+				if (kind instanceof QuestPotions.Kind && qty instanceof Number)
+				{
+					rows.add(new QuestPotions.Row(((QuestPotions.Kind) kind).key(), ((Number) qty).intValue()));
+				}
+			}
+			return QuestPotions.clean(rows);
+		}
+
 		private void refresh()
 		{
-			if (mainGear == null || slots == null || reserve == null || itemModel == null || potion == null || staminaType == null
-				|| boostType == null || boostDefence == null || boostQty == null)
+			if (mainGear == null || slots == null || reserve == null || itemModel == null || potionModel == null || staminaType == null)
 			{
 				return;
 			}
@@ -793,16 +829,14 @@ public final class QuestCombatSetupDialog
 				+ (mainDetected == null ? "set by the Inventory Setup" : mainDetected.toString().replace(" (from worn weapon)", "")));
 
 			int supplies = 0;
-			supplies += foodAndPotionSlots(food.getText(), (Integer) foodQty.getValue(),
-				potion.getSelectedItem() != QuestCombatLoadout.Potion.NONE, (Integer) potionQty.getValue());
+			supplies += foodAndPotionSlots(food.getText(), (Integer) foodQty.getValue(), false, 0);
+			for (QuestPotions.Row row : readPotions())
+			{
+				supplies += row.getQty();
+			}
 			if (staminaType.getSelectedItem() != QuestCombatLoadout.StaminaType.NONE)
 			{
 				supplies += (Integer) staminaQty.getValue();
-			}
-			if (boostType.getSelectedItem() != QuestCombatLoadout.BoostType.NONE)
-			{
-				supplies += QuestBoosts.potionsFor((QuestCombatLoadout.BoostType) boostType.getSelectedItem(),
-					boostDefence.isSelected()).size() * (Integer) boostQty.getValue();
 			}
 			for (InventoryItem item : readItems())
 			{
@@ -890,6 +924,7 @@ public final class QuestCombatSetupDialog
 				loadout.setFoodQty(0);
 				loadout.setPotion(QuestCombatLoadout.Potion.NONE);
 				loadout.setPotionQty(0);
+				loadout.setPotions(new ArrayList<>());
 				loadout.setPrayer(QuestCombatLoadout.Prayer.OFF);
 				loadout.setFights(new java.util.LinkedHashMap<>());
 			}
@@ -971,8 +1006,10 @@ public final class QuestCombatSetupDialog
 			loadout.setFood(food.getText());
 			loadout.setFoodQty((Integer) foodQty.getValue());
 			loadout.setEatAtPercent((Integer) eatAt.getValue());
-			loadout.setPotion((QuestCombatLoadout.Potion) potion.getSelectedItem());
-			loadout.setPotionQty((Integer) potionQty.getValue());
+			loadout.setPotion(QuestCombatLoadout.Potion.NONE);
+			loadout.setPotionQty(0);
+			loadout.setBoostType(QuestCombatLoadout.BoostType.NONE);
+			loadout.setPotions(readPotions());
 			QuestCombatLoadout.StaminaType type = (QuestCombatLoadout.StaminaType) staminaType.getSelectedItem();
 			loadout.setUseStamina(type != QuestCombatLoadout.StaminaType.NONE);
 			if (type != QuestCombatLoadout.StaminaType.NONE)
@@ -981,9 +1018,6 @@ public final class QuestCombatSetupDialog
 			}
 			loadout.setStaminaQty((Integer) staminaQty.getValue());
 			loadout.setDrinkStaminaAtEnergy((Integer) staminaAt.getValue());
-			loadout.setBoostType((QuestCombatLoadout.BoostType) boostType.getSelectedItem());
-			loadout.setBoostDefence(boostDefence.isSelected());
-			loadout.setBoostQty((Integer) boostQty.getValue());
 			loadout.setInventoryItems(readItems());
 			loadout.setReserveSlots((Integer) reserve.getValue());
 			return loadout;

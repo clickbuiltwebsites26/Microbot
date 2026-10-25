@@ -163,6 +163,40 @@ public class QuestCombatHandler
 		return AWAITING_SETUP.get();
 	}
 
+	/** Item ids in the inventory when the quest was started: the user's own supplies, kept out of the bank deposits. */
+	private volatile Set<Integer> userItemIds;
+
+	private void snapshotUserItems()
+	{
+		if (userItemIds != null)
+		{
+			return;
+		}
+		try
+		{
+			Set<Integer> ids = new HashSet<>();
+			Rs2Inventory.items(i -> !i.isNoted()).forEach(i -> ids.add(i.getId()));
+			userItemIds = ids;
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not snapshot the starting inventory: " + e.getMessage(), Level.WARN);
+		}
+	}
+
+	private static List<String> actionsOf(Rs2ItemModel item)
+	{
+		String[] actions = item.getInventoryActions();
+		return actions == null ? new ArrayList<>() : java.util.Arrays.asList(actions);
+	}
+
+	/** True for an item the user brought into the quest that a bank visit must not deposit (a consumable). */
+	public boolean isUserBroughtProtected(Rs2ItemModel item)
+	{
+		return item != null && !item.isNoted()
+			&& !QuestPotions.mayDepositUserItem(item.getId(), item.getName(), actionsOf(item), userItemIds, false);
+	}
+
 	/** Forget the current quest's state; the next quest tick starts from scratch. */
 	public synchronized void reset()
 	{
@@ -175,6 +209,7 @@ public class QuestCombatHandler
 		generation++;
 		questKey = null;
 		loadout = null;
+		userItemIds = null;
 		phase = Phase.UNRESOLVED;
 		pendingAnswer.set(null);
 		if (AWAITING_SETUP.getAndSet(false))
@@ -282,6 +317,7 @@ public class QuestCombatHandler
 		{
 			loadout = saved;
 			phase = Phase.ACTIVE;
+			snapshotUserItems();
 			return false;
 		}
 		if (!config.get().askCombatSetup())
@@ -325,6 +361,7 @@ public class QuestCombatHandler
 				QuestCombatStore.save(questKey, answer.loadout);
 				loadout = answer.loadout;
 				phase = Phase.ACTIVE;
+				snapshotUserItems();
 				return false;
 			default:
 				stopper.accept("Quest setup cancelled for " + quest.getQuest().getName());
@@ -1043,6 +1080,29 @@ public class QuestCombatHandler
 		warnOnce("antifire", "Quest helper: no antifire potion in the bank for the dragon fight");
 	}
 
+	/** Drinks an antipoison from the potion list when poisoned or venomed. */
+	private void antipoisonTick(QuestCombatLoadout current, long now)
+	{
+		if (current.potionRows(QuestPotions.Role.ANTIPOISON).isEmpty() || Rs2Bank.isOpen()
+			|| Rs2Player.antiPoisonTime <= 0 || now - lastConsumeMs < CONSUME_COOLDOWN_MS)
+		{
+			return;
+		}
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> items = Rs2Inventory.items(i -> !i.isNoted() && !keep.contains(i.getId())
+			&& isListedPotion(current, i) && QuestPotions.kindOfItem(i.getName()) != null
+			&& QuestPotions.kindOfItem(i.getName()).role() == QuestPotions.Role.ANTIPOISON).collect(Collectors.toList());
+		if (items.isEmpty())
+		{
+			return;
+		}
+		items.sort(Comparator.comparingInt(QuestCombatHandler::dose));
+		if (Rs2Inventory.interact(items.get(0), "Drink"))
+		{
+			lastConsumeMs = now;
+		}
+	}
+
 	/** Drinks antifire when a dragon fight starts and again when it wears off. Never touches quest items. */
 	private void antifireTick(QuestStep step, long now)
 	{
@@ -1170,7 +1230,7 @@ public class QuestCombatHandler
 			return bankAttempts < MAX_BANK_ATTEMPTS;
 		}
 		boolean outOfFood = current.wantsFood() && foodCount(current) == 0;
-		boolean outOfPotions = current.wantsPotions() && current.usesPrayer() && potionCount(current) == 0;
+		boolean outOfPotions = current.wantsPrayerPotions() && current.usesPrayer() && prayerPotionCount(current) == 0;
 		return (outOfFood || outOfPotions) && restocks < MAX_RESTOCKS && bankAttempts < MAX_BANK_ATTEMPTS;
 	}
 
@@ -1229,7 +1289,7 @@ public class QuestCombatHandler
 
 		int reserved = Math.min(27, stepReserved + reserveFor(current));
 
-		if (current.wantsStamina())
+		if (current.wantsLegacyStamina())
 		{
 			int held = staminaCount(current);
 			// with no fights left the free slots go to the quest items, so a single run potion is all that is kept
@@ -1244,11 +1304,7 @@ public class QuestCombatHandler
 			{
 				withdrawCustom(item, reserved);
 			}
-			if (current.wantsPotions())
-			{
-				int held = potionCount(current);
-				withdrawPotion(current.getPotion().getItemName(), carry(current.getPotionQty(), held, reserved) - held);
-			}
+			withdrawPotionRows(current, reserved);
 			if (current.wantsFood())
 			{
 				int held = foodCount(current);
@@ -1259,26 +1315,16 @@ public class QuestCombatHandler
 			supplied = true;
 			return true;
 		}
-		if (isDragonFight(activeStep))
+		if (isDragonFight(activeStep) && current.potionRows(QuestPotions.Role.ANTIFIRE).isEmpty())
 		{
 			withdrawAntifire(reserved);
 		}
-		if (current.wantsPotions())
-		{
-			int held = potionCount(current);
-			int target = carry(current.getPotionQty(), held, reserved);
-			withdrawPotion(current.getPotion().getItemName(), target - held);
-		}
+		withdrawPotionRows(current, reserved);
 		for (QuestCombatLoadout.InventoryItem item : current.getInventoryItems())
 		{
 			withdrawCustom(item, reserved);
 		}
 		withdrawSwapKit(swapPlan, reserved);
-		for (QuestBoosts.Potion boost : current.boostPotions())
-		{
-			int held = boostCount(boost);
-			withdrawPotion(boost.itemName(), carry(current.getBoostQty(), held, reserved) - held);
-		}
 		boolean wantFood = current.wantsFood();
 		if (wantFood)
 		{
@@ -1302,6 +1348,23 @@ public class QuestCombatHandler
 				+ " in the bank for the combat setup, continuing without food");
 		}
 		return true;
+	}
+
+	/** Inventory potions (unnoted, any dose) of one list kind. */
+	private static int kindCount(QuestPotions.Kind kind)
+	{
+		return Rs2Inventory.items(i -> !i.isNoted() && QuestPotions.matchesKind(kind, i.getName())).mapToInt(i -> 1).sum();
+	}
+
+	/** Withdraws each potion row's count (reserved slots and quest items first via the carry cap). */
+	private void withdrawPotionRows(QuestCombatLoadout current, int reserved)
+	{
+		for (QuestPotions.Row row : current.potionRows())
+		{
+			QuestPotions.Kind kind = row.kind();
+			int held = kindCount(kind);
+			withdrawPotion(kind.itemName(), carry(row.getQty(), held, reserved) - held);
+		}
 	}
 
 	/** Withdraws {@code missing} of a potion, any dose, highest dose first. */
@@ -1445,14 +1508,45 @@ public class QuestCombatHandler
 		return out;
 	}
 
-	private int potionCount(QuestCombatLoadout current)
+	private int prayerPotionCount(QuestCombatLoadout current)
 	{
-		return Rs2Inventory.count(current.getPotion().getItemName(), false);
+		int sum = 0;
+		for (QuestPotions.Row row : current.potionRows(QuestPotions.Role.PRAYER))
+		{
+			sum += kindCount(row.kind());
+		}
+		return sum;
+	}
+
+	/** True for an unnoted potion of any kind in the loadout's potion list (any dose). */
+	private static boolean isListedPotion(QuestCombatLoadout current, Rs2ItemModel item)
+	{
+		if (item.isNoted() || item.getName() == null)
+		{
+			return false;
+		}
+		for (QuestPotions.Row row : current.potionRows())
+		{
+			if (QuestPotions.matchesKind(row.kind(), item.getName()))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Names (without dose) of the potions that count as the loadout's run energy potion. */
 	private static List<String> staminaNames(QuestCombatLoadout current)
 	{
+		if (!current.potionRows(QuestPotions.Role.ENERGY).isEmpty() && !current.wantsLegacyStamina())
+		{
+			List<String> names = new ArrayList<>();
+			for (QuestPotions.Row row : current.potionRows(QuestPotions.Role.ENERGY))
+			{
+				names.add(row.kind().itemName());
+			}
+			return names;
+		}
 		if (current.getStaminaType() == QuestCombatLoadout.StaminaType.ENERGY)
 		{
 			return java.util.Arrays.asList("Energy potion", "Super energy");
@@ -1499,7 +1593,7 @@ public class QuestCombatHandler
 		{
 			return;
 		}
-		if (current.getStaminaType() == QuestCombatLoadout.StaminaType.STAMINA && Rs2Player.hasStaminaActive())
+		if (staminaNames(current).contains("Stamina potion") && Rs2Player.hasStaminaActive())
 		{
 			return;
 		}
@@ -1718,6 +1812,7 @@ public class QuestCombatHandler
 		{
 			boolean protectedItem = keep.contains(item.getId()) || (wantsRunPotion && isRunPotion(item))
 				|| (lowHp && item.isFood()) || (current != null && isCustomItem(current, item))
+				|| (current != null && isListedPotion(current, item)) || isUserBroughtProtected(item)
 				|| (current != null && !fights && isFoodOrPotion(current, item));
 			return shouldDeposit(protectedItem, current != null && (isSupply(current, item) || isSwapKitItem(item)), fights);
 		};
@@ -1773,7 +1868,7 @@ public class QuestCombatHandler
 			return false;
 		}
 		return (current.wantsFood() && name.equalsIgnoreCase(current.getFood()))
-			|| (current.wantsPotions() && baseName(item).equalsIgnoreCase(current.getPotion().getItemName()));
+			|| isListedPotion(current, item);
 	}
 
 	/** Setup food, potions and custom items: what a fight needs and the rest of the quest does not. */
@@ -1792,7 +1887,7 @@ public class QuestCombatHandler
 		{
 			return true;
 		}
-		if (current.wantsPotions() && baseName(item).equalsIgnoreCase(current.getPotion().getItemName()))
+		if (isListedPotion(current, item))
 		{
 			return true;
 		}
@@ -1843,15 +1938,14 @@ public class QuestCombatHandler
 	{
 		List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> out = new ArrayList<>();
 		QuestCombatLoadout current = loadout;
-		if (steps == null || phase != Phase.ACTIVE || current == null || !current.wantsBoosts()
-			|| steps.stream().noneMatch(QuestCombatDetector::isKillStep))
+		if (steps == null || phase != Phase.ACTIVE || current == null || !current.wantsPotions())
 		{
 			return out;
 		}
-		for (QuestBoosts.Potion boost : current.boostPotions())
+		for (QuestPotions.Row row : current.potionRows())
 		{
-			out.add(new net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need(boost.itemName(),
-				boost.doseIds(), current.getBoostQty(), true));
+			out.add(new net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need(row.kind().itemName(),
+				row.kind().doseIds(), row.getQty(), true));
 		}
 		return out;
 	}
@@ -2662,6 +2756,10 @@ public class QuestCombatHandler
 			escapeStartMs = 0;
 		}
 		antifireTick(step, tickNow);
+		if (phase == Phase.ACTIVE && current != null)
+		{
+			antipoisonTick(current, tickNow);
+		}
 		if (phase != Phase.ACTIVE || current == null || current.isSkip())
 		{
 			return;
@@ -2812,7 +2910,7 @@ public class QuestCombatHandler
 	private void managePrayer(QuestCombatLoadout current, long now)
 	{
 		if (Rs2Player.getBoostedSkillLevel(Skill.PRAYER) <= current.getDrinkAtPrayer()
-			&& current.wantsPotions() && now - lastConsumeMs >= CONSUME_COOLDOWN_MS)
+			&& current.wantsPrayerPotions() && now - lastConsumeMs >= CONSUME_COOLDOWN_MS)
 		{
 			if (Rs2Player.drinkPrayerPotionAt(current.getDrinkAtPrayer()))
 			{

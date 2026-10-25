@@ -22,7 +22,12 @@ public final class QuestBoosts
 		SUPER_DEFENCE("Super defence", new int[]{2442, 163, 165, 167}, Skill.DEFENCE),
 		COMBAT("Combat potion", new int[]{9739, 9741, 9743, 9745}, Skill.ATTACK, Skill.STRENGTH),
 		ATTACK("Attack potion", new int[]{2428, 121, 123, 125}, Skill.ATTACK),
-		STRENGTH("Strength potion", new int[]{113, 115, 117, 119}, Skill.STRENGTH);
+		STRENGTH("Strength potion", new int[]{113, 115, 117, 119}, Skill.STRENGTH),
+		DEFENCE("Defence potion", new int[]{2432, 133, 135, 137}, Skill.DEFENCE),
+		SUPER_COMBAT("Super combat potion", new int[]{12695, 12697, 12699, 12701}, Skill.ATTACK, Skill.STRENGTH,
+			Skill.DEFENCE),
+		RANGING("Ranging potion", new int[]{2444, 169, 171, 173}, Skill.RANGED),
+		MAGIC("Magic potion", new int[]{3040, 3042, 3044, 3046}, Skill.MAGIC);
 
 		private final String itemName;
 		private final int[] ids;

@@ -103,6 +103,15 @@ public class QuestScript extends Script {
 	private boolean preflightSummaryLogged;
 	private int preflightBankAttempts;
 	private int preflightBuyRounds;
+	private QuestPurchasePlan preflightPlan;
+	private boolean purchaseApproved;
+	private boolean purchaseAsked;
+	private Boolean purchaseConfirmOverride;
+	private final java.util.concurrent.atomic.AtomicReference<QuestPurchaseConfirmDialog.Outcome> purchaseAnswer =
+			new java.util.concurrent.atomic.AtomicReference<>();
+	private final java.util.concurrent.atomic.AtomicInteger purchaseEpoch = new java.util.concurrent.atomic.AtomicInteger();
+
+	private enum PurchaseGate { PROCEED, WAIT, STOPPED, SKIPPED }
 
     private static final AtomicBoolean valeTotemsPromptInFlight = new AtomicBoolean(false);
     private static volatile QuestHelperConfig.ValeTotemsWoodType valeTotemsSessionWoodType;
@@ -782,6 +791,15 @@ public class QuestScript extends Script {
 			preflightSummaryLogged = false;
 			preflightBankAttempts = 0;
 			preflightBuyRounds = 0;
+			preflightPlan = null;
+			purchaseApproved = false;
+			purchaseAsked = false;
+			purchaseEpoch.incrementAndGet();
+			purchaseAnswer.set(null);
+			QuestPurchaseConfirmDialog.dismiss();
+			QuestPurchasePlan.setCurrent(null);
+			Boolean confirmOverride = freshStart ? QuestPurchasePlan.consumeOverride() : null;
+			purchaseConfirmOverride = confirmOverride;
 			QuestPreflight.setStatus(QuestPreflight.PENDING);
 			if (freshStart && QuestPreflight.consumeSkip()) {
 				finishPreflight(QuestPreflight.DONE);
@@ -868,6 +886,18 @@ public class QuestScript extends Script {
 			finishPreflight(QuestPreflight.DONE);
 			return false;
 		}
+		if (!purchaseApproved) {
+			boolean bankKnown = bank.getLastUpdated() >= 0 || bank.getItems().length > 0;
+			switch (gatePurchases(quest, toBuy, onPlayer, owned, bankKnown)) {
+				case WAIT:
+				case STOPPED:
+					return true;
+				case SKIPPED:
+					return false;
+				default:
+					break;
+			}
+		}
 		if (++preflightBuyRounds > PREFLIGHT_MAX_BUY_ROUNDS) {
 			String reason = "could not buy " + describeItems(toBuy);
 			Microbot.log("Quest helper preflight gave up: " + reason, Level.WARN);
@@ -879,6 +909,131 @@ public class QuestScript extends Script {
 		Microbot.status = "Quest helper: buying missing quest items";
 		acquireMissingTradableItems(toBuy, true);
 		return true;
+	}
+
+	/**
+	 * Before the preflight walks to the Grand Exchange: prices the shortfall, checks the coins and, unless the player
+	 * turned confirmation off, waits (asynchronously, one tick at a time) for them to approve the purchase.
+	 */
+	private PurchaseGate gatePurchases(QuestHelper quest, List<ItemRequirement> toBuy,
+			Map<Integer, Integer> onPlayer, Map<Integer, Integer> owned, boolean bankKnown) {
+		QuestPurchaseConfirmDialog.Outcome answer = purchaseAnswer.getAndSet(null);
+		if (answer != null) {
+			QuestPurchasePlan plan = preflightPlan;
+			switch (answer) {
+				case BUY:
+					purchaseApproved = true;
+					Microbot.log("Quest helper: purchase approved (" + (plan == null ? "" : plan.describeItems()) + ")", Level.INFO);
+					return PurchaseGate.PROCEED;
+				case SKIP:
+					Microbot.log("Quest helper: starting without buying; missing quest items: "
+							+ describeItems(toBuy), Level.WARN);
+					finishPreflight(QuestPreflight.DONE);
+					return PurchaseGate.SKIPPED;
+				case CANCEL:
+					stopQuesterWithReason("Quest cancelled at the purchase confirmation");
+					return PurchaseGate.STOPPED;
+				default:
+					purchaseAsked = false; // closed by code, ask again
+					break;
+			}
+		}
+		if (purchaseAsked) {
+			Microbot.status = "Quest helper: waiting for purchase confirmation";
+			return PurchaseGate.WAIT;
+		}
+
+		if (preflightPlan == null) {
+			List<QuestPurchasePlan.Line> lines = new ArrayList<>();
+			for (ItemRequirement ir : toBuy) {
+				int primaryId = tradablePrimaryId(ir);
+				if (primaryId == -1) {
+					stopQuesterWithReason("Quest item is not tradable on the Grand Exchange: " + ir.getName());
+					return PurchaseGate.STOPPED;
+				}
+				int basePrice = fetchInstabuyReferencePrice(primaryId);
+				if (basePrice <= 0) {
+					stopQuesterWithReason("Failed to fetch Grand Exchange price for: " + ir.getName());
+					return PurchaseGate.STOPPED;
+				}
+				lines.add(new QuestPurchasePlan.Line(ir.getName(), ir.getQuantity(), QuestPurchasePlan.offerPrice(basePrice)));
+			}
+			long invCoins = onPlayer.getOrDefault(ItemID.COINS_995, 0);
+			long bankCoins = bankKnown ? Math.max(0, owned.getOrDefault(ItemID.COINS_995, 0) - invCoins) : -1;
+			preflightPlan = new QuestPurchasePlan(lines, invCoins, bankCoins);
+			QuestPurchasePlan.setCurrent(preflightPlan);
+		}
+
+		boolean confirm = purchaseConfirmOverride != null ? purchaseConfirmOverride : config.confirmPurchases();
+		switch (preflightPlan.decide(confirm)) {
+			case BUY:
+				purchaseApproved = true;
+				Microbot.log(String.format("Quest helper: buying %s (~%,d gp, have %,d gp)",
+						preflightPlan.describeItems(), preflightPlan.total(), preflightPlan.coins()), Level.INFO);
+				return PurchaseGate.PROCEED;
+			case INSUFFICIENT:
+				stopQuesterWithReason(preflightPlan.insufficientMessage());
+				return PurchaseGate.STOPPED;
+			default:
+				break;
+		}
+
+		purchaseAsked = true;
+		QuestPurchasePlan.setAwaiting(true);
+		Microbot.status = "Quest helper: waiting for purchase confirmation";
+		Microbot.log("Quest helper: waiting for purchase confirmation", Level.INFO);
+		final int epoch = purchaseEpoch.get();
+		QuestPurchaseConfirmDialog.showAsync(quest.getQuest().getName(), preflightPlan, outcome -> {
+			if (epoch == purchaseEpoch.get()) {
+				purchaseAnswer.set(outcome);
+			}
+		});
+		return PurchaseGate.WAIT;
+	}
+
+	/**
+	 * With the bank open, makes sure at least one inventory slot is free (coins and bought items need one): deposits
+	 * the least important item that is not a quest item, coins or something the user brought; if everything is
+	 * protected, one stack of food.
+	 */
+	private void ensureFreeSlotInBank(List<ItemRequirement> keepFor) {
+		if (Rs2Inventory.emptySlotCount() > 0 || !Rs2Bank.isOpen()) {
+			return;
+		}
+		Set<Integer> keep = new HashSet<>();
+		keep.add(ItemID.COINS_995);
+		for (Requirement requirement : currentRequirements) {
+			if (requirement instanceof ItemRequirement) {
+				for (Integer id : ((ItemRequirement) requirement).getAllIds()) {
+					if (id != null) {
+						keep.add(id);
+					}
+				}
+			}
+		}
+		for (ItemRequirement ir : keepFor) {
+			for (Integer id : ir.getAllIds()) {
+				if (id != null) {
+					keep.add(id);
+				}
+			}
+		}
+		Rs2ItemModel victim = Rs2Inventory.get(item -> !keep.contains(item.getId()) && !combat.isUserBroughtProtected(item));
+		if (victim == null) {
+			victim = Rs2Inventory.get(Rs2ItemModel::isFood);
+			if (victim != null) {
+				Microbot.log("Quest helper: inventory full of protected items, banking one stack of "
+						+ victim.getName() + " to make room for coins", Level.WARN);
+			}
+		}
+		if (victim == null) {
+			Microbot.log("Quest helper: inventory is full and nothing can be banked to make room", Level.WARN);
+			return;
+		}
+		final int victimId = victim.getId();
+		Microbot.status = "Quest helper: banking " + victim.getName() + " to free a slot";
+		Rs2Bank.depositAll(victimId);
+		sleepUntil(() -> Rs2Inventory.emptySlotCount() > 0, 3_000);
 	}
 
 	private void finishPreflight(String status) {
@@ -1254,8 +1409,14 @@ public class QuestScript extends Script {
 		}
 
 		Microbot.status = "Quest helper: banking unrelated items to make room";
-		Predicate<Rs2ItemModel> isKept = item -> keep.contains(item.getId());
-		return Rs2Bank.depositAllExcept(isKept);
+		// the player's own consumables stay unless nothing else frees a slot for the quest item
+		Predicate<Rs2ItemModel> isKept = item -> keep.contains(item.getId()) || combat.isUserBroughtProtected(item);
+		if (Rs2Bank.depositAllExcept(isKept)) {
+			return true;
+		}
+		Microbot.log("Quest helper: no other slot to free, banking your own supplies for a quest item", Level.WARN);
+		Predicate<Rs2ItemModel> questOnly = item -> keep.contains(item.getId());
+		return Rs2Bank.depositAllExcept(questOnly);
 	}
 
 	private boolean acquireMissingTradableItems(List<ItemRequirement> missing) {
@@ -1457,6 +1618,7 @@ public class QuestScript extends Script {
 			if (requiredCoins > currentInvCoins) {
 				long coinsStillNeeded = requiredCoins - currentInvCoins;
 				int coinsToWithdraw = (int) Math.min(Integer.MAX_VALUE, coinsStillNeeded);
+				ensureFreeSlotInBank(toBuy);
 				Microbot.status = "Withdrawing " + coinsToWithdraw + " gp for Grand Exchange";
 				Rs2Bank.withdrawX(ItemID.COINS_995, coinsToWithdraw);
 				sleepUntil(() -> Rs2Inventory.itemQuantity(ItemID.COINS_995) >= requiredCoins, 3_000);
@@ -1675,6 +1837,7 @@ public class QuestScript extends Script {
 			return;
 		}
 
+		ensureFreeSlotInBank(items);
 		for (ItemRequirement ir : items) {
 			int qty = remainingQuantityNeeded(ir);
 			if (qty <= 0) {
@@ -2471,6 +2634,8 @@ public class QuestScript extends Script {
         valeTotemsSessionWoodType = null;
         obtainItemsPromptInFlight.set(false);
         obtainItemsSessionChoice = null;
+        QuestPurchaseConfirmDialog.dismiss();
+        QuestPurchasePlan.setCurrent(null);
         lastBlockedEquipmentNotice = "";
     }
 
