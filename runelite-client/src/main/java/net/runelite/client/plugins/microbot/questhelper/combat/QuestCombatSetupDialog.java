@@ -53,7 +53,11 @@ public final class QuestCombatSetupDialog
 {
 	public enum Outcome
 	{
-		SAVE, SKIP, CANCEL
+		SAVE, SKIP,
+		/** The user pressed Cancel or the window X. Only this stops the quest. */
+		CANCEL,
+		/** Closed by code (stale dialog, reset); carries no user decision. */
+		DISMISSED
 	}
 
 	public static final class Result
@@ -117,6 +121,9 @@ public final class QuestCombatSetupDialog
 	}
 
 	private static volatile JDialog openDialog;
+	/** Bumped by {@link #dismissOpen()}; a dialog request made under an older epoch is stale. */
+	private static final java.util.concurrent.atomic.AtomicInteger EPOCH = new java.util.concurrent.atomic.AtomicInteger();
+	private static volatile int openEpoch;
 
 	private QuestCombatSetupDialog()
 	{
@@ -143,10 +150,12 @@ public final class QuestCombatSetupDialog
 	/** Closes a dialog left open by an earlier run so a stale one can never block the next prompt. */
 	public static void dismissOpen()
 	{
+		final int epoch = EPOCH.incrementAndGet();
 		SwingUtilities.invokeLater(() ->
 		{
 			JDialog stale = openDialog;
-			if (stale != null)
+			// only dialogs opened before this dismissal; never one opened by a later prompt
+			if (stale != null && openEpoch < epoch)
 			{
 				stale.dispose();
 			}
@@ -156,22 +165,28 @@ public final class QuestCombatSetupDialog
 	/** Shows the dialog on the EDT and hands the answer to {@code callback}; never blocks the caller. */
 	public static void showAsync(Context context, Consumer<Result> callback)
 	{
+		final int requestEpoch = EPOCH.get();
 		SwingUtilities.invokeLater(() ->
 		{
-			Result result = new Result(Outcome.CANCEL, null);
+			Result result = new Result(Outcome.DISMISSED, null);
 			try
 			{
+				if (requestEpoch != EPOCH.get())
+				{
+					return; // stale request; finally reports DISMISSED
+				}
 				JDialog stale = openDialog;
 				if (stale != null)
 				{
 					stale.dispose();
 				}
-				result = new Form(context).show();
+				result = new Form(context, requestEpoch).show();
 			}
 			catch (RuntimeException e)
 			{
 				net.runelite.client.plugins.microbot.Microbot.log("Quest helper: setup dialog failed: " + e,
 					org.slf4j.event.Level.ERROR);
+				result = new Result(Outcome.CANCEL, null);
 			}
 			finally
 			{
@@ -209,7 +224,8 @@ public final class QuestCombatSetupDialog
 		private boolean adjusting;
 
 		private JDialog dialog;
-		private Result answer = new Result(Outcome.CANCEL, null);
+		private final int epoch;
+		private Result answer = new Result(Outcome.DISMISSED, null);
 
 		private GearPicker mainGear;
 		private JComboBox<Style> style;
@@ -230,9 +246,10 @@ public final class QuestCombatSetupDialog
 		private JLabel slots = new JLabel();
 		private final List<FightRow> rows = new ArrayList<>();
 
-		Form(Context ctx)
+		Form(Context ctx, int epoch)
 		{
 			this.ctx = ctx;
+			this.epoch = epoch;
 		}
 
 		Result show()
@@ -259,7 +276,11 @@ public final class QuestCombatSetupDialog
 			skip.setEnabled(ctx.hasFights);
 			save.addActionListener(e -> finish(Outcome.SAVE));
 			skip.addActionListener(e -> finish(Outcome.SKIP));
-			cancel.addActionListener(e -> dialog.dispose());
+			cancel.addActionListener(e ->
+			{
+				answer = new Result(Outcome.CANCEL, null);
+				dialog.dispose();
+			});
 
 			JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 			buttons.add(save);
@@ -286,6 +307,13 @@ public final class QuestCombatSetupDialog
 			dialog.addWindowListener(new WindowAdapter()
 			{
 				@Override
+				public void windowClosing(WindowEvent e)
+				{
+					// fired only by the user's window X, never by dispose()
+					answer = new Result(Outcome.CANCEL, null);
+				}
+
+				@Override
 				public void windowOpened(WindowEvent e)
 				{
 					dialog.toFront();
@@ -306,6 +334,7 @@ public final class QuestCombatSetupDialog
 			});
 			dialog.setAlwaysOnTop(true);
 			openDialog = dialog;
+			openEpoch = epoch;
 			dialog.setVisible(true);
 			return answer;
 		}

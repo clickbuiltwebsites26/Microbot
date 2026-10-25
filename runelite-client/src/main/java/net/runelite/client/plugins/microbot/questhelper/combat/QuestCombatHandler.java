@@ -77,9 +77,12 @@ public class QuestCombatHandler
 	private volatile Phase phase = Phase.UNRESOLVED;
 	private volatile String questKey;
 	private volatile QuestCombatLoadout loadout;
-	private int generation;
+	private volatile int generation;
 	private int seenNonce = START_NONCE.get();
-	private int promptedGeneration = -1;
+	private volatile int promptedGeneration = -1;
+	private int promptsThisGeneration;
+	/** True once reset() ran and nothing has started since, so repeat resets are no-ops. */
+	private boolean pristine;
 	private final AtomicReference<QuestCombatSetupDialog.Result> pendingAnswer = new AtomicReference<>();
 
 	private boolean questHasFights;
@@ -133,6 +136,12 @@ public class QuestCombatHandler
 	/** Forget the current quest's state; the next quest tick starts from scratch. */
 	public synchronized void reset()
 	{
+		if (pristine)
+		{
+			return;
+		}
+		pristine = true;
+		promptsThisGeneration = 0;
 		generation++;
 		questKey = null;
 		loadout = null;
@@ -178,7 +187,11 @@ public class QuestCombatHandler
 		if (!key.equals(questKey))
 		{
 			reset();
-			questKey = key;
+			synchronized (this)
+			{
+				questKey = key;
+				pristine = false;
+			}
 		}
 		activeQuest = quest;
 
@@ -239,26 +252,24 @@ public class QuestCombatHandler
 		QuestCombatSetupDialog.Result answer = pendingAnswer.getAndSet(null);
 		if (answer == null)
 		{
-			if (promptedGeneration != generation)
+			final int askedIn;
+			synchronized (this)
 			{
-				promptedGeneration = generation;
-				final int askedIn = generation;
-				QuestCombatSetupDialog.Context context = buildContext(quest);
-				AWAITING_SETUP.set(true);
-				Microbot.log("Quest helper: waiting for quest setup for " + quest.getQuest().getName(), Level.INFO);
-				QuestCombatSetupDialog.showAsync(context, result ->
+				if (promptedGeneration == generation)
 				{
-					if (askedIn == generation)
-					{
-						AWAITING_SETUP.set(false);
-						pendingAnswer.set(result);
-					}
-				});
+					return true; // a dialog for this generation is already open or pending
+				}
+				promptedGeneration = generation;
+				promptsThisGeneration++;
+				askedIn = generation;
+				AWAITING_SETUP.set(true);
 			}
+			QuestCombatSetupDialog.Context context = buildContext(quest);
+			Microbot.log("Quest helper: waiting for quest setup for " + quest.getQuest().getName(), Level.INFO);
+			QuestCombatSetupDialog.showAsync(context, result -> onDialogResult(askedIn, result));
 			return true;
 		}
 
-		AWAITING_SETUP.set(false);
 		switch (answer.outcome)
 		{
 			case SAVE:
@@ -271,6 +282,47 @@ public class QuestCombatHandler
 				stopper.accept("Quest setup cancelled for " + quest.getQuest().getName());
 				phase = Phase.NONE;
 				return true;
+		}
+	}
+
+	/** What to do with a dialog result; pure so it can be tested. */
+	enum AnswerAction
+	{
+		IGNORE, ACCEPT, STOP, REPROMPT
+	}
+
+	static AnswerAction decide(QuestCombatSetupDialog.Outcome outcome, int askedIn, int currentGeneration,
+		int promptsThisGeneration)
+	{
+		if (askedIn != currentGeneration)
+		{
+			return AnswerAction.IGNORE;
+		}
+		switch (outcome)
+		{
+			case SAVE:
+			case SKIP:
+				return AnswerAction.ACCEPT;
+			case CANCEL:
+				return AnswerAction.STOP;
+			default:
+				return promptsThisGeneration <= 1 ? AnswerAction.REPROMPT : AnswerAction.STOP;
+		}
+	}
+
+	private synchronized void onDialogResult(int askedIn, QuestCombatSetupDialog.Result result)
+	{
+		switch (decide(result.outcome, askedIn, generation, promptsThisGeneration))
+		{
+			case IGNORE:
+				return;
+			case REPROMPT:
+				Microbot.log("Quest helper: setup dialog closed without an answer; asking again", Level.INFO);
+				promptedGeneration = -1; // next tick prompts once more; AWAITING_SETUP stays true
+				return;
+			default:
+				AWAITING_SETUP.set(false);
+				pendingAnswer.set(result);
 		}
 	}
 
