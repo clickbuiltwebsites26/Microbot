@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.questhelper.combat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,7 +18,9 @@ import net.runelite.api.NPCComposition;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.BasicQuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
+import net.runelite.client.plugins.microbot.questhelper.requirements.Requirement;
 import net.runelite.client.plugins.microbot.questhelper.requirements.item.ItemRequirement;
+import net.runelite.client.plugins.microbot.questhelper.steps.DetailedQuestStep;
 import net.runelite.client.plugins.microbot.questhelper.steps.NpcStep;
 import net.runelite.client.plugins.microbot.questhelper.steps.OwnerStep;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
@@ -95,6 +98,122 @@ public final class QuestCombatDetector
 		}
 		QuestStep current = quest.getCurrentStep();
 		return current != null && containsKillStep(Collections.singleton(current), seen);
+	}
+
+	private static QuestHelper remainingQuest;
+	private static int remainingProgress = Integer.MIN_VALUE;
+	private static boolean remainingResult;
+
+	/**
+	 * Whether a kill step is still ahead: any step keyed at or above the quest's current progress (varp or varbit, read
+	 * through {@link QuestHelper#getVar()}), including the substeps of conditional steps. True when the structure or the
+	 * progress cannot be read. The answer is cached per quest and progress value.
+	 */
+	public static synchronized boolean hasFightsRemaining(QuestHelper quest)
+	{
+		if (quest == null)
+		{
+			return true;
+		}
+		Integer progress = progressOf(quest);
+		Map<Integer, QuestStep> steps = quest instanceof BasicQuestHelper ? ((BasicQuestHelper) quest).getStepList() : null;
+		if (progress == null || steps == null)
+		{
+			return true;
+		}
+		if (quest == remainingQuest && progress == remainingProgress)
+		{
+			return remainingResult;
+		}
+		Set<QuestStep> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+		boolean result = containsKillStep(valuesFrom(steps, progress), seen);
+		remainingQuest = quest;
+		remainingProgress = progress;
+		remainingResult = result;
+		return result;
+	}
+
+	/** Item ids required by the quest's steps that are still ahead (the current one included), alternates too. */
+	public static Set<Integer> remainingStepItemIds(QuestHelper quest)
+	{
+		Set<Integer> ids = new HashSet<>();
+		if (quest == null)
+		{
+			return ids;
+		}
+		Collection<QuestStep> steps = Collections.emptyList();
+		if (quest instanceof BasicQuestHelper && ((BasicQuestHelper) quest).getStepList() != null)
+		{
+			Map<Integer, QuestStep> all = ((BasicQuestHelper) quest).getStepList();
+			Integer progress = progressOf(quest);
+			// unreadable progress keeps every step's items rather than risk banking one that is still needed
+			steps = progress == null ? all.values() : valuesFrom(all, progress);
+		}
+		Set<QuestStep> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+		collectItemIds(steps, seen, ids);
+		if (quest.getCurrentStep() != null)
+		{
+			collectItemIds(Collections.singleton(quest.getCurrentStep()), seen, ids);
+		}
+		return ids;
+	}
+
+	private static void collectItemIds(Collection<QuestStep> steps, Set<QuestStep> seen, Set<Integer> out)
+	{
+		for (QuestStep step : steps)
+		{
+			if (step == null || !seen.add(step))
+			{
+				continue;
+			}
+			if (step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getRequirements() != null)
+			{
+				for (Requirement requirement : ((DetailedQuestStep) step).getRequirements())
+				{
+					if (requirement instanceof ItemRequirement)
+					{
+						for (Integer id : ((ItemRequirement) requirement).getAllIds())
+						{
+							if (id != null && id > 0)
+							{
+								out.add(id);
+							}
+						}
+					}
+				}
+			}
+			if (step instanceof OwnerStep)
+			{
+				collectItemIds(((OwnerStep) step).getSteps(), seen, out);
+			}
+		}
+	}
+
+	private static Integer progressOf(QuestHelper quest)
+	{
+		try
+		{
+			Integer progress = Microbot.getClientThread().runOnClientThreadOptional(quest::getVar).orElse(null);
+			return progress == null || progress < 0 ? null : progress;
+		}
+		catch (RuntimeException e)
+		{
+			return null;
+		}
+	}
+
+	/** Entries of a progress-keyed step map whose key is at or above the current progress. */
+	static <T> List<T> valuesFrom(Map<Integer, T> steps, int progress)
+	{
+		List<T> out = new ArrayList<>();
+		for (Map.Entry<Integer, T> entry : steps.entrySet())
+		{
+			if (entry.getKey() != null && entry.getKey() >= progress && entry.getValue() != null)
+			{
+				out.add(entry.getValue());
+			}
+		}
+		return out;
 	}
 
 	private static boolean containsKillStep(Collection<QuestStep> steps, Set<QuestStep> seen)

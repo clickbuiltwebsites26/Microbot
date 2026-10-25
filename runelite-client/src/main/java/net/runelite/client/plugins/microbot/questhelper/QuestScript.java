@@ -520,6 +520,7 @@ public class QuestScript extends Script {
 			}
 		}
 
+		clearInventoryForQuest();
 		if (makeRoomForCarryLimited(inBank)) {
 			return true;
 		}
@@ -551,6 +552,16 @@ public class QuestScript extends Script {
 		}
 
 		return true;
+	}
+
+	/** With the bank open, banks what the rest of the quest no longer needs before any carry cap is computed. */
+	private void clearInventoryForQuest() {
+		QuestHelper quest = getQuestHelperPlugin().getSelectedQuest();
+		if (quest == null) {
+			return;
+		}
+		QuestStep current = quest.getCurrentStep();
+		combat.prepareBankInventory(quest, current == null ? null : current.getActiveStep());
 	}
 
 	/** With the bank open, clears unrelated items when a carry-limited item has no room at all. Returns true if it deposited. */
@@ -623,6 +634,7 @@ public class QuestScript extends Script {
 			}
 		}
 
+		clearInventoryForQuest();
 		if (makeRoomForCarryLimited(actionable)) {
 			return true;
 		}

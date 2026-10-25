@@ -11,10 +11,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 import net.runelite.api.EquipmentInventorySlot;
+import net.runelite.api.ItemID;
 import net.runelite.api.Skill;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout.GearSpec;
 import net.runelite.api.coords.WorldPoint;
@@ -547,7 +549,8 @@ public class QuestCombatHandler
 	public boolean prepareForKill(QuestStep step, int reservedSlots)
 	{
 		QuestCombatLoadout current = loadout;
-		if (phase != Phase.ACTIVE || current == null || current.isSkip() || Rs2Combat.inCombat())
+		if (phase != Phase.ACTIVE || current == null || current.isSkip() || Rs2Combat.inCombat()
+			|| !QuestCombatDetector.hasFightsRemaining(activeQuest))
 		{
 			return false;
 		}
@@ -661,13 +664,24 @@ public class QuestCombatHandler
 			return true;
 		}
 
+		boolean fights = QuestCombatDetector.hasFightsRemaining(activeQuest);
+		prepareBankInventory(activeQuest, activeStep);
+
 		int reserved = Math.min(27, stepReserved + reserveFor(current));
 
 		if (current.wantsStamina())
 		{
 			int held = staminaCount(current);
-			int target = carry(current.getStaminaQty(), held, reserved);
+			// with no fights left the free slots go to the quest items, so a single run potion is all that is kept
+			int target = carry(fights ? current.getStaminaQty() : 1, held, reserved);
 			withdrawPotion(current.getStaminaType().getItemName(), target - held);
+		}
+		if (!fights)
+		{
+			Rs2Bank.closeBank();
+			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+			supplied = true;
+			return true;
 		}
 		if (current.wantsPotions())
 		{
@@ -679,7 +693,7 @@ public class QuestCombatHandler
 		{
 			withdrawCustom(item, reserved);
 		}
-		boolean wantFood = current.wantsFood() && questHasFights;
+		boolean wantFood = current.wantsFood();
 		if (wantFood)
 		{
 			int held = foodCount(current);
@@ -698,8 +712,8 @@ public class QuestCombatHandler
 		supplied = true;
 		if (!gotFood)
 		{
-			stopper.accept("No " + current.getFood() + " in the bank for the combat setup. "
-				+ "Stock some, or reset the quest setup and choose Skip.");
+			warnOnce("food:" + current.getFood(), "Quest helper: no " + current.getFood()
+				+ " in the bank for the combat setup, continuing without food");
 		}
 		return true;
 	}
@@ -844,7 +858,7 @@ public class QuestCombatHandler
 		{
 			return java.util.Arrays.asList("Energy potion", "Super energy");
 		}
-		return Collections.singletonList("Stamina potion");
+		return java.util.Arrays.asList("Stamina potion", "Energy potion", "Super energy");
 	}
 
 	/** Inventory stamina or energy potions of any dose that are not quest items. */
@@ -1021,6 +1035,138 @@ public class QuestCombatHandler
 	}
 
 	/**
+	 * Whether a bank visit should deposit an inventory item. Protected items (quest items, coins, kept run potions) are
+	 * never deposited; supplies (setup food, potions, custom items) are kept only while a fight still lies ahead.
+	 */
+	static boolean shouldDeposit(boolean protectedItem, boolean supplyItem, boolean fightsRemaining)
+	{
+		return !protectedItem && !(fightsRemaining && supplyItem);
+	}
+
+	/**
+	 * With the bank open for a quest reason, deposits everything the rest of the quest does not need so bulk
+	 * withdrawals get the freed slots. With no fights left, setup food and potions go too, and when the setup asked for
+	 * stamina one run potion is kept (or withdrawn) for the 600ms tick to drink. Equipment is never touched.
+	 *
+	 * @return true when anything was deposited
+	 */
+	public boolean prepareBankInventory(QuestHelper quest, QuestStep step)
+	{
+		if (quest == null || !Rs2Bank.isOpen())
+		{
+			return false;
+		}
+		activeQuest = quest;
+		if (step != null)
+		{
+			activeStep = step;
+		}
+		boolean fights = QuestCombatDetector.hasFightsRemaining(quest);
+		QuestCombatLoadout current = phase == Phase.ACTIVE ? loadout : null;
+		boolean wantsRunPotion = current != null && current.wantsStamina();
+		boolean lowHp = recovering || Rs2Player.getHealthPercentage() <= eatThreshold();
+
+		Set<Integer> keep = new HashSet<>(protectedItemIds());
+		keep.add(ItemID.COINS_995);
+		keep.addAll(QuestCombatDetector.remainingStepItemIds(quest));
+
+		Predicate<Rs2ItemModel> deposit = item ->
+		{
+			boolean protectedItem = keep.contains(item.getId()) || (wantsRunPotion && isRunPotion(item))
+				|| (lowHp && item.isFood());
+			return shouldDeposit(protectedItem, current != null && isSupply(current, item), fights);
+		};
+		Microbot.status = "Quest helper: banking items the quest no longer needs";
+		boolean deposited = Rs2Bank.depositAll(deposit);
+		if (!fights && wantsRunPotion)
+		{
+			ensureRunPotion();
+		}
+		return deposited;
+	}
+
+	private static String baseName(Rs2ItemModel item)
+	{
+		return item.getName() == null ? "" : item.getName().replaceAll("\\s*\\(\\d+\\)$", "").trim();
+	}
+
+	private static boolean isRunPotion(Rs2ItemModel item)
+	{
+		if (item.isNoted())
+		{
+			return false;
+		}
+		String base = baseName(item);
+		return base.equalsIgnoreCase("Stamina potion") || base.equalsIgnoreCase("Energy potion")
+			|| base.equalsIgnoreCase("Super energy");
+	}
+
+	/** Setup food, potions and custom items: what a fight needs and the rest of the quest does not. */
+	private static boolean isSupply(QuestCombatLoadout current, Rs2ItemModel item)
+	{
+		String name = item.getName();
+		if (name == null || item.isNoted())
+		{
+			return false;
+		}
+		if (current.wantsFood() && name.equalsIgnoreCase(current.getFood()))
+		{
+			return true;
+		}
+		if (current.wantsPotions() && baseName(item).equalsIgnoreCase(current.getPotion().getItemName()))
+		{
+			return true;
+		}
+		for (QuestCombatLoadout.InventoryItem wanted : current.getInventoryItems())
+		{
+			if (wanted.getId() > 0 ? item.getId() == wanted.getId() : name.equalsIgnoreCase(wanted.getName()))
+			{
+				return true;
+			}
+		}
+		return current.wantsStamina() && isRunPotion(item);
+	}
+
+	/** Keeps one run potion for a bulk trip: the one already held, else a single dose potion from the bank. */
+	private void ensureRunPotion()
+	{
+		if (Rs2Inventory.items(QuestCombatHandler::isRunPotion).findAny().isPresent() || Rs2Inventory.isFull())
+		{
+			return;
+		}
+		if (!Rs2Bank.setWithdrawAsItem())
+		{
+			return;
+		}
+		Rs2ItemModel pick = null;
+		for (String name : new String[]{"Stamina potion", "Energy potion", "Super energy"})
+		{
+			for (Rs2ItemModel item : Rs2Bank.bankItems())
+			{
+				if (item != null && !item.isNoted() && item.getName() != null && baseName(item).equalsIgnoreCase(name))
+				{
+					pick = item;
+					break;
+				}
+			}
+			if (pick != null)
+			{
+				break;
+			}
+		}
+		if (pick == null)
+		{
+			warnOnce("runpotion", "Quest helper: no stamina or energy potion in the bank, continuing without one");
+			return;
+		}
+		Rs2Bank.withdrawX(pick.getId(), 1);
+		if (!sleepUntil(() -> Rs2Inventory.items(QuestCombatHandler::isRunPotion).findAny().isPresent(), 3_000))
+		{
+			Microbot.log("Quest helper: withdrawing a run potion did not land in time", Level.WARN);
+		}
+	}
+
+	/**
 	 * Ids of every item the quest needs (quest-level and active-step item requirements with their alternates, plus the
 	 * step icon item). Recommended items are excluded on purpose: those are the normal food the player wants eaten.
 	 * Cached per quest and step.
@@ -1172,6 +1318,7 @@ public class QuestCombatHandler
 			return true;
 		}
 
+		prepareBankInventory(activeQuest, step);
 		QuestCombatLoadout current = loadout;
 		boolean named = current != null && !current.isSkip() && current.wantsFood()
 			&& Rs2Bank.count(current.getFood(), true) > 0 && !bankItemProtected(current.getFood());
