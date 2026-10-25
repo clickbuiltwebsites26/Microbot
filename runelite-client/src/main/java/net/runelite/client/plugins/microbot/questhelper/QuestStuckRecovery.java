@@ -30,10 +30,15 @@ final class QuestStuckRecovery
 	/** Hash of everything that counts as progress. */
 	static long signature(QuestStep step, int questVar, boolean inDialogue)
 	{
+		return signature(step, questVar, inDialogue, 0L);
+	}
+
+	static long signature(QuestStep step, int questVar, boolean inDialogue, long extraProgress)
+	{
 		WorldPoint at = Rs2Player.getWorldLocation();
 		int inv = Rs2Inventory.items().mapToInt(i -> 31 * i.getId() + i.getQuantity()).sum();
 		String text = step == null ? "" : String.valueOf(step.getText());
-		return Objects.hash(at, System.identityHashCode(step), text, questVar, inv, inDialogue);
+		return Objects.hash(at, System.identityHashCode(step), text, questVar, inv, inDialogue, extraProgress);
 	}
 
 	/** Stage 1: cancel the walk and its interim route; the main loop re-plans on its next pass. */

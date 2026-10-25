@@ -461,6 +461,7 @@ public class QuestScript extends Script {
 				stuckWatchdog.reset(now);
 				return;
 			}
+			endEscortIfInactive(selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep());
 			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();
 			if (walkTarget != null) lastWalkTarget = walkTarget;
 			QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
@@ -469,7 +470,7 @@ public class QuestScript extends Script {
 					|| QuestCombatHandler.isAwaitingSetup() || QuestPreflight.isInProgress()
 					|| Rs2Combat.inCombat() || Rs2Bank.isOpen();
 			QuestStuckWatchdog.Stage entered = stuckWatchdog.tick(now,
-					QuestStuckRecovery.signature(step, var, Rs2Dialogue.isInDialogue()), suppressed);
+					QuestStuckRecovery.signature(step, var, Rs2Dialogue.isInDialogue(), escortProgress), suppressed);
 			stuckStage = stuckWatchdog.current().name();
 			stuckForMs = stuckWatchdog.stuckForMs(now);
 			if (entered == null) return;
@@ -2444,6 +2445,7 @@ public class QuestScript extends Script {
 		stuckWatchdog.reset(System.currentTimeMillis());
 		stuckStage = "NONE";
 		combat.reset();
+		endEscort();
 		if (autoRetaliateDisabledByUs) {
 			// shutdown may run on a caller that must not block, so restore off-thread
 			Thread restorer = new Thread(this::restoreAutoRetaliate, "quest-restore-retaliate");
@@ -2555,6 +2557,7 @@ public class QuestScript extends Script {
                 npc.click("");
             } else {
                 npc.click(chooseCorrectNPCOption(step, npc));
+                lastTalkedNpcId = npc.getId();
                 if (step.isAllowMultipleHighlights()) {
                     multiNpcTarget.commit(step, npc.getIndex(), System.currentTimeMillis());
                 }
@@ -3196,8 +3199,132 @@ public class QuestScript extends Script {
 				&& fromArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), targetArea);
 	}
 
+    // ---- escort steps (an NPC follows the player; sprinting ahead makes it stop) ----
+    private volatile long escortProgress;
+    private volatile int lastTalkedNpcId = -1;
+    private int escortActions;
+    private int escortLastGap = Integer.MAX_VALUE;
+    private volatile boolean escortActive;
+    private Boolean escortRunBefore;
+    private boolean escortAutoRunBefore;
+    private WorldPoint escortFollowerLastSeen;
+
+    private static boolean isEscortStep(DetailedQuestStep step) {
+        if (step instanceof EscortStep) return true;
+        if (step.getClass() != DetailedQuestStep.class || step.getDefinedPoint() == null
+                || step.getIconItemID() != -1) return false;
+        return EscortSupport.matchesEscortText(String.join(" ", step.getText()));
+    }
+
+    private void endEscortIfInactive(QuestStep activeStep) {
+        if (escortActive && !(activeStep instanceof DetailedQuestStep && isEscortStep((DetailedQuestStep) activeStep))) {
+            endEscort();
+        }
+    }
+
+    private void endEscort() {
+        if (!escortActive) return;
+        escortActive = false;
+        Microbot.enableAutoRunOn = escortAutoRunBefore;
+        Boolean wasRun = escortRunBefore;
+        escortRunBefore = null;
+        escortFollowerLastSeen = null;
+        escortLastGap = Integer.MAX_VALUE;
+        if (wasRun != null && wasRun) {
+            Thread restorer = new Thread(() -> Rs2Player.toggleRunEnergy(true), "quest-restore-run");
+            restorer.setDaemon(true);
+            restorer.start();
+        }
+    }
+
+    private Rs2NpcModel findEscortFollower(DetailedQuestStep step) {
+        WorldPoint me = Rs2Player.getWorldLocation();
+        if (step instanceof EscortStep && ((EscortStep) step).getFollowerIds().length > 0) {
+            Rs2NpcModel byId = Microbot.getRs2NpcCache().query().withIds(((EscortStep) step).getFollowerIds())
+                    .nearestOnClientThread(me, 25);
+            if (byId != null) return byId;
+        }
+        Rs2NpcModel following = Microbot.getRs2NpcCache().query().within(me, 15)
+                .where(Rs2NpcModel::isInteractingWithPlayer).nearestOnClientThread(me, 15);
+        if (following != null) return following;
+        if (lastTalkedNpcId != -1) {
+            return Microbot.getRs2NpcCache().query().withId(lastTalkedNpcId).nearestOnClientThread(me, 25);
+        }
+        return null;
+    }
+
+    private boolean applyEscortStep(DetailedQuestStep step) {
+        WorldPoint target = step.getDefinedPoint() == null ? null : step.getDefinedPoint().getWorldPoint();
+        WorldPoint me = Rs2Player.getWorldLocation();
+        if (target == null || me == null) return false;
+
+        if (!escortActive) {
+            escortActive = true;
+            escortRunBefore = Rs2Player.isRunEnabled();
+            escortAutoRunBefore = Microbot.enableAutoRunOn;
+            escortActions = 0;
+        }
+        Microbot.enableAutoRunOn = false; // the walker must not turn run back on
+        if (Rs2Player.isRunEnabled()) {
+            Rs2Player.toggleRunEnergy(false);
+        }
+
+        Rs2NpcModel follower = findEscortFollower(step);
+        WorldPoint followerAt = follower == null ? null : follower.getWorldLocation();
+        if (followerAt != null) escortFollowerLastSeen = followerAt;
+        boolean waitedOut = false;
+        if (followerAt != null && me.distanceTo(followerAt) > EscortSupport.KEEP_CLOSE
+                && me.distanceTo(followerAt) <= EscortSupport.LOST_DISTANCE) {
+            final Rs2NpcModel f = follower;
+            waitedOut = !sleepUntil(() -> {
+                WorldPoint p = f.getWorldLocation();
+                WorldPoint m = Rs2Player.getWorldLocation();
+                return p != null && m != null && m.distanceTo(p) <= EscortSupport.KEEP_CLOSE;
+            }, 6_000);
+            followerAt = follower.getWorldLocation();
+            me = Rs2Player.getWorldLocation();
+            if (followerAt == null || me == null) return true;
+        }
+        int gap = followerAt == null ? Integer.MAX_VALUE : me.distanceTo(followerAt);
+        if (gap < escortLastGap) escortActions++;
+        escortLastGap = gap;
+
+        boolean interacting = follower != null && follower.isInteractingWithPlayer();
+        EscortSupport.Action action = EscortSupport.decide(me, followerAt, interacting, waitedOut, target);
+        switch (action) {
+            case ARRIVED:
+                return true;
+            case FIND_FOLLOWER:
+                if (escortFollowerLastSeen != null && me.distanceTo(escortFollowerLastSeen) > 2) {
+                    escortActions++;
+                    Rs2Walker.walkTo(escortFollowerLastSeen, 2);
+                }
+                break;
+            case CATCH_UP:
+                escortActions++;
+                Rs2Walker.walkTo(followerAt, 1);
+                break;
+            case TALK_TO_FOLLOWER:
+                escortActions++;
+                if (follower.click(chooseCorrectNPCOption(step, follower))) {
+                    sleepUntil(Rs2Dialogue::isInDialogue, 5_000);
+                }
+                break;
+            case HOP:
+                escortActions++;
+                Rs2Walker.walkTo(EscortSupport.nextHop(me, target, EscortSupport.MAX_HOP), 0);
+                break;
+            case WAIT_FOR_FOLLOWER:
+            default:
+                break;
+        }
+        escortProgress = EscortSupport.progressToken(escortActions, gap == Integer.MAX_VALUE ? 999 : gap);
+        return true;
+    }
+
     private boolean applyDetailedQuestStep(DetailedQuestStep conditionalStep) {
         if (conditionalStep instanceof NpcStep) return false;
+        if (isEscortStep(conditionalStep)) return applyEscortStep(conditionalStep);
         if (conditionalStep instanceof MonumentKeyStep) return applyMonumentKeyStep((MonumentKeyStep) conditionalStep);
 
         WorldPoint definedPoint = conditionalStep.getDefinedPoint() == null ? null : conditionalStep.getDefinedPoint().getWorldPoint();
