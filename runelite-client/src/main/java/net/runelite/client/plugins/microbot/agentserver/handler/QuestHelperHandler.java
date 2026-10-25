@@ -265,7 +265,12 @@ public class QuestHelperHandler extends AgentHandler
 			return;
 		}
 
+		// Global key drives the toolbar toggle; the profile key is what Quest Helper itself reads
 		Microbot.getConfigManager().setConfiguration(
+			QuestHelperConfig.QUEST_HELPER_GROUP,
+			"TurnOn",
+			true);
+		Microbot.getConfigManager().setRSProfileConfiguration(
 			QuestHelperConfig.QUEST_HELPER_GROUP,
 			"TurnOn",
 			true);
@@ -299,10 +304,13 @@ public class QuestHelperHandler extends AgentHandler
 			.runOnClientThreadOptional(() ->
 			{
 				plugin.getQuestManager().shutDownQuest(true);
-				Microbot.getConfigManager().setConfiguration(
-					QuestHelperConfig.QUEST_HELPER_GROUP,
-					"TurnOn",
-					false);
+				if (Microbot.getConfigManager() != null)
+				{
+					Microbot.getConfigManager().setConfiguration(
+						QuestHelperConfig.QUEST_HELPER_GROUP,
+						"TurnOn",
+						false);
+				}
 				return true;
 			})
 			.orElse(false);
