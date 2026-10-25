@@ -1792,8 +1792,32 @@ public class QuestScript extends Script {
 		return false;
 	}
 
+	private static final Pattern STEP_USES_ITEM_TEXT = Pattern.compile(
+			"\\b(bring|give|hand|use|deliver|show)\\b", Pattern.CASE_INSENSITIVE);
+
+	/**
+	 * Whether a step-level item requirement must be on the player for the step to act. Equipped items, the step's
+	 * icon item (use X on Y), highlighted items and steps whose text brings, gives, hands in, uses, delivers or shows
+	 * the item qualify; plain carry-along requirements on ladders, stairs, doors and talk-to steps do not.
+	 */
+	static boolean stepNeedsItemRequirement(boolean stepHasIcon, String stepText, boolean mustBeEquipped, boolean highlighted) {
+		if (mustBeEquipped || highlighted || stepHasIcon) {
+			return true;
+		}
+		return stepText != null && STEP_USES_ITEM_TEXT.matcher(stepText).find();
+	}
+
+	private static String stepText(DetailedQuestStep questStep) {
+		List<String> text = questStep.getText();
+		return text == null ? "" : String.join(" ", text);
+	}
+
 	private List<Requirement> collectAllItemRequirements(DetailedQuestStep questStep) {
 		List<Requirement> combined = new ArrayList<>(questStep.getRequirements());
+		// Carry-along requirements on travel steps are informational; the step that uses the item fetches it
+		combined.removeIf(req -> req instanceof ItemRequirement
+				&& !stepNeedsItemRequirement(questStep.getIconItemID() != -1, stepText(questStep),
+				((ItemRequirement) req).mustBeEquipped(), ((ItemRequirement) req).isHighlightInInventory()));
 
 		Set<Integer> seenIds = new HashSet<>();
 		for (Requirement req : questStep.getRequirements()) {
