@@ -262,6 +262,7 @@ public class PriestInPeril extends BasicQuestHelper
 		returnToTemple = new ObjectStep(this, ObjectID.PRIESTPERILTEMPLEDOORR, new WorldPoint(3408, 3488, 0),
 			"Return to the temple.", bucket, lotsOfRuneEssence, rangedMagedGear);
 		killMonk = new NpcStep(this, NpcID.PRIESTPERILEVILMONK3, new WorldPoint(3412, 3488, 0), "Kill a Monk of Zamorak (level 30) for a golden key. You can safespot using the pews.", true, goldenKey);
+		((NpcStep) killMonk).addAlternateNpcs(NpcID.PRIESTPERILEVILMONK3_VIS);
 
 		goUpToFloorOneTemple = new ObjectStep(this, ObjectID.SPIRALSTAIRS, new WorldPoint(3418, 3493, 0), "Go upstairs.");
 		goUpToFloorTwoTemple = new ObjectStep(this, ObjectID.LADDER, new WorldPoint(3410, 3485, 1), "Climb up the ladder.");
