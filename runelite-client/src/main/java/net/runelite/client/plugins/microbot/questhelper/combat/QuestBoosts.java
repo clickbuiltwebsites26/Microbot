@@ -123,6 +123,60 @@ public final class QuestBoosts
 		return boostedLevel <= realLevel + ACTIVE_BOOST_MARGIN;
 	}
 
+	/** Skills a held boost potion raises by item name (any dose), divine variants included; empty if not a boost. */
+	public static Set<Skill> skillsOfHeld(String itemName)
+	{
+		Potion potion = byItemName(itemName);
+		if (potion != null)
+		{
+			return potion.skills();
+		}
+		if (itemName == null)
+		{
+			return Collections.emptySet();
+		}
+		String base = itemName.replaceAll("\\s*\\(\\d+\\)$", "").trim().toLowerCase(Locale.ROOT);
+		if (!base.startsWith("divine "))
+		{
+			return Collections.emptySet();
+		}
+		switch (base.substring("divine ".length()))
+		{
+			case "super attack potion":
+				return EnumSet.of(Skill.ATTACK);
+			case "super strength potion":
+				return EnumSet.of(Skill.STRENGTH);
+			case "super defence potion":
+				return EnumSet.of(Skill.DEFENCE);
+			case "super combat potion":
+				return EnumSet.of(Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE);
+			case "ranging potion":
+				return EnumSet.of(Skill.RANGED);
+			case "magic potion":
+				return EnumSet.of(Skill.MAGIC);
+			default:
+				return Collections.emptySet();
+		}
+	}
+
+	/** Drink a held boost potion regardless of any list: a skill it raises is unboosted, not a quest item, rate ok. */
+	public static boolean shouldDrinkHeld(Set<Skill> skills, int[] boosted, int[] real, boolean protectedItem,
+		long sinceLastDrinkMs, long minGapMs)
+	{
+		if (skills == null || skills.isEmpty() || protectedItem || sinceLastDrinkMs < minGapMs)
+		{
+			return false;
+		}
+		for (Skill skill : skills)
+		{
+			if (needsDrink(boosted[skill.ordinal()], real[skill.ordinal()]))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/**
 	 * Whether to drink {@code potion} now: any skill it raises is unboosted, the potion is held, it is not a protected
 	 * quest item and the rate limit has passed.

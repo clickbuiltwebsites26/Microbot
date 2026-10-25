@@ -124,4 +124,23 @@ public final class QuestPrayer
 	{
 		return p != null && p.getY() >= 3523 && p.getY() < 3968 && p.getX() >= 2944 && p.getX() < 3392;
 	}
+
+	/** Prayer points at or below which a held potion is drunk: the setup's value when set, else 15 or 30% of level. */
+	public static int drinkThreshold(int loadoutDrinkAt, int prayerLevel)
+	{
+		return loadoutDrinkAt > 0 ? loadoutDrinkAt : Math.max(15, prayerLevel * 30 / 100);
+	}
+
+	/** Drink a held prayer potion: some prayer is active (ours or the player's), points low, potion held, rate ok. */
+	public static boolean shouldDrinkHeldPotion(boolean anyPrayerActive, int points, int threshold, boolean potionHeld,
+		long sinceLastConsumeMs, long minGapMs)
+	{
+		return anyPrayerActive && potionHeld && points <= threshold && sinceLastConsumeMs >= minGapMs;
+	}
+
+	/** Prayers are to be switched off: no points left, no potion to restore with, something still on. */
+	public static boolean shouldStopPraying(boolean anyPrayerActive, int points, boolean potionHeld)
+	{
+		return anyPrayerActive && points <= 0 && !potionHeld;
+	}
 }

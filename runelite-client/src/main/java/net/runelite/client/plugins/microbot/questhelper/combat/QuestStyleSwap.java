@@ -343,4 +343,76 @@ public final class QuestStyleSwap
 	{
 		return lastProgressMs > 0 && nowMs - lastProgressMs >= FALLBACK_STALL_MS;
 	}
+
+	/** Tiles within which a kill step counts as being in the same area as the step before it. */
+	public static final int SAME_AREA_TILES = 40;
+
+	/** One step ahead of the active one, as the kit look-ahead sees it. */
+	public static final class Ahead
+	{
+		public final boolean kill;
+		public final boolean needsSwap;
+		/** In the same area as the active step: within {@link #SAME_AREA_TILES} or the same NPC. */
+		public final boolean near;
+
+		public Ahead(boolean kill, boolean needsSwap, boolean near)
+		{
+			this.kill = kill;
+			this.needsSwap = needsSwap;
+			this.near = near;
+		}
+	}
+
+	/**
+	 * Index of the upcoming kill step whose swap kit has to be ready before the active (non-kill) step runs, or -1.
+	 * Only the first kill step ahead counts, and only when it needs a swap and is in the same area as the active step
+	 * (a talk step that starts the fight).
+	 */
+	public static int upcomingSwapKill(boolean currentIsKill, List<Ahead> ahead)
+	{
+		if (currentIsKill || ahead == null)
+		{
+			return -1;
+		}
+		for (int i = 0; i < ahead.size(); i++)
+		{
+			Ahead a = ahead.get(i);
+			if (a != null && a.kill)
+			{
+				return a.needsSwap && a.near ? i : -1;
+			}
+		}
+		return -1;
+	}
+
+	/** True when the swap weapon or its ammo/runes are not held in enough quantity. */
+	public static boolean kitMissing(String weapon, boolean weaponHeld, String ammo, int ammoQty, int ammoHeld)
+	{
+		if (weapon != null && !weapon.isEmpty() && !weaponHeld)
+		{
+			return true;
+		}
+		return ammo != null && !ammo.isEmpty() && ammoQty > 0 && ammoHeld < ammoQty;
+	}
+
+	/**
+	 * The style to wield now, or null to stay. A protected current style swaps first; otherwise (no overhead data, no
+	 * protection icon read, or both planned styles protected) a target that has not lost health for
+	 * {@link #FALLBACK_STALL_MS} makes the player try the other planned style.
+	 *
+	 * @param protectedStyles styles the target protects against, or null without overhead information
+	 */
+	public static Style wantedStyle(Style current, Style primary, Style secondary, Set<Style> protectedStyles,
+		long lastProgressMs, long nowMs)
+	{
+		if (protectedStyles != null)
+		{
+			Style swap = swapTarget(current, primary, secondary, protectedStyles);
+			if (swap != null)
+			{
+				return swap;
+			}
+		}
+		return fallbackDue(lastProgressMs, nowMs) ? fallbackTarget(current, primary, secondary) : null;
+	}
 }

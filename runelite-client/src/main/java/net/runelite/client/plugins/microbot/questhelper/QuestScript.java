@@ -389,6 +389,10 @@ public class QuestScript extends Script {
 						return;
 					}
 
+					if (handleSwapKit()) {
+						return;
+					}
+
 					if (QuestCombatDetector.isKillStep(questStep) && combat.positionForKill(questStep)) {
 						return;
 					}
@@ -1254,6 +1258,32 @@ public class QuestScript extends Script {
 		}
 		Rs2Inventory.interact(invId, action);
 		sleepUntil(() -> itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 2_000);
+		return true;
+	}
+
+	/** After the bank trips: buys a style-swap kit the bank lacked, or stops the quest when it cannot be had. */
+	private boolean handleSwapKit() {
+		if (!combat.swapKitWanted()) {
+			return false;
+		}
+		boolean mayBuy = shouldObtainMissingItems();
+		if (config.obtainMissingItems() == QuestHelperConfig.ObtainMissingItemsOption.ASK
+				&& obtainItemsSessionChoice == null) {
+			mayBuy = false;
+		}
+		List<QuestPreflight.Need> needs = combat.swapKitToObtain(mayBuy);
+		if (needs == null) {
+			return false;
+		}
+		if (!needs.isEmpty()) {
+			List<ItemRequirement> missing = new ArrayList<>();
+			for (QuestPreflight.Need need : needs) {
+				missing.add(new ItemRequirement(need.name, need.ids, need.quantity));
+			}
+			missingBatch = new ArrayList<>(missing);
+			currentRequirements = new ArrayList<Requirement>(missing);
+			acquireMissingTradableItems(missing);
+		}
 		return true;
 	}
 

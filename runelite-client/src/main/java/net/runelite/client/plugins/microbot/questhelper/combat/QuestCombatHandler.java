@@ -246,6 +246,7 @@ public class QuestCombatHandler
 		swapPlanFight = null;
 		swapBlocked = false;
 		swapKitTrips = 0;
+		swapKitBuys = 0;
 		lastSwapMs = 0;
 		lastTargetProgressMs = 0;
 		lastTargetHealth = -1;
@@ -885,6 +886,16 @@ public class QuestCombatHandler
 		}
 
 		String fight = QuestCombatDetector.fightKeyOf(step);
+		QuestStep prepStep = step;
+		if (fight == null)
+		{
+			AheadKill ahead = aheadSwapKill(step);
+			if (ahead != null)
+			{
+				fight = ahead.key;
+				prepStep = ahead.step;
+			}
+		}
 		if (fight != null && !fight.equals(currentFight))
 		{
 			currentFight = fight;
@@ -904,7 +915,7 @@ public class QuestCombatHandler
 			styleAppliedFor = null;
 		}
 
-		if (QuestCombatDetector.isKillStep(step) && rechargePrayer(current))
+		if (QuestCombatDetector.isKillStep(prepStep) && rechargePrayer(current))
 		{
 			return true;
 		}
@@ -913,10 +924,10 @@ public class QuestCombatHandler
 		if (!styleMarker.equals(styleAppliedFor))
 		{
 			styleAppliedFor = styleMarker;
-			applyStyle(current, step);
+			applyStyle(current, prepStep);
 		}
 
-		prepareSwap(current, step);
+		prepareSwap(current, prepStep);
 		QuestStyleSwap.Plan kitPlan = swapPlan;
 		if (kitPlan != null && !swapBlocked && swapKitTrips < MAX_SWAP_KIT_TRIPS && swapKitMissing(kitPlan))
 		{
@@ -2506,12 +2517,138 @@ public class QuestCombatHandler
 	/** True when the plan's weapon and ammo are not both held (inventory or worn). */
 	private boolean swapKitMissing(QuestStyleSwap.Plan plan)
 	{
-		if (!plan.weapon.isEmpty() && !Rs2Inventory.hasItem(plan.weapon, true)
-			&& !Rs2Equipment.isWearing(plan.weapon, true))
+		boolean weaponHeld = plan.weapon.isEmpty() || Rs2Inventory.hasItem(plan.weapon, true)
+			|| Rs2Equipment.isWearing(plan.weapon, true);
+		return QuestStyleSwap.kitMissing(plan.weapon, weaponHeld, plan.ammo, plan.ammoQty,
+			plan.ammo.isEmpty() ? 0 : swapAmmoHeld(plan));
+	}
+
+	private static final class AheadKill
+	{
+		final QuestStep step;
+		final String key;
+
+		AheadKill(QuestStep step, String key)
 		{
-			return true;
+			this.step = step;
+			this.key = key;
 		}
-		return !plan.ammo.isEmpty() && plan.ammoQty > 0 && swapAmmoHeld(plan) < plan.ammoQty;
+	}
+
+	private QuestStep aheadFor;
+	private AheadKill aheadResult;
+	private int swapKitBuys;
+	private static final int MAX_SWAP_KIT_BUYS = 2;
+
+	/**
+	 * For a non-kill step (the talk step that starts a fight): the next kill step when it needs a style swap and is
+	 * in the same area, so its kit is ready before the fight starts. Cached per active step.
+	 */
+	private AheadKill aheadSwapKill(QuestStep step)
+	{
+		if (step == aheadFor)
+		{
+			return aheadResult;
+		}
+		aheadFor = step;
+		aheadResult = null;
+		QuestHelper quest = activeQuest;
+		if (step == null || quest == null)
+		{
+			return null;
+		}
+		try
+		{
+			List<DetailedQuestStep> steps = QuestCombatDetector.remainingDetailedSteps(quest);
+			if (steps == null)
+			{
+				return null;
+			}
+			WorldPoint here = step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null
+				? ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint() : null;
+			int npcId = step instanceof net.runelite.client.plugins.microbot.questhelper.steps.NpcStep
+				? ((net.runelite.client.plugins.microbot.questhelper.steps.NpcStep) step).getNpcID() : -1;
+			List<QuestStep> candidates = new ArrayList<>();
+			List<QuestStyleSwap.Ahead> facts = new ArrayList<>();
+			for (DetailedQuestStep s : steps)
+			{
+				if (s == step)
+				{
+					continue;
+				}
+				boolean kill = QuestCombatDetector.isKillStep(s);
+				boolean swap = false;
+				boolean near = false;
+				if (kill)
+				{
+					String key = QuestCombatDetector.fightKeyOf(s);
+					swap = QuestCombatDetector.stepNeedsSwap(s)
+						|| QuestStyleSwap.textNeedsSwap(QuestCombatDetector.restrictionTextsFor(quest, s, key));
+					WorldPoint there = s.getDefinedPoint() == null ? null : s.getDefinedPoint().getWorldPoint();
+					near = npcId > 0 && ((net.runelite.client.plugins.microbot.questhelper.steps.NpcStep) s).getNpcID() == npcId
+						|| here != null && there != null && here.getPlane() == there.getPlane()
+						&& here.distanceTo2D(there) <= QuestStyleSwap.SAME_AREA_TILES;
+				}
+				candidates.add(s);
+				facts.add(new QuestStyleSwap.Ahead(kill, swap, near));
+			}
+			int idx = QuestStyleSwap.upcomingSwapKill(false, facts);
+			if (idx >= 0)
+			{
+				QuestStep kill = candidates.get(idx);
+				aheadResult = new AheadKill(kill, QuestCombatDetector.fightKeyOf(kill));
+			}
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not look ahead for a style swap kit: " + e.getMessage(), Level.WARN);
+		}
+		return aheadResult;
+	}
+
+	/** True when a swap fight is planned, the bank trips are used up and the kit is still not held. */
+	public boolean swapKitWanted()
+	{
+		QuestStyleSwap.Plan plan = swapPlan;
+		return plan != null && !swapBlocked && swapKitTrips >= MAX_SWAP_KIT_TRIPS && !Rs2Combat.inCombat()
+			&& swapKitMissing(plan);
+	}
+
+	/**
+	 * Quest script hook, called after prepareForKill: when the bank trips could not supply the swap kit, the missing
+	 * items to buy; an empty list means the quest was stopped (kit not obtainable); null means nothing to do.
+	 */
+	public List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> swapKitToObtain(boolean mayBuy)
+	{
+		QuestStyleSwap.Plan plan = swapPlan;
+		if (!swapKitWanted())
+		{
+			return null;
+		}
+		List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> out = new ArrayList<>();
+		if (mayBuy && swapKitBuys < MAX_SWAP_KIT_BUYS)
+		{
+			swapKitBuys++;
+			if (!plan.weapon.isEmpty() && !Rs2Inventory.hasItem(plan.weapon, true)
+				&& !Rs2Equipment.isWearing(plan.weapon, true))
+			{
+				addSwapNeed(out, plan.weapon, 1);
+			}
+			if (!plan.ammo.isEmpty() && plan.ammoQty - swapAmmoHeld(plan) > 0)
+			{
+				addSwapNeed(out, plan.ammo, plan.ammoQty - swapAmmoHeld(plan));
+			}
+			if (!out.isEmpty())
+			{
+				Microbot.log("Quest helper: swap kit for " + plan.fightKey + " is not in the bank, buying it", Level.INFO);
+				return out;
+			}
+		}
+		swapBlocked = true;
+		stopper.accept("The " + plan.secondary + " kit for " + plan.fightKey + " (" + plan.weapon
+			+ (plan.ammo.isEmpty() ? "" : " + " + plan.ammo) + ") is missing and could not be bought. "
+			+ "Fighting without it would stall; get it and restart.");
+		return out;
 	}
 
 	private static int swapAmmoHeld(QuestStyleSwap.Plan plan)
@@ -2642,20 +2779,14 @@ public class QuestCombatHandler
 		}
 		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
 		QuestCombatLoadout.Style wielded = QuestCombatLoadout.styleOfWeapon(weapon == null ? null : weapon.getName());
-		QuestCombatLoadout.Style wanted;
-		if (target.protectedStyles != null)
-		{
-			wanted = QuestStyleSwap.swapTarget(wielded, plan.primary, plan.secondary, target.protectedStyles);
-		}
-		else
-		{
-			wanted = QuestStyleSwap.fallbackDue(lastTargetProgressMs, now)
-				? QuestStyleSwap.fallbackTarget(wielded, plan.primary, plan.secondary) : null;
-		}
+		QuestCombatLoadout.Style wanted = QuestStyleSwap.wantedStyle(wielded, plan.primary, plan.secondary,
+			target.protectedStyles, lastTargetProgressMs, now);
 		if (wanted == null || wanted == wielded || !QuestStyleSwap.swapAllowed(lastSwapMs, now))
 		{
 			return;
 		}
+		Microbot.log("Quest helper: swapping " + wielded + " -> " + wanted + " (target protects "
+			+ target.protectedStyles + ", no health loss for " + (now - lastTargetProgressMs) / 1000 + "s)", Level.INFO);
 		swapTo(plan, wanted, now);
 	}
 
@@ -2774,6 +2905,10 @@ public class QuestCombatHandler
 
 		if (!fighting)
 		{
+			if (now - lastInCombatMs > PRAYER_OFF_DELAY_MS)
+			{
+				heldBoostsDone = false;
+			}
 			if (prayerOnByUs && now - lastInCombatMs > PRAYER_OFF_DELAY_MS)
 			{
 				prayerOff(current);
@@ -2785,15 +2920,133 @@ public class QuestCombatHandler
 		{
 			return;
 		}
+		if (QuestCombatDetector.isKillStep(step) && heldPrayerTick(current, now))
+		{
+			return;
+		}
 		if (current.usesPrayer() && QuestCombatDetector.isKillStep(step))
 		{
 			managePrayer(current, now);
 		}
 		if (QuestCombatDetector.isKillStep(step))
 		{
+			if (heldBoostTick(now))
+			{
+				return;
+			}
 			boostTick(current, now);
 			swapTick(now);
 		}
+	}
+
+	private volatile boolean heldBoostsDone;
+	private volatile boolean heldPrayerStopped;
+
+	private static boolean anyPrayerActive()
+	{
+		if (Rs2Prayer.isQuickPrayerEnabled())
+		{
+			return true;
+		}
+		for (Rs2PrayerEnum p : Rs2PrayerEnum.values())
+		{
+			if (Rs2Prayer.isPrayerActive(p))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Held prayer potions and super restores (not quest items), lowest dose first. */
+	private List<Rs2ItemModel> heldPrayerPotions()
+	{
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> out = Rs2Inventory.items(i -> !i.isNoted() && i.getName() != null
+			&& !keep.contains(i.getId()) && (QuestPotions.matchesKind(QuestPotions.Kind.PRAYER_POTION, i.getName())
+			|| QuestPotions.matchesKind(QuestPotions.Kind.SUPER_RESTORE, i.getName()))).collect(Collectors.toList());
+		out.sort(Comparator.comparingInt(QuestCombatHandler::dose));
+		return out;
+	}
+
+	/**
+	 * In a fight with any prayer on (ours or the player's own): drinks a held prayer potion at the low-points
+	 * threshold whatever the loadout lists, and stops our prayers once points are gone with nothing to restore.
+	 *
+	 * @return true when this tick was used
+	 */
+	private boolean heldPrayerTick(QuestCombatLoadout current, long now)
+	{
+		if (Rs2Bank.isOpen())
+		{
+			return false;
+		}
+		int level = Rs2Player.getRealSkillLevel(Skill.PRAYER);
+		if (level < 1)
+		{
+			return false;
+		}
+		int points = Rs2Player.getBoostedSkillLevel(Skill.PRAYER);
+		boolean active = anyPrayerActive();
+		if (!active && points > 0)
+		{
+			heldPrayerStopped = false;
+			return false;
+		}
+		List<Rs2ItemModel> held = heldPrayerPotions();
+		if (QuestPrayer.shouldDrinkHeldPotion(active, points, QuestPrayer.drinkThreshold(current.getDrinkAtPrayer(),
+			level), !held.isEmpty(), now - lastConsumeMs, CONSUME_COOLDOWN_MS))
+		{
+			lastConsumeMs = now;
+			Rs2Inventory.interact(held.get(0), "Drink");
+			return true;
+		}
+		if (QuestPrayer.shouldStopPraying(active, points, !held.isEmpty()) && !heldPrayerStopped)
+		{
+			heldPrayerStopped = true;
+			prayerOnByUs = false;
+			offensiveOnByUs.clear();
+			if (Rs2Prayer.isQuickPrayerEnabled())
+			{
+				Rs2Prayer.toggleQuickPrayer(false);
+			}
+			warnOnce("prayerdry", "Quest helper: out of prayer points and no potion held, prayers off");
+		}
+		return false;
+	}
+
+	/** At fight start: drinks any held boost potion (listed or not) whose skill is not boosted. Once per fight. */
+	private boolean heldBoostTick(long now)
+	{
+		if (heldBoostsDone || Rs2Bank.isOpen() || now - lastConsumeMs < 600L)
+		{
+			return false;
+		}
+		Skill[] skills = Skill.values();
+		int[] boosted = new int[skills.length];
+		int[] real = new int[skills.length];
+		for (Skill skill : new Skill[]{Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE, Skill.RANGED, Skill.MAGIC})
+		{
+			boosted[skill.ordinal()] = Rs2Player.getBoostedSkillLevel(skill);
+			real[skill.ordinal()] = Rs2Player.getRealSkillLevel(skill);
+		}
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> held = Rs2Inventory.items(i -> !i.isNoted() && i.getName() != null
+			&& !QuestBoosts.skillsOfHeld(i.getName()).isEmpty()).collect(Collectors.toList());
+		held.sort(Comparator.comparingInt(QuestCombatHandler::dose));
+		for (Rs2ItemModel item : held)
+		{
+			if (QuestBoosts.shouldDrinkHeld(QuestBoosts.skillsOfHeld(item.getName()), boosted, real,
+				keep.contains(item.getId()), now - lastBoostMs, BOOST_COOLDOWN_MS))
+			{
+				lastBoostMs = now;
+				lastConsumeMs = now;
+				Rs2Inventory.interact(item, "Drink");
+				return true;
+			}
+		}
+		heldBoostsDone = true;
+		return false;
 	}
 
 	private boolean eat(QuestCombatLoadout current, long now)
