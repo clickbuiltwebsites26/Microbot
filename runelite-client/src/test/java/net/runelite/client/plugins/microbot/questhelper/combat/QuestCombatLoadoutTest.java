@@ -52,7 +52,7 @@ public class QuestCombatLoadoutTest
 		QuestCombatLoadout loaded = QuestCombatLoadout.fromJson("{\"foodQty\":99,\"eatAtPercent\":0}");
 		assertEquals(27, loaded.getFoodQty());
 		assertEquals(1, loaded.getEatAtPercent());
-		assertEquals(QuestCombatLoadout.Style.MELEE, loaded.getStyle());
+		assertEquals(QuestCombatLoadout.Style.AUTO, loaded.getStyle());
 	}
 
 	@Test

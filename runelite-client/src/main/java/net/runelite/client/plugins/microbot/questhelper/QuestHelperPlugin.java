@@ -32,6 +32,8 @@ import com.google.inject.Provides;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.bank.banktab.BankTabItems;
 import net.runelite.client.plugins.microbot.questhelper.bank.banktab.PotionStorage;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
 import net.runelite.client.plugins.microbot.questhelper.managers.*;
 import net.runelite.client.plugins.microbot.questhelper.panel.QuestHelperPanel;
@@ -494,6 +496,7 @@ public class QuestHelperPlugin extends Plugin
 			return false;
 		}
 
+		QuestCombatHandler.noteQuestStarted();
 		questManager.startUpQuest(questHelper, true);
 		return true;
 	}

@@ -265,7 +265,9 @@ public class PriestInPeril extends BasicQuestHelper
 		((NpcStep) killMonk).addAlternateNpcs(NpcID.PRIESTPERILEVILMONK3_VIS);
 
 		goUpToFloorOneTemple = new ObjectStep(this, ObjectID.SPIRALSTAIRS, new WorldPoint(3418, 3493, 0), "Go upstairs.");
+		((ObjectStep) goUpToFloorOneTemple).addAlternateObjects(61189, 61190); // live Staircase ids after game update
 		goUpToFloorTwoTemple = new ObjectStep(this, ObjectID.LADDER, new WorldPoint(3410, 3485, 1), "Climb up the ladder.");
+		((ObjectStep) goUpToFloorTwoTemple).addAlternateObjects(ObjectID.LADDERTOP); // 16679, live ladder id
 		talkToDrezel = new NpcStep(this, NpcID.PRIESTPERILTRAPPEDMONK_VIS, new WorldPoint(3418, 3489, 2), "Talk to Drezel on the top floor of the temple.");
 		talkToDrezel.addDialogSteps("So, what now?", "Yes, of course.");
 		talkToDrezel.addSubSteps(goUpToFloorOneTemple, goUpToFloorTwoTemple);
@@ -285,8 +287,10 @@ public class PriestInPeril extends BasicQuestHelper
 			"Go back up to the top floor of the temple.");
 		goUpWithWaterToFirstFloor = new ObjectStep(this, ObjectID.SPIRALSTAIRS, new WorldPoint(3418, 3493, 0),
 			"Go back up to the top floor of the temple.");
+		((ObjectStep) goUpWithWaterToFirstFloor).addAlternateObjects(61189, 61190); // live Staircase ids after game update
 		goUpWithWaterToSecondFloor = new ObjectStep(this, ObjectID.LADDER, new WorldPoint(3410, 3485, 1),
 			"Go back up to the top floor of the temple.");
+		((ObjectStep) goUpWithWaterToSecondFloor).addAlternateObjects(ObjectID.LADDERTOP); // 16679, live ladder id
 		goUpWithWaterToSecondFloor.addSubSteps(goUpWithWaterToSurface, goUpWithWaterToFirstFloor);
 
 		openDoor = new ObjectStep(this, ObjectID.PIP_PRISONDOOR, new WorldPoint(3415, 3489, 2), "Open the cell door.", ironKey);

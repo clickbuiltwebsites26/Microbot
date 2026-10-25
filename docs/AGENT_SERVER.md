@@ -841,14 +841,26 @@ curl -X POST -H "Content-Type: application/json" \
 
 ### Quest Helper
 
-`POST /quest-helper/start` with `{"name": "<quest display name>"}` starts a quest. For quests with fights the quester normally shows a combat setup dialog; send an optional `combat` field to answer it up front (saved for that quest, so no dialog):
+`POST /quest-helper/start` with `{"name": "<quest display name>"}` starts a quest. The first time a quest runs (with the "Ask for quest setup" toggle on) the quester shows a quest setup dialog: gear, food, potions, prayer, stamina potions, extra inventory items, free slots for quest items, and a style and gear per fight. `GET /quest-helper/status` reports `"awaitingSetup": true` while that dialog is open. Answer it up front with optional fields, saved for that quest so no dialog appears:
 
 ```json
-{"name": "Witch's House", "combat": {"gearSetup": "Quest melee", "food": "Lobster", "foodQty": 10, "eatAtPercent": 50,
-  "potion": "prayer_potion", "potionQty": 2, "prayer": "protect_melee", "drinkAtPrayer": 20, "style": "melee"}}
+{"name": "Priest in Peril",
+ "combat": {"food": "Lobster", "foodQty": 10, "eatAtPercent": 50, "potion": "prayer_potion", "potionQty": 2,
+   "prayer": "protect_melee", "drinkAtPrayer": 20, "style": "auto"},
+ "gear": "worn",
+ "inventory": [{"name": "Law rune", "qty": 50, "stackable": true}, {"name": "Games necklace", "qty": 1}],
+ "reserveSlots": 6,
+ "stamina": {"type": "stamina", "qty": 2, "drinkAtEnergy": 30},
+ "fights": {"Temple Guardian": {"style": "ranged", "gear": {"setup": "Quest ranged"}},
+            "Monk of Zamorak": {"style": "melee"}}}
 ```
 
-`combat` may also be the string `"skip"` (fight with current gear, no supplies). All keys are optional. `gearSetup` is an Inventory Setup name (empty keeps what is worn). `potion`: none | prayer_potion | super_restore. `prayer`: off | quick | protect_melee | protect_range | protect_magic. `style`: melee | ranged | magic. Saved setups are cleared with the "Reset combat setups" Quest Helper toggle.
+- `combat`: an object, or `"skip"` (fight with current gear, bring no food or potions). `style`: auto | melee | ranged | magic (auto reads the worn weapon). `potion`: none | prayer_potion | super_restore. `prayer`: off | quick | protect_melee | protect_range | protect_magic.
+- `gear` (main gear): `"worn"` (snapshot of what is equipped now), `{"setup": "<Inventory Setup name>"}`, or `{"items": [{"id": 1163, "slot": "head"}, {"name": "Rune scimitar", "slot": "weapon"}]}` (id or name; slot is head, cape, amulet, weapon, body, shield, legs, gloves, boots, ring or ammo). Pieces not worn are put on from the inventory or withdrawn from the bank before the fight.
+- `inventory`: items to bring, withdrawn in the supply bank trip (`stackable` counts as one slot). `reserveSlots` (0-27): free slots always kept for quest items; omitted means the quest's own estimate.
+- `stamina`: `{"type": "none|stamina|energy", "qty": 2, "drinkAtEnergy": 30}`; fetched in the same trip as food and drunk when run energy falls to the threshold. Works for quests without fights.
+- `fights`: keyed by fight name (case and "(level N)" ignored), each `{"style": ..., "gear": ...}` (or `"gearSetup": "<name>"`). A fight without an entry uses the main style and gear.
+- Without `combat`, `gear`, `inventory`, `stamina` and `fights` are merged into the saved setup, or into one that brings no food. A bad value returns 400 naming the field. Saved setups are cleared with the "Reset quest setups" Quest Helper toggle.
 
 ### Script Lifecycle
 

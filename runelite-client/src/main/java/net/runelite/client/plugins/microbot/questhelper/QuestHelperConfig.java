@@ -297,8 +297,8 @@ public interface QuestHelperConfig extends Config
 
 	@ConfigItem(
 			keyName = "askCombatSetup",
-			name = "Ask for combat setup",
-			description = "Ask which gear, food, potions, prayer and combat style to use the first time a quest with fights runs.",
+			name = "Ask for quest setup",
+			description = "Ask which gear, food, potions, prayer, stamina potions, extra items and combat styles to use the first time a quest runs.",
 			section = microbotSection
 	)
 	default boolean askCombatSetup() {
@@ -307,8 +307,8 @@ public interface QuestHelperConfig extends Config
 
 	@ConfigItem(
 			keyName = "resetCombatSetups",
-			name = "Reset combat setups",
-			description = "Turn on to forget every saved combat setup (including skipped ones). Switches itself back off.",
+			name = "Reset quest setups",
+			description = "Turn on to forget every saved quest setup (including skipped ones). Switches itself back off.",
 			section = microbotSection
 	)
 	default boolean resetCombatSetups() {

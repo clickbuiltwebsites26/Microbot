@@ -290,8 +290,12 @@ public class QuestScript extends Script {
 						return;
 					}
 
+					if (combat.prepareQuestSupplies(slotsReservedForStep(questStep))) {
+						return;
+					}
+
 					if ((QuestCombatDetector.isKillStep(questStep) || QuestCombatDetector.hasFights(selectedQuest))
-							&& combat.prepareForKill(slotsReservedForStep(questStep))) {
+							&& combat.prepareForKill(questStep, slotsReservedForStep(questStep))) {
 						return;
 					}
 
@@ -1987,6 +1991,16 @@ public class QuestScript extends Script {
                             .orElse(null));
         }
 
+        // Stale object id (game update): nothing tracked near the step's point, so look the object up by name.
+        boolean fallbackUsed = false;
+        if (needsObjectNameFallback(step, stepObjects)) {
+            Rs2TileObjectModel byName = findObjectByStepName(step);
+            if (byName != null) {
+                object = byName;
+                fallbackUsed = true;
+            }
+        }
+
         if (object != null && unreachableTarget) {
             var tileObjects = new Rs2TileObjectQueryable()
                     .where(x -> x.getTileObjectType() == TileObjectType.WALL)
@@ -2048,7 +2062,7 @@ public class QuestScript extends Script {
             Rs2Walker.clearWalkingRoute("quest-helper:object-step-interact");
 
             if (itemId == -1)
-                object.click(chooseCorrectObjectOption(step, object));
+                object.click(fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object));
             else {
                 Rs2Inventory.use(itemId);
                 object.click("");
@@ -2064,6 +2078,121 @@ public class QuestScript extends Script {
         }
 
         return true;
+    }
+
+    private static final int FALLBACK_OBJECT_RADIUS = 4;
+    private static final int TRACKED_OBJECT_RADIUS = 15;
+    private static final long NO_OBJECT_LOG_INTERVAL_MS = 30_000;
+    private final Map<Integer, String> objectNameById = new HashMap<>();
+    private QuestStep lastObjectFallbackLoggedStep = null;
+    private long lastObjectFallbackLoggedAt = 0;
+    private QuestStep lastNoObjectLoggedStep = null;
+    private long lastNoObjectLoggedAt = 0;
+
+    private static boolean needsObjectNameFallback(ObjectStep step, List<Rs2TileObjectModel> tracked) {
+        if (step.getDefinedPoint() == null || step.getDefinedPoint().getWorldPoint() == null) {
+            return false;
+        }
+        WorldPoint point = step.getDefinedPoint().getWorldPoint();
+        WorldPoint me = Rs2Player.getWorldLocation();
+        if (me == null || me.getPlane() != point.getPlane()) {
+            return false;
+        }
+        return tracked.stream().noneMatch(o -> o.getWorldLocation() != null
+                && o.getWorldLocation().getPlane() == point.getPlane()
+                && o.getWorldLocation().distanceTo(point) <= TRACKED_OBJECT_RADIUS);
+    }
+
+    private List<String> resolveStepObjectNames(ObjectStep step) {
+        List<String> names = new ArrayList<>();
+        for (int id : step.getAllObjectIds()) {
+            String name = objectNameById.get(id);
+            if (name == null) {
+                name = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+                    ObjectComposition comp = Microbot.getClient().getObjectDefinition(id);
+                    if (comp != null && comp.getImpostorIds() != null) {
+                        ObjectComposition imp = comp.getImpostor();
+                        if (imp != null) {
+                            comp = imp;
+                        }
+                    }
+                    return comp == null ? null : comp.getName();
+                }).orElse(null);
+                if (name != null && !name.isEmpty() && !"null".equalsIgnoreCase(name)) {
+                    objectNameById.put(id, name);
+                } else {
+                    name = null;
+                }
+            }
+            if (name != null && !names.contains(name)) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    /** Finds the step's object by name within FALLBACK_OBJECT_RADIUS of its point; logs (rate-limited). */
+    private Rs2TileObjectModel findObjectByStepName(ObjectStep step) {
+        WorldPoint point = step.getDefinedPoint().getWorldPoint();
+        String stepText = String.join(" ", step.getText());
+        String wantedAction = wantedObjectAction(step);
+        for (String name : resolveStepObjectNames(step)) {
+            List<Rs2TileObjectModel> candidates = Microbot.getRs2TileObjectCache().query()
+                    .withName(name)
+                    .within(point, FALLBACK_OBJECT_RADIUS)
+                    .toListOnClientThread();
+            candidates = candidates.stream()
+                    .filter(o -> o.getWorldLocation() != null && o.getWorldLocation().getPlane() == point.getPlane())
+                    .sorted(Comparator.comparingInt((Rs2TileObjectModel o) ->
+                                    wantedAction != null && o.hasAction(wantedAction) ? 0 : 1)
+                            .thenComparingInt(o -> o.getWorldLocation().distanceTo(point)))
+                    .collect(Collectors.toList());
+            if (!candidates.isEmpty()) {
+                Rs2TileObjectModel found = candidates.get(0);
+                long now = System.currentTimeMillis();
+                if (lastObjectFallbackLoggedStep != step || now - lastObjectFallbackLoggedAt > NO_OBJECT_LOG_INTERVAL_MS) {
+                    lastObjectFallbackLoggedStep = step;
+                    lastObjectFallbackLoggedAt = now;
+                    Microbot.log("Quest helper: object id " + step.getAllObjectIds() + " not found for step '" + stepText
+                            + "', using '" + name + "' id " + found.getId(), Level.WARN);
+                }
+                return found;
+            }
+        }
+        WorldPoint me = Rs2Player.getWorldLocation();
+        if (me != null && me.distanceTo(point) <= 1) {
+            long now = System.currentTimeMillis();
+            if (lastNoObjectLoggedStep != step || now - lastNoObjectLoggedAt > NO_OBJECT_LOG_INTERVAL_MS) {
+                lastNoObjectLoggedStep = step;
+                lastNoObjectLoggedAt = now;
+                Microbot.log("Quest helper: no object found for step " + stepText, Level.WARN);
+            }
+        }
+        return null;
+    }
+
+    /** Action implied by the step text (climb up/down, open), or null when the text says nothing specific. */
+    private static String wantedObjectAction(ObjectStep step) {
+        String text = step.getText() == null ? "" : String.join(" ", step.getText()).toLowerCase();
+        if (text.contains("climb up") || text.contains("upstairs") || text.contains("go up")
+                || text.contains("back up")) {
+            return "Climb-up";
+        }
+        if (text.contains("climb down") || text.contains("downstairs") || text.contains("go down")) {
+            return "Climb-down";
+        }
+        if (text.contains("open")) {
+            return "Open";
+        }
+        return null;
+    }
+
+    private String chooseFallbackObjectOption(ObjectStep step, Rs2TileObjectModel object) {
+        String wanted = wantedObjectAction(step);
+        if (wanted != null && object.hasAction(wanted)) {
+            return wanted;
+        }
+        return chooseCorrectObjectOption(step, object);
     }
 
     private static boolean isInteractableFromReachableTile(ObjectStep step, Rs2TileObjectModel object) {

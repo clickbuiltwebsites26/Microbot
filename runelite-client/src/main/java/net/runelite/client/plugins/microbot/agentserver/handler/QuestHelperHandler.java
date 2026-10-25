@@ -13,6 +13,7 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperConfig;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperPlugin;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
@@ -89,6 +90,8 @@ public class QuestHelperHandler extends AgentHandler
 		result.put("turnOn", Microbot.getConfigManager()
 			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "TurnOn"));
 
+		result.put("awaitingSetup", QuestCombatHandler.isAwaitingSetup());
+
 		QuestHelper selectedQuest = plugin.getSelectedQuest();
 		result.put("selected", selectedQuest != null);
 		if (selectedQuest != null)
@@ -148,10 +151,21 @@ public class QuestHelperHandler extends AgentHandler
 
 		QuestHelper helper = QuestHelperQuest.getByName(name);
 		Object combat = body.get("combat");
-		if (helper != null && helper.getQuest() != null && combat != null)
+		boolean hasExtras = false;
+		for (String field : new String[]{"gear", "inventory", "reserveSlots", "stamina", "fights"})
 		{
+			hasExtras |= body.get(field) != null;
+		}
+		if (helper != null && helper.getQuest() != null && (combat != null || hasExtras))
+		{
+			String questKey = helper.getQuest().name();
 			QuestCombatLoadout loadout;
-			if ("skip".equals(combat))
+			if (combat == null)
+			{
+				QuestCombatLoadout saved = QuestCombatStore.load(questKey);
+				loadout = saved != null ? saved : QuestCombatLoadout.bare();
+			}
+			else if ("skip".equals(combat))
 			{
 				loadout = QuestCombatLoadout.skipped();
 			}
@@ -172,7 +186,19 @@ public class QuestHelperHandler extends AgentHandler
 				sendJson(exchange, 400, errorResponse("combat must be \"skip\" or an object"));
 				return;
 			}
-			QuestCombatStore.save(helper.getQuest().name(), loadout);
+			if (hasExtras)
+			{
+				try
+				{
+					loadout = QuestCombatLoadout.applyOverrides(loadout, body, QuestCombatHandler::wornGear);
+				}
+				catch (IllegalArgumentException e)
+				{
+					sendJson(exchange, 400, errorResponse(e.getMessage()));
+					return;
+				}
+			}
+			QuestCombatStore.save(questKey, loadout);
 		}
 
 		if (!plugin.startQuestHelper(name))
