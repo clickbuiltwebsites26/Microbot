@@ -839,6 +839,17 @@ curl -X POST -H "Content-Type: application/json" \
 - `404` — No profile matches the given name (response includes `available` list)
 - `503` — Profile system not initialized
 
+### Quest Helper
+
+`POST /quest-helper/start` with `{"name": "<quest display name>"}` starts a quest. For quests with fights the quester normally shows a combat setup dialog; send an optional `combat` field to answer it up front (saved for that quest, so no dialog):
+
+```json
+{"name": "Witch's House", "combat": {"gearSetup": "Quest melee", "food": "Lobster", "foodQty": 10, "eatAtPercent": 50,
+  "potion": "prayer_potion", "potionQty": 2, "prayer": "protect_melee", "drinkAtPrayer": 20, "style": "melee"}}
+```
+
+`combat` may also be the string `"skip"` (fight with current gear, no supplies). All keys are optional. `gearSetup` is an Inventory Setup name (empty keeps what is worn). `potion`: none | prayer_potion | super_restore. `prayer`: off | quick | protect_melee | protect_range | protect_magic. `style`: melee | ranged | magic. Saved setups are cleared with the "Reset combat setups" Quest Helper toggle.
+
 ### Script Lifecycle
 
 The examples below use the Microbot-Hub `ExamplePlugin` (`net.runelite.client.plugins.microbot.example`); it is no longer bundled with the client.

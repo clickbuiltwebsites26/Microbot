@@ -13,6 +13,8 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperConfig;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperPlugin;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
@@ -142,6 +144,35 @@ public class QuestHelperHandler extends AgentHandler
 		{
 			sendJson(exchange, 409, errorResponse("Quest Helper plugin is not active"));
 			return;
+		}
+
+		QuestHelper helper = QuestHelperQuest.getByName(name);
+		Object combat = body.get("combat");
+		if (helper != null && helper.getQuest() != null && combat != null)
+		{
+			QuestCombatLoadout loadout;
+			if ("skip".equals(combat))
+			{
+				loadout = QuestCombatLoadout.skipped();
+			}
+			else if (combat instanceof Map)
+			{
+				try
+				{
+					loadout = QuestCombatLoadout.fromMap((Map<?, ?>) combat);
+				}
+				catch (IllegalArgumentException e)
+				{
+					sendJson(exchange, 400, errorResponse(e.getMessage()));
+					return;
+				}
+			}
+			else
+			{
+				sendJson(exchange, 400, errorResponse("combat must be \"skip\" or an object"));
+				return;
+			}
+			QuestCombatStore.save(helper.getQuest().name(), loadout);
 		}
 
 		if (!plugin.startQuestHelper(name))

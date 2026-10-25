@@ -32,6 +32,7 @@ import com.google.inject.Provides;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.bank.banktab.BankTabItems;
 import net.runelite.client.plugins.microbot.questhelper.bank.banktab.PotionStorage;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
 import net.runelite.client.plugins.microbot.questhelper.managers.*;
 import net.runelite.client.plugins.microbot.questhelper.panel.QuestHelperPanel;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
@@ -376,6 +377,13 @@ public class QuestHelperPlugin extends Plugin
 
 		if (!event.getGroup().equals(QuestHelperConfig.QUEST_HELPER_GROUP))
 		{
+			return;
+		}
+
+		if ("resetCombatSetups".equals(event.getKey()) && "true".equals(event.getNewValue()))
+		{
+			QuestCombatStore.clearAll();
+			configManager.setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "resetCombatSetups", false);
 			return;
 		}
 

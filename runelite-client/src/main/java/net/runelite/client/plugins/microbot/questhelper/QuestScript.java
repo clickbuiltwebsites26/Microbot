@@ -10,6 +10,8 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.TileObjectType;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatDetector;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
 import net.runelite.client.plugins.microbot.questhelper.logic.PiratesTreasure;
 import net.runelite.client.plugins.microbot.questhelper.logic.QuestRegistry;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
@@ -57,6 +59,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -91,6 +94,12 @@ public class QuestScript extends Script {
     private static final AtomicBoolean obtainItemsPromptInFlight = new AtomicBoolean(false);
     private static volatile Boolean obtainItemsSessionChoice;
 
+    private final QuestCombatHandler combat = new QuestCombatHandler(
+            () -> this.config, () -> mainScheduledFuture, this::stopQuesterWithReason);
+    private ScheduledFuture<?> combatSupportFuture;
+    private long nextBreakAtMs;
+    private long breakEndsAtMs;
+
     boolean unreachableTarget = false;
     int unreachableTargetCheckDist = 1;
 
@@ -124,10 +133,15 @@ public class QuestScript extends Script {
 
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
-                if (!config.startStopQuestHelper()) return;
+                if (!config.startStopQuestHelper()) {
+                    combat.reset();
+                    return;
+                }
                 if (!Microbot.isLoggedIn()) return;
                 if (!super.run()) return;
                 if (getQuestHelperPlugin().getSelectedQuest() == null) return;
+
+                if (handleShortBreak()) return;
 
                 if (Rs2Player.isAnimating())
                     Rs2Player.waitForAnimation();
@@ -259,12 +273,20 @@ public class QuestScript extends Script {
                         return;
                     }
 
+					if (combat.beginStep(selectedQuest)) {
+						return;
+					}
+
 					if (questStep instanceof DetailedQuestStep && handleRequirements((DetailedQuestStep) questStep)) {
 						sleep(500, 1000);
 						return;
 					}
 
 					if (questStep instanceof DetailedQuestStep && shouldObtainMissingItems() && handleMissingItemRequirements((DetailedQuestStep) questStep)) {
+						return;
+					}
+
+					if (QuestCombatDetector.isKillStep(questStep) && combat.prepareForKill(slotsReservedForStep(questStep))) {
 						return;
 					}
 
@@ -303,8 +325,78 @@ public class QuestScript extends Script {
                 ex.printStackTrace(System.out);
             }
         }, 0, Rs2Random.between(400, 1000), TimeUnit.MILLISECONDS);
+
+        combatSupportFuture = scheduledExecutorService.scheduleWithFixedDelay(this::combatSupportTick,
+                600, 600, TimeUnit.MILLISECONDS);
         return true;
     }
+
+    /** Idles for a few seconds now and then; true while a break is running. Timestamp based, never blocks. */
+    private boolean handleShortBreak() {
+        long now = System.currentTimeMillis();
+        if (!config.takeShortBreaks()) {
+            nextBreakAtMs = 0;
+            breakEndsAtMs = 0;
+            return false;
+        }
+        if (breakEndsAtMs > now) {
+            return true;
+        }
+        if (breakEndsAtMs != 0 || nextBreakAtMs == 0) {
+            breakEndsAtMs = 0;
+            int min = Math.max(1, config.breakEveryMinMinutes());
+            int max = Math.max(min, config.breakEveryMaxMinutes());
+            nextBreakAtMs = now + TimeUnit.MINUTES.toMillis(Rs2Random.between(min, max));
+            return false;
+        }
+        if (now < nextBreakAtMs) {
+            return false;
+        }
+
+        QuestHelper selected = getQuestHelperPlugin().getSelectedQuest();
+        QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
+        if (Rs2Combat.inCombat() || Rs2Dialogue.isInDialogue() || QuestCombatDetector.isKillStep(step)
+                || Rs2Bank.isOpen() || Rs2Player.isMoving() || Rs2Player.isAnimating() || Rs2Player.isInteracting()) {
+            return false;
+        }
+
+        int seconds = Math.max(1, config.breakLengthSeconds());
+        int length = (int) Math.max(1, Math.round(seconds * (0.75 + Math.random() * 0.5)));
+        breakEndsAtMs = now + TimeUnit.SECONDS.toMillis(length);
+        Rs2Walker.clearWalkingRoute("quest-helper:short-break");
+        Microbot.status = "Quest helper: short break (" + length + "s)";
+        Microbot.log("Quest helper: short break for " + length + "s", Level.INFO);
+        return true;
+    }
+
+    private void combatSupportTick() {
+        try {
+            if (config == null || !config.startStopQuestHelper() || !Microbot.isLoggedIn()) return;
+            if (Microbot.pauseAllScripts.get()) return;
+            QuestHelper selected = getQuestHelperPlugin().getSelectedQuest();
+            if (selected == null || selected.getCurrentStep() == null) return;
+            combat.fightTick(selected.getCurrentStep().getActiveStep());
+        } catch (Exception ex) {
+            Microbot.log("Quest helper combat support: " + ex.getMessage(), Level.WARN);
+        }
+    }
+
+	/** Free slots a combat restock must leave for the unstackable quest items this step still needs. */
+	private int slotsReservedForStep(QuestStep step) {
+		if (!(step instanceof DetailedQuestStep)) {
+			return 0;
+		}
+		int reserved = 0;
+		for (Requirement requirement : ((DetailedQuestStep) step).getRequirements()) {
+			if (requirement instanceof ItemRequirement) {
+				ItemRequirement item = (ItemRequirement) requirement;
+				if (!item.mustBeEquipped() && !hasItemRequirementOnPlayer(item)) {
+					reserved += isStackable(item) ? 1 : Math.min(uncappedQuantityNeeded(item), INVENTORY_SLOTS);
+				}
+			}
+		}
+		return reserved;
+	}
 
 	private boolean handleRequirements(DetailedQuestStep questStep) {
 		var requirements = questStep.getRequirements();
@@ -1039,6 +1131,10 @@ public class QuestScript extends Script {
 
 	/** A plain "pick up X" step requires X only as the thing to pick up, so it must not be banked or bought. */
 	private boolean isPickedUpByStep(DetailedQuestStep questStep, ItemRequirement itemRequirement) {
+		// A kill step that lists its own drop (e.g. the golden key) must not try to fetch it first
+		if (isKillNpcStep(questStep)) {
+			return !itemRequirement.mustBeEquipped() && !isItemRequirementTradable(itemRequirement);
+		}
 		if (questStep.getClass() != DetailedQuestStep.class) {
 			return false;
 		}
@@ -1047,6 +1143,33 @@ public class QuestScript extends Script {
 			return true;
 		}
 		return questStep.getText().stream().anyMatch(x -> x != null && x.toLowerCase().startsWith("pick up"));
+	}
+
+	private static boolean isKillNpcStep(QuestStep step) {
+		return step instanceof NpcStep
+				&& step.getText().stream().anyMatch(x -> x != null && x.toLowerCase().contains("kill"));
+	}
+
+	/** After the target dies, pick up the item the kill step is waiting for. */
+	private boolean lootKillDrop(NpcStep step) {
+		if (Rs2Combat.inCombat()) {
+			return false;
+		}
+		for (Requirement requirement : step.getRequirements()) {
+			if (!(requirement instanceof ItemRequirement)) {
+				continue;
+			}
+			ItemRequirement item = (ItemRequirement) requirement;
+			if (item.mustBeEquipped() || hasItemRequirementOnPlayer(item)) {
+				continue;
+			}
+			for (Integer id : item.getAllIds()) {
+				if (id != null && id > 0 && lootGroundItem(id, 8)) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private List<Requirement> collectAllItemRequirements(DetailedQuestStep questStep) {
@@ -1493,6 +1616,11 @@ public class QuestScript extends Script {
 
 	@Override
 	public void shutdown() {
+		if (combatSupportFuture != null) {
+			combatSupportFuture.cancel(true);
+			combatSupportFuture = null;
+		}
+		combat.reset();
 		super.shutdown();
 		multiNpcTarget.release();
 		reset();
@@ -1529,6 +1657,10 @@ public class QuestScript extends Script {
     }
 
     public boolean applyNpcStep(NpcStep step) {
+        if (isKillNpcStep(step) && lootKillDrop(step)) {
+            return true;
+        }
+
         List<Rs2NpcModel> npcs = step.getNpcs().stream()
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());

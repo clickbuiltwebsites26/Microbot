@@ -256,6 +256,66 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "takeShortBreaks",
+			name = "Take short breaks",
+			description = "Now and then idle for a few seconds, never during a fight, dialogue or kill step.",
+			section = microbotSection
+	)
+	default boolean takeShortBreaks() {
+		return false;
+	}
+
+	@ConfigItem(
+			keyName = "breakEveryMinMinutes",
+			name = "Break every min (minutes)",
+			description = "Shortest time between short breaks.",
+			section = microbotSection
+	)
+	default int breakEveryMinMinutes() {
+		return 5;
+	}
+
+	@ConfigItem(
+			keyName = "breakEveryMaxMinutes",
+			name = "Break every max (minutes)",
+			description = "Longest time between short breaks.",
+			section = microbotSection
+	)
+	default int breakEveryMaxMinutes() {
+		return 30;
+	}
+
+	@ConfigItem(
+			keyName = "breakLengthSeconds",
+			name = "Break length (seconds)",
+			description = "How long a short break lasts, varied by about 25 percent.",
+			section = microbotSection
+	)
+	default int breakLengthSeconds() {
+		return 20;
+	}
+
+	@ConfigItem(
+			keyName = "askCombatSetup",
+			name = "Ask for combat setup",
+			description = "Ask which gear, food, potions, prayer and combat style to use the first time a quest with fights runs.",
+			section = microbotSection
+	)
+	default boolean askCombatSetup() {
+		return true;
+	}
+
+	@ConfigItem(
+			keyName = "resetCombatSetups",
+			name = "Reset combat setups",
+			description = "Turn on to forget every saved combat setup (including skipped ones). Switches itself back off.",
+			section = microbotSection
+	)
+	default boolean resetCombatSetups() {
+		return false;
+	}
+
+	@ConfigItem(
 			keyName = "obtainMissingItems",
 			name = "Obtain Missing Items",
 			description = "Controls whether the quest helper automatically obtains missing items from the bank and Grand Exchange. 'Ask' will prompt you the first time items are needed.",
