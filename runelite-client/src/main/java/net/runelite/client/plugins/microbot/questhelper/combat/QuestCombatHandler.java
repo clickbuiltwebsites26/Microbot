@@ -667,7 +667,7 @@ public class QuestCombatHandler
 
 		if (!Rs2Bank.isOpen())
 		{
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
 			{
 				return true;
@@ -897,7 +897,7 @@ public class QuestCombatHandler
 		Microbot.status = "Quest helper: fetching emergency food";
 		if (!Rs2Bank.isOpen())
 		{
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
 			{
 				bankAttempts++;
@@ -1137,12 +1137,27 @@ public class QuestCombatHandler
 		return reserve;
 	}
 
+	/** Where banking must come back to: the active step's defined point, else the player's tile. */
+	private WorldPoint bankReturnPoint()
+	{
+		QuestStep step = activeStep;
+		if (step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null)
+		{
+			WorldPoint p = ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint();
+			if (p != null)
+			{
+				return p;
+			}
+		}
+		return Rs2Player.getWorldLocation();
+	}
+
 	private boolean restock(QuestCombatLoadout current, int stepReserved)
 	{
 		Microbot.status = "Quest helper: fetching supplies";
 		if (!Rs2Bank.isOpen())
 		{
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
 			{
 				bankAttempts++;
@@ -1916,7 +1931,7 @@ public class QuestCombatHandler
 		Microbot.status = "Quest helper: low HP, fetching food";
 		if (!Rs2Bank.isOpen())
 		{
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
 			{
 				if (++recoveryBankAttempts >= MAX_BANK_ATTEMPTS)

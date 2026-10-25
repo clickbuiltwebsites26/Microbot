@@ -735,7 +735,7 @@ public class QuestScript extends Script {
 			}
 			preflightBankAttempts++;
 			Microbot.status = "Quest helper: opening the bank to count quest items";
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			if (sleepUntil(Rs2Bank::isOpen, 15_000)) {
 				sleepUntil(() -> QuestContainerManager.getBankData().getLastUpdated() >= 0, 3_000);
 				Rs2Bank.closeBank();
@@ -941,6 +941,23 @@ public class QuestScript extends Script {
 		return reserved;
 	}
 
+	/** Where banking must come back to: the current step's defined point, else the player's tile. */
+	private WorldPoint bankReturnPoint() {
+		try {
+			QuestHelper selected = getQuestHelperPlugin().getSelectedQuest();
+			QuestStep step = selected == null || selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
+			if (step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null) {
+				WorldPoint p = ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint();
+				if (p != null) {
+					return p;
+				}
+			}
+		} catch (RuntimeException ignored) {
+			// fall back to the player's tile
+		}
+		return Rs2Player.getWorldLocation();
+	}
+
 	private boolean handleRequirements(DetailedQuestStep questStep) {
 		var requirements = questStep.getRequirements();
 
@@ -1074,7 +1091,7 @@ public class QuestScript extends Script {
 		Microbot.status = "Quest helper: fetching " + inBank.get(0).getName() + " from the bank";
 
 		if (!Rs2Bank.isOpen()) {
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			sleepUntil(Rs2Bank::isOpen, 15_000);
 			if (!Rs2Bank.isOpen()) {
 				return true;
@@ -1196,7 +1213,7 @@ public class QuestScript extends Script {
 
 		if (!Rs2Bank.isOpen()) {
 			Microbot.status = "Quest helper: walking to bank for missing items";
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			sleepUntil(Rs2Bank::isOpen, 15_000);
 			if (!Rs2Bank.isOpen()) {
 				return true;
@@ -1546,7 +1563,7 @@ public class QuestScript extends Script {
 
 		if (!Rs2Bank.isOpen()) {
 			Microbot.status = "Opening bank to retrieve purchased quest items";
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			sleepUntil(Rs2Bank::isOpen, 15_000);
 			if (!Rs2Bank.isOpen()) {
 				Microbot.log("Quest helper: failed to open bank after Grand Exchange collection", Level.WARN);
@@ -2165,7 +2182,7 @@ public class QuestScript extends Script {
 	private boolean unnoteItemsViaBank(List<ItemRequirement> items) {
 		if (!Rs2Bank.isOpen()) {
 			Microbot.status = "Quest helper: walking to bank to un-note items";
-			Rs2Bank.walkToBankAndUseBank();
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
 			sleepUntil(Rs2Bank::isOpen, 15_000);
 			if (!Rs2Bank.isOpen()) {
 				return true;
