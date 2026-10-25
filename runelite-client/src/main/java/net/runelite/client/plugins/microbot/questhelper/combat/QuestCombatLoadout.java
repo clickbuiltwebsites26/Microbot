@@ -55,6 +55,7 @@ public class QuestCombatLoadout
 	{
 		OFF("Off"),
 		QUICK("Quick prayers"),
+		BEST_OFFENSIVE("Best offensive"),
 		PROTECT_MELEE("Protect from Melee"),
 		PROTECT_RANGE("Protect from Missiles"),
 		PROTECT_MAGIC("Protect from Magic");

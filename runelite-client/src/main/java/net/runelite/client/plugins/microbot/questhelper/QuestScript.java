@@ -622,7 +622,8 @@ public class QuestScript extends Script {
 			Rs2Combat.setAutoRetaliate(false);
 			return true;
 		}
-		if (kill && !retaliateOn && autoRetaliateDisabledByUs) {
+		if (kill && !retaliateOn) {
+			// always on for kill steps, even if the player had it off: otherwise a target that hits first is never fought
 			if (Rs2Combat.setAutoRetaliate(true)) {
 				autoRetaliateDisabledByUs = false;
 			}
@@ -2531,13 +2532,21 @@ public class QuestScript extends Script {
 
         // canReach() pathfinds through closed doors (the walker opens them en route), so canReach==true
         // doesn't mean a direct click will succeed. Require line-of-sight too, or we walk instead.
+        // A kill target already in melee range is attacked even when pathfinding says "unreachable" (arena gates,
+        // fight cages): otherwise we walk at it forever while it hits us and never click Attack.
+        boolean closeKillTarget = killStep && npc != null && npc.getLocalLocation() != null
+                && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
+                && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
         if (npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation())
-                && (Microbot.getClient().isInInstancedRegion() || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))) {
+                && (closeKillTarget || Microbot.getClient().isInInstancedRegion() || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))) {
             Rs2Walker.clearWalkingRoute("quest-helper:npc-step-visible-interact");
 
             if (killStep && npcHasAction(npc, "Attack")) {
                 // Only ever the step's target: re-target it when the player is fighting something else.
-                if (!isFightingNpc(npc)) {
+                // inCombat() is true when the target hit us first, so test the interaction target instead.
+                long now = System.currentTimeMillis();
+                if (KillStepRule.shouldClickAttack(isFightingNpc(npc), now - lastKillAttackClickMs, KILL_ATTACK_MIN_INTERVAL_MS)) {
+                    lastKillAttackClickMs = now;
                     npc.click("Attack");
                 }
                 return true;
@@ -2586,6 +2595,8 @@ public class QuestScript extends Script {
 
 
     private static final int KILL_AREA_RADIUS = 12;
+    private static final long KILL_ATTACK_MIN_INTERVAL_MS = 1_200;
+    private long lastKillAttackClickMs = 0;
     private static final Pattern STEP_LEVEL = Pattern.compile("level\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
 
     private static Set<Integer> stepNpcIds(NpcStep step) {

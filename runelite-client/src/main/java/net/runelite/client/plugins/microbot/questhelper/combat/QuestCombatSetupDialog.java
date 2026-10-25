@@ -89,6 +89,7 @@ public final class QuestCombatSetupDialog
 		public int meleeLevel = 1;
 		public int rangedLevel = 1;
 		public int magicLevel = 1;
+		public int prayerLevel = 1;
 		/** Best-healing food held in the bank or inventory; null when none is known. */
 		public String bestOwnedFood;
 		/** Whether the bank contents were seen this session. */
@@ -459,6 +460,7 @@ public final class QuestCombatSetupDialog
 			potion = new JComboBox<>(QuestCombatLoadout.Potion.values());
 			potionQty = spinner(2, 0, 27, 1);
 			prayer = new JComboBox<>(QuestCombatLoadout.Prayer.values());
+			prayer.setSelectedItem(QuestPrayer.defaultPrayer(ctx.hasFights, ctx.prayerLevel));
 			drinkAt = spinner(20, 1, 98, 1);
 			staminaType = new JComboBox<>(QuestCombatLoadout.StaminaType.values());
 			staminaType.setSelectedItem(QuestCombatLoadout.StaminaType.NONE);

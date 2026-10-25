@@ -106,6 +106,11 @@ public class QuestCombatHandler
 	private final Set<String> warned = new HashSet<>();
 
 	private volatile boolean prayerOnByUs;
+	/** Offensive prayers this helper switched on ("Best offensive"), so they are switched off again. */
+	private final Set<Rs2PrayerEnum> offensiveOnByUs = new HashSet<>();
+	private int prayerRechargeFailures;
+	private static final int MAX_RECHARGE_FAILURES = 3;
+	private static final int MAX_ALTAR_TRIP = 300;
 	private volatile long lastInCombatMs;
 	private volatile long lastConsumeMs;
 	private volatile long lastStaminaMs;
@@ -182,6 +187,7 @@ public class QuestCombatHandler
 		attemptKey = "";
 		specAttempts = 0;
 		currentFight = null;
+		prayerRechargeFailures = 0;
 		fightGearDone = true;
 		styleAppliedFor = null;
 		supplied = false;
@@ -392,6 +398,7 @@ public class QuestCombatHandler
 		context.meleeLevel = Math.max(Rs2Player.getRealSkillLevel(Skill.ATTACK), Rs2Player.getRealSkillLevel(Skill.STRENGTH));
 		context.rangedLevel = Rs2Player.getRealSkillLevel(Skill.RANGED);
 		context.magicLevel = Rs2Player.getRealSkillLevel(Skill.MAGIC);
+		context.prayerLevel = Rs2Player.getRealSkillLevel(Skill.PRAYER);
 		try
 		{
 			Set<Integer> questIds = new HashSet<>();
@@ -858,6 +865,11 @@ public class QuestCombatHandler
 			}
 			fightGearDone = true;
 			styleAppliedFor = null;
+		}
+
+		if (QuestCombatDetector.isKillStep(step) && rechargePrayer(current))
+		{
+			return true;
 		}
 
 		String styleMarker = currentFight == null ? "" : currentFight;
@@ -2704,6 +2716,99 @@ public class QuestCombatHandler
 		return hasNamed ? Rs2Inventory.interact(named.get(0), "Eat") : eatBest();
 	}
 
+	/**
+	 * Before a kill step with a prayer chosen: when prayer points are low, walks to an altar and prays there. One
+	 * action per tick; gives up after a few failures so the fight is never blocked.
+	 *
+	 * @return true when this tick was used
+	 */
+	private boolean rechargePrayer(QuestCombatLoadout current)
+	{
+		if (!current.usesPrayer() || prayerRechargeFailures >= MAX_RECHARGE_FAILURES)
+		{
+			return false;
+		}
+		final int level = Rs2Player.getRealSkillLevel(Skill.PRAYER);
+		if (level < 1 || !QuestPrayer.needsRecharge(Rs2Player.getBoostedSkillLevel(Skill.PRAYER), level))
+		{
+			prayerRechargeFailures = 0;
+			return false;
+		}
+		Microbot.status = "Quest helper: recharging prayer at an altar";
+		WorldPoint here = Rs2Player.getWorldLocation();
+		net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel altar = Microbot
+			.getRs2TileObjectCache().query().withNameContains("Altar").withAction("Pray-at").nearestOnClientThread(20);
+		if (altar != null && !QuestPrayer.inWilderness(altar.getWorldLocation()))
+		{
+			if (altar.click("Pray-at")
+				&& sleepUntil(() -> Rs2Player.getBoostedSkillLevel(Skill.PRAYER) >= level, 8_000))
+			{
+				prayerRechargeFailures = 0;
+			}
+			else
+			{
+				prayerRechargeFailures++;
+			}
+			return true;
+		}
+		WorldPoint known = QuestPrayer.nearestKnownAltar(here);
+		if (known == null || known.getPlane() != here.getPlane() || known.distanceTo2D(here) > MAX_ALTAR_TRIP)
+		{
+			warnOnce("prayeraltar", "Quest helper: no altar nearby to recharge prayer, fighting with what is left");
+			prayerRechargeFailures = MAX_RECHARGE_FAILURES;
+			return false;
+		}
+		net.runelite.client.plugins.microbot.util.walker.WalkerState state = Rs2Walker.walkStep(known, 6);
+		if (state == net.runelite.client.plugins.microbot.util.walker.WalkerState.UNREACHABLE
+			|| state == net.runelite.client.plugins.microbot.util.walker.WalkerState.EXIT
+			|| state == net.runelite.client.plugins.microbot.util.walker.WalkerState.ARRIVED)
+		{
+			prayerRechargeFailures++;
+		}
+		return true;
+	}
+
+	/** "Best offensive": keep the best offensive prayers for the wielded style on, and switch off stale ones. */
+	private void manageOffensive()
+	{
+		int level = Rs2Player.getRealSkillLevel(Skill.PRAYER);
+		Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+		QuestPrayer.Unlocks unlocks = new QuestPrayer.Unlocks();
+		unlocks.chivalry = Rs2Prayer.isChivalryUnlocked();
+		unlocks.piety = Rs2Prayer.isPietyUnlocked();
+		unlocks.rigour = Rs2Prayer.isRigourUnlocked();
+		unlocks.deadeye = Rs2Prayer.isDeadeyeUnlocked();
+		unlocks.augury = Rs2Prayer.isAuguryUnlocked();
+		unlocks.mysticVigour = Rs2Prayer.isMysticVigourUnlocked();
+		List<Rs2PrayerEnum> wanted = QuestPrayer.bestOffensive(
+			QuestCombatLoadout.styleOfWeapon(weapon == null ? null : weapon.getName()), level, unlocks);
+		for (Rs2PrayerEnum stale : new ArrayList<>(offensiveOnByUs))
+		{
+			if (!wanted.contains(stale))
+			{
+				if (!Rs2Prayer.isPrayerActive(stale) || Rs2Prayer.toggle(stale, false))
+				{
+					offensiveOnByUs.remove(stale);
+				}
+				return;
+			}
+		}
+		for (Rs2PrayerEnum prayer : wanted)
+		{
+			if (!Rs2Prayer.isPrayerActive(prayer))
+			{
+				if (Rs2Prayer.toggle(prayer, true))
+				{
+					offensiveOnByUs.add(prayer);
+					prayerOnByUs = true;
+				}
+				return;
+			}
+			offensiveOnByUs.add(prayer);
+			prayerOnByUs = true;
+		}
+	}
+
 	private void managePrayer(QuestCombatLoadout current, long now)
 	{
 		if (Rs2Player.getBoostedSkillLevel(Skill.PRAYER) <= current.getDrinkAtPrayer()
@@ -2718,6 +2823,13 @@ public class QuestCombatHandler
 		if (Rs2Prayer.isOutOfPrayer())
 		{
 			prayerOnByUs = false;
+			offensiveOnByUs.clear();
+			return;
+		}
+
+		if (current.getPrayer() == QuestCombatLoadout.Prayer.BEST_OFFENSIVE)
+		{
+			manageOffensive();
 			return;
 		}
 
@@ -2744,7 +2856,22 @@ public class QuestCombatHandler
 	private void prayerOff(QuestCombatLoadout current)
 	{
 		boolean off;
-		if (current.getPrayer() == QuestCombatLoadout.Prayer.QUICK)
+		if (current.getPrayer() == QuestCombatLoadout.Prayer.BEST_OFFENSIVE)
+		{
+			off = true;
+			for (Rs2PrayerEnum p : new ArrayList<>(offensiveOnByUs))
+			{
+				if (!Rs2Prayer.isPrayerActive(p) || Rs2Prayer.toggle(p, false))
+				{
+					offensiveOnByUs.remove(p);
+				}
+				else
+				{
+					off = false;
+				}
+			}
+		}
+		else if (current.getPrayer() == QuestCombatLoadout.Prayer.QUICK)
 		{
 			off = Rs2Prayer.toggleQuickPrayer(false);
 		}
