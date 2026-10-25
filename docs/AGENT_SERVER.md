@@ -841,7 +841,7 @@ curl -X POST -H "Content-Type: application/json" \
 
 ### Quest Helper
 
-`POST /quest-helper/start` with `{"name": "<quest display name>"}` starts a quest. The first time a quest runs (with the "Ask for quest setup" toggle on) the quester shows a quest setup dialog: gear, food, potions, prayer, stamina potions, extra inventory items, free slots for quest items, and a style and gear per fight. `GET /quest-helper/status` reports `"awaitingSetup": true` while that dialog is open. Answer it up front with optional fields, saved for that quest so no dialog appears:
+`POST /quest-helper/start` with `{"name": "<quest display name>"}` starts a quest. The first time a quest runs (with the "Ask for quest setup" toggle on) the quester shows a quest setup dialog: gear, food, potions, prayer, stamina potions, extra inventory items, free slots for quest items, and a style and gear per fight. `GET /quest-helper/status` reports `"awaitingSetup": true` while that dialog is open, and `"preflight"` (see below). Answer it up front with optional fields, saved for that quest so no dialog appears:
 
 ```json
 {"name": "Priest in Peril",
@@ -860,7 +860,14 @@ curl -X POST -H "Content-Type: application/json" \
 - `inventory`: items to bring, withdrawn in the supply bank trip (`stackable` counts as one slot). `reserveSlots` (0-27): free slots always kept for quest items; omitted means the quest's own estimate.
 - `stamina`: `{"type": "none|stamina|energy", "qty": 2, "drinkAtEnergy": 30}`; fetched in the same trip as food and drunk when run energy falls to the threshold. Works for quests without fights.
 - `fights`: keyed by fight name (case and "(level N)" ignored), each `{"style": ..., "gear": ...}` (or `"gearSetup": "<name>"`). A fight without an entry uses the main style and gear.
+- `preflight`: `false` skips the quest items check for this start (default `true`, also controlled by the "Check and buy all quest items before starting" Quest Helper toggle).
 - Without `combat`, `gear`, `inventory`, `stamina` and `fights` are merged into the saved setup, or into one that brings no food. A bad value returns 400 naming the field. Saved setups are cleared with the "Reset quest setups" Quest Helper toggle.
+
+#### Quest items preflight
+
+Once the setup dialog is answered, each quest start runs a one-time preflight: the tradable items the whole quest still needs (quest-level requirements when the quest is not started, plus the requirements of every remaining step) are counted across inventory, equipment and bank, and any shortfall is bought from the Grand Exchange and left in the bank. Quest-given items, items a step picks up or loots itself, coins and placeholder requirements are ignored; duplicates across steps take the largest quantity. If the bank has not been opened this session the quester opens it once to count. One INFO line summarises it, e.g. `Quest helper preflight for The Restless Ghost: Rope x1 (in bank), Air rune x6 (buying)`. If gp is short the quester stops with a message listing the missing items and the estimated cost.
+
+`GET /quest-helper/status` reports `"preflight"`: `pending` (not reached yet), `checking`, `buying`, `done` (finished, skipped or disabled), or `failed: <reason>`.
 
 ### Script Lifecycle
 

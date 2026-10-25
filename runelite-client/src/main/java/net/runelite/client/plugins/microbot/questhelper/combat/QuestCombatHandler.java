@@ -127,6 +127,12 @@ public class QuestCombatHandler
 		START_NONCE.incrementAndGet();
 	}
 
+	/** Counter bumped on every quest start; the preflight runs once per value. */
+	public static int startNonce()
+	{
+		return START_NONCE.get();
+	}
+
 	/** True while the quest setup dialog is waiting for an answer. */
 	public static boolean isAwaitingSetup()
 	{

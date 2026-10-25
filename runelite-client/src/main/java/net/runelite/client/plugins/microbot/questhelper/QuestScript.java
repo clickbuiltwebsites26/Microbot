@@ -15,6 +15,7 @@ import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandle
 import net.runelite.client.plugins.microbot.questhelper.logic.PiratesTreasure;
 import net.runelite.client.plugins.microbot.questhelper.logic.QuestRegistry;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
+import net.runelite.client.plugins.microbot.questhelper.managers.ItemAndLastUpdated;
 import net.runelite.client.plugins.microbot.questhelper.managers.QuestContainerManager;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.requirements.Requirement;
@@ -72,7 +73,7 @@ import net.runelite.api.coords.WorldArea;
 public class QuestScript extends Script {
     public static double version = 0.6;
 
-    private static final long MISSING_REQUIREMENT_NOTIFY_INTERVAL_MS = 10_000L;
+    private static final long MISSING_REQUIREMENT_NOTIFY_INTERVAL_MS = 60_000L;
     private static final Map<Integer, Long> lastMissingRequirementNotice = new HashMap<>();
 
     public static List<ItemRequirement> itemRequirements = new ArrayList<>();
@@ -87,6 +88,15 @@ public class QuestScript extends Script {
 	private List<ItemRequirement> missingBatch = new ArrayList<>();
 	private List<Requirement> currentRequirements = new ArrayList<>();
 	private final Set<Long> monumentsTried = new HashSet<>();
+
+	private static final int PREFLIGHT_MAX_BANK_ATTEMPTS = 3;
+	private static final int PREFLIGHT_MAX_BUY_ROUNDS = 10;
+	private int preflightNonce = Integer.MIN_VALUE;
+	private String preflightQuestKey;
+	private boolean preflightFinished;
+	private boolean preflightSummaryLogged;
+	private int preflightBankAttempts;
+	private int preflightBuyRounds;
 
     private static final AtomicBoolean valeTotemsPromptInFlight = new AtomicBoolean(false);
     private static volatile QuestHelperConfig.ValeTotemsWoodType valeTotemsSessionWoodType;
@@ -277,6 +287,10 @@ public class QuestScript extends Script {
 						return;
 					}
 
+					if (runPreflight(selectedQuest)) {
+						return;
+					}
+
 					if (questStep instanceof DetailedQuestStep && handleRequirements((DetailedQuestStep) questStep)) {
 						sleep(500, 1000);
 						return;
@@ -339,6 +353,207 @@ public class QuestScript extends Script {
                 600, 600, TimeUnit.MILLISECONDS);
         return true;
     }
+
+	/**
+	 * One-time check per quest start: every tradable item the rest of the quest needs is on the player or in the bank,
+	 * and the shortfall is bought from the Grand Exchange into the bank. Runs after the setup dialog is answered.
+	 *
+	 * @return true while the preflight used this tick and the quest must not act yet
+	 */
+	private boolean runPreflight(QuestHelper quest) {
+		int nonce = QuestCombatHandler.startNonce();
+		String key = quest.getQuest().name();
+		if (nonce != preflightNonce || !key.equals(preflightQuestKey)) {
+			boolean freshStart = nonce != preflightNonce;
+			preflightNonce = nonce;
+			preflightQuestKey = key;
+			preflightFinished = false;
+			preflightSummaryLogged = false;
+			preflightBankAttempts = 0;
+			preflightBuyRounds = 0;
+			QuestPreflight.setStatus(QuestPreflight.PENDING);
+			if (freshStart && QuestPreflight.consumeSkip()) {
+				finishPreflight(QuestPreflight.DONE);
+				return false;
+			}
+		}
+		if (preflightFinished) {
+			return false;
+		}
+
+		QuestState state = Microbot.getClientThread()
+				.runOnClientThreadOptional(() -> quest.getQuest().getState(Microbot.getClient())).orElse(null);
+		if (!config.preflightQuestItems() || Rs2Player.isIronman()
+				|| (state != QuestState.NOT_STARTED && state != QuestState.IN_PROGRESS)) {
+			finishPreflight(QuestPreflight.DONE);
+			return false;
+		}
+		if (!shouldObtainMissingItems()) {
+			if (config.obtainMissingItems() == QuestHelperConfig.ObtainMissingItemsOption.ASK
+					&& obtainItemsSessionChoice == null) {
+				return true; // the consent prompt is still open
+			}
+			finishPreflight(QuestPreflight.DONE);
+			return false;
+		}
+
+		QuestPreflight.setStatus(QuestPreflight.CHECKING);
+		Microbot.status = "Quest helper: checking quest items";
+
+		ItemAndLastUpdated bank = QuestContainerManager.getBankData();
+		if (bank.getLastUpdated() < 0 && bank.getItems().length == 0) {
+			if (preflightBankAttempts >= PREFLIGHT_MAX_BANK_ATTEMPTS) {
+				Microbot.log("Quest helper preflight skipped: could not open the bank to count quest items", Level.WARN);
+				finishPreflight(QuestPreflight.FAILED_PREFIX + "could not open the bank");
+				return false;
+			}
+			preflightBankAttempts++;
+			Microbot.status = "Quest helper: opening the bank to count quest items";
+			Rs2Bank.walkToBankAndUseBank();
+			if (sleepUntil(Rs2Bank::isOpen, 15_000)) {
+				sleepUntil(() -> QuestContainerManager.getBankData().getLastUpdated() >= 0, 3_000);
+				Rs2Bank.closeBank();
+				sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+			}
+			return true;
+		}
+
+		List<QuestPreflight.Need> needs = collectPreflightNeeds(quest, state);
+		if (needs == null) {
+			return true; // waiting on the Vale Totems wood type
+		}
+
+		Map<Integer, Integer> onPlayer = new HashMap<>();
+		addContainer(onPlayer, QuestContainerManager.getEquippedData());
+		addContainer(onPlayer, QuestContainerManager.getInventoryData());
+		Map<Integer, Integer> owned = new HashMap<>(onPlayer);
+		addContainer(owned, bank);
+		for (QuestPreflight.Need need : needs) {
+			for (Integer id : need.ids) {
+				int notedId = notedVariantId(id);
+				if (notedId > 0) {
+					int noted = onPlayer.getOrDefault(notedId, 0);
+					if (noted > 0) {
+						onPlayer.merge(id, noted, Integer::sum);
+						owned.merge(id, noted, Integer::sum);
+					}
+				}
+			}
+		}
+
+		List<QuestPreflight.Shortfall> shortfalls = QuestPreflight.compute(needs, owned);
+		List<ItemRequirement> toBuy = new ArrayList<>();
+		StringBuilder summary = new StringBuilder();
+		for (QuestPreflight.Shortfall shortfall : shortfalls) {
+			if (summary.length() > 0) {
+				summary.append(", ");
+			}
+			summary.append(shortfall.name).append(" x").append(shortfall.needed);
+			if (shortfall.missing > 0) {
+				summary.append(shortfall.owned > 0 ? " (buying " + shortfall.missing + " more)" : " (buying)");
+				toBuy.add(new ItemRequirement(shortfall.name, shortfall.ids, shortfall.missing));
+			} else if (QuestPreflight.countOwned(shortfall.ids, onPlayer) >= shortfall.needed) {
+				summary.append(" (on you)");
+			} else {
+				summary.append(" (in bank)");
+			}
+		}
+		if (!preflightSummaryLogged && summary.length() > 0) {
+			preflightSummaryLogged = true;
+			Microbot.log("Quest helper preflight for " + quest.getQuest().getName() + ": " + summary, Level.INFO);
+		}
+
+		if (toBuy.isEmpty()) {
+			finishPreflight(QuestPreflight.DONE);
+			return false;
+		}
+		if (++preflightBuyRounds > PREFLIGHT_MAX_BUY_ROUNDS) {
+			String reason = "could not buy " + describeItems(toBuy);
+			Microbot.log("Quest helper preflight gave up: " + reason, Level.WARN);
+			finishPreflight(QuestPreflight.FAILED_PREFIX + reason);
+			return false;
+		}
+
+		QuestPreflight.setStatus(QuestPreflight.BUYING);
+		Microbot.status = "Quest helper: buying missing quest items";
+		acquireMissingTradableItems(toBuy, true);
+		return true;
+	}
+
+	private void finishPreflight(String status) {
+		preflightFinished = true;
+		QuestPreflight.setStatus(status);
+	}
+
+	private static String describeItems(List<ItemRequirement> items) {
+		return items.stream()
+				.map(ir -> ir.getName() + " x" + ir.getQuantity())
+				.collect(Collectors.joining(", "));
+	}
+
+	private static void addContainer(Map<Integer, Integer> counts, ItemAndLastUpdated container) {
+		for (Item item : container.getItems()) {
+			if (item != null && item.getId() > 0 && item.getQuantity() > 0) {
+				counts.merge(item.getId(), item.getQuantity(), Integer::sum);
+			}
+		}
+	}
+
+	/** Tradable, not step-supplied item requirements of the rest of the quest; null while the Vale Totems wood is unset. */
+	private List<QuestPreflight.Need> collectPreflightNeeds(QuestHelper quest, QuestState state) {
+		List<Requirement> candidates = new ArrayList<>();
+		// Once the quest is underway its start items are spent or placed, so only the steps ahead count
+		if (state == QuestState.NOT_STARTED && quest.getItemRequirements() != null) {
+			for (ItemRequirement ir : quest.getItemRequirements()) {
+				if (ir != null) {
+					candidates.add(ir);
+				}
+			}
+		}
+		List<DetailedQuestStep> steps = QuestCombatDetector.remainingDetailedSteps(quest);
+		if (steps != null) {
+			for (DetailedQuestStep step : steps) {
+				if (step.getRequirements() == null) {
+					continue;
+				}
+				for (Requirement requirement : step.getRequirements()) {
+					if (requirement instanceof ItemRequirement && !isPickedUpByStep(step, (ItemRequirement) requirement)) {
+						candidates.add(requirement);
+					}
+				}
+			}
+		}
+
+		if (quest.getQuest().getId() == Quest.VALE_TOTEMS.getId()) {
+			QuestHelperConfig.ValeTotemsWoodType configured = config.valeTotemsWoodType();
+			boolean unresolved = (configured == null || configured == QuestHelperConfig.ValeTotemsWoodType.ASK)
+					&& valeTotemsSessionWoodType == null;
+			candidates = applyValeTotemsWoodType(candidates);
+			if (unresolved) {
+				return null;
+			}
+		}
+
+		Map<Integer, Boolean> tradableByPrimaryId = new HashMap<>();
+		List<QuestPreflight.Need> needs = new ArrayList<>();
+		for (Requirement requirement : candidates) {
+			// Subclasses (keyrings, followers, composites) have their own ownership rules; leave them to the steps
+			if (requirement == null || requirement.getClass() != ItemRequirement.class) {
+				continue;
+			}
+			ItemRequirement ir = (ItemRequirement) requirement;
+			List<Integer> ids = ir.getAllIds().stream().filter(id -> id != null && id > 0).collect(Collectors.toList());
+			if (ir.getQuantity() <= 0 || ids.isEmpty() || ids.contains(ItemID.COINS_995)) {
+				continue;
+			}
+			boolean tradable = tradableByPrimaryId.computeIfAbsent(ids.get(0), k -> isItemRequirementTradable(ir));
+			if (!tradable) {
+				continue;
+			}
+			needs.add(new QuestPreflight.Need(ir.getName(), ids, ir.getQuantity(), ir.isConsumed()));
+		}
+		return needs;
+	}
 
     /** Idles for a few seconds now and then; true while a break is running. Timestamp based, never blocks. */
     private boolean handleShortBreak() {
@@ -415,20 +630,50 @@ public class QuestScript extends Script {
 				var itemRequirement = (ItemRequirement) requirement;
 
 				if (itemRequirement.mustBeEquipped()) {
-					if (!hasItemRequirementOnPlayer(itemRequirement)) {
-						notifyMissingRequirement(itemRequirement);
+					if (itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing)) {
 						continue;
 					}
 
-					if (itemRequirement.getAllIds().stream().noneMatch(Rs2Equipment::isWearing)) {
-						Rs2Inventory.wear(itemRequirement.getAllIds().stream().filter(Rs2Inventory::contains).findFirst().orElse(-1));
+					if (wearMustBeEquippedFromInventory(itemRequirement)) {
 						return true;
+					}
+
+					if (!hasItemRequirementOnPlayer(itemRequirement)) {
+						notifyMissingRequirement(itemRequirement);
+						continue;
 					}
 				}
 			}
 		}
 
 		return false;
+	}
+
+	/**
+	 * Wears/wields a must-be-equipped requirement that is sitting in the inventory.
+	 * Returns true if an equip action was issued (caller should end the tick).
+	 */
+	private boolean wearMustBeEquippedFromInventory(ItemRequirement itemRequirement) {
+		if (itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing)) {
+			return false;
+		}
+		Integer invId = itemRequirement.getAllIds().stream().filter(Rs2Inventory::contains).findFirst().orElse(null);
+		if (invId == null) {
+			return false;
+		}
+		var item = Rs2Inventory.get(invId);
+		String action = "Wear";
+		if (item != null && item.getInventoryActions() != null) {
+			for (String candidate : new String[]{"Wear", "Wield", "Equip"}) {
+				if (Arrays.stream(item.getInventoryActions()).anyMatch(a -> a != null && a.equalsIgnoreCase(candidate))) {
+					action = candidate;
+					break;
+				}
+			}
+		}
+		Rs2Inventory.interact(invId, action);
+		sleepUntil(() -> itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 2_000);
+		return true;
 	}
 
 	private boolean handleMissingItemRequirements(DetailedQuestStep questStep) {
@@ -454,10 +699,7 @@ public class QuestScript extends Script {
 
 			ItemRequirement itemRequirement = (ItemRequirement) requirement;
 
-			if (itemRequirement.mustBeEquipped()
-					&& Rs2Inventory.contains(itemRequirement.getAllIds().stream().mapToInt(i -> i).toArray())
-					&& itemRequirement.getAllIds().stream().noneMatch(Rs2Equipment::isWearing)) {
-				Rs2Inventory.wear(itemRequirement.getAllIds().stream().filter(Rs2Inventory::contains).findFirst().orElse(-1));
+			if (itemRequirement.mustBeEquipped() && wearMustBeEquippedFromInventory(itemRequirement)) {
 				return true;
 			}
 
@@ -591,6 +833,14 @@ public class QuestScript extends Script {
 	}
 
 	private boolean acquireMissingTradableItems(List<ItemRequirement> missing) {
+		return acquireMissingTradableItems(missing, false);
+	}
+
+	/**
+	 * @param stockpile true for the preflight: every requirement is bought in full (it is already the shortfall),
+	 *                  nothing is withdrawn to the inventory, and purchases stay in the bank
+	 */
+	private boolean acquireMissingTradableItems(List<ItemRequirement> missing, boolean stockpile) {
 		notifyMissingRequirement(missing.get(0));
 
 		List<ItemRequirement> actionable = new ArrayList<>();
@@ -621,7 +871,7 @@ public class QuestScript extends Script {
 				}
 			}
 
-			collectPurchasedItemsViaBank(missing);
+			collectPurchasedItemsViaBank(missing, stockpile);
 			return true;
 		}
 
@@ -634,9 +884,11 @@ public class QuestScript extends Script {
 			}
 		}
 
-		clearInventoryForQuest();
-		if (makeRoomForCarryLimited(actionable)) {
-			return true;
+		if (!stockpile) {
+			clearInventoryForQuest();
+			if (makeRoomForCarryLimited(actionable)) {
+				return true;
+			}
 		}
 
 		List<ItemRequirement> fromBank = new ArrayList<>();
@@ -644,6 +896,10 @@ public class QuestScript extends Script {
 		List<ItemRequirement> toBuy = new ArrayList<>();
 
 		for (ItemRequirement ir : actionable) {
+			if (stockpile) {
+				toBuy.add(ir);
+				continue;
+			}
 			int needed = remainingQuantityNeeded(ir);
 			if (needed <= 0) {
 				continue;
@@ -693,7 +949,7 @@ public class QuestScript extends Script {
 
 			int offerPrice = Math.max(1, (int) Math.ceil(basePrice * 1.2));
 			// Buying the full amount is fine, it lands in the bank and is withdrawn a trip at a time
-			int qty = uncappedQuantityNeeded(ir);
+			int qty = stockpile ? ir.getQuantity() : uncappedQuantityNeeded(ir);
 			buyPrimaryIds.put(ir, primaryId);
 			offerPrices.put(ir, offerPrice);
 			buyQuantities.put(ir, qty);
@@ -707,8 +963,8 @@ public class QuestScript extends Script {
 		if (availableGp < totalBuyCost) {
 			Rs2Bank.closeBank();
 			stopQuesterWithReason(String.format(
-					"Not enough gp to buy missing quest items (need %,d gp, have %,d gp)",
-					totalBuyCost, availableGp));
+					"Not enough gp to buy missing quest items (need %,d gp, have %,d gp)%s",
+					totalBuyCost, availableGp, stockpile ? ": " + describeItems(toBuy) : ""));
 			return true;
 		}
 
@@ -722,7 +978,7 @@ public class QuestScript extends Script {
 					Rs2GrandExchange.openExchange();
 					sleepUntil(Rs2GrandExchange::isOpen, 15_000);
 					if (Rs2GrandExchange.isOpen()) {
-						collectPurchasedItemsViaBank(missing);
+						collectPurchasedItemsViaBank(missing, stockpile);
 						if (Rs2GrandExchange.getAvailableSlotsCount() <= 0) {
 							stopQuesterWithReason(
 									"Could not collect finished Grand Exchange offers (bank full?). Collect them manually and restart.");
@@ -807,6 +1063,12 @@ public class QuestScript extends Script {
 			}
 		}
 
+		Map<ItemRequirement, Integer> heldBeforeBuying = new HashMap<>();
+		if (stockpile) {
+			for (ItemRequirement ir : toBuy) {
+				heldBeforeBuying.put(ir, inventoryQuantityIncludingNoted(ir));
+			}
+		}
 		int placedOffers = 0;
 		for (ItemRequirement ir : toBuy) {
 			int offerPrice = offerPrices.getOrDefault(ir, 0);
@@ -880,8 +1142,8 @@ public class QuestScript extends Script {
 
 				sleepUntil(() -> Rs2Inventory.itemQuantity(ItemID.COINS_995) > preAbortCoins, 3_000);
 
-				int alreadyOnHand = inventoryQuantityIncludingNoted(ir);
-				int qtyNeeded = Math.max(0, ir.getQuantity() - alreadyOnHand);
+				int alreadyOnHand = inventoryQuantityIncludingNoted(ir) - heldBeforeBuying.getOrDefault(ir, 0);
+				int qtyNeeded = Math.max(0, ir.getQuantity() - Math.max(0, alreadyOnHand));
 				if (qtyNeeded <= 0) {
 					Microbot.log("Quest helper: " + canonicalName
 							+ " already obtained after abort (have " + alreadyOnHand
@@ -921,7 +1183,7 @@ public class QuestScript extends Script {
 			}
 		}
 
-		collectPurchasedItemsViaBank(toBuy);
+		collectPurchasedItemsViaBank(toBuy, stockpile);
 		return true;
 	}
 
@@ -953,7 +1215,7 @@ public class QuestScript extends Script {
 		return pending;
 	}
 
-	private void collectPurchasedItemsViaBank(List<ItemRequirement> items) {
+	private void collectPurchasedItemsViaBank(List<ItemRequirement> items, boolean stockpile) {
 		Microbot.status = "Collecting purchased quest items to bank";
 		Rs2GrandExchange.collectAllToBank();
 		sleep(800, 1200);
@@ -976,6 +1238,14 @@ public class QuestScript extends Script {
 		if (!Rs2Bank.setWithdrawAsItem()) {
 			Rs2Bank.closeBank();
 			stopQuesterWithReason("Failed to set bank withdraw mode to Item after Grand Exchange collection. Toggle it manually and restart.");
+			return;
+		}
+
+		if (stockpile) {
+			// Purchases stay in the bank; wait for the bank snapshot to show them so they are not bought twice
+			sleepUntil(() -> items.stream().allMatch(this::isHeldInBank), 3_000);
+			Rs2Bank.closeBank();
+			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
 			return;
 		}
 
@@ -1563,6 +1833,10 @@ public class QuestScript extends Script {
 	}
 
 	private void stopQuesterWithReason(String reason) {
+		if (QuestPreflight.isInProgress()) {
+			QuestPreflight.setStatus(QuestPreflight.FAILED_PREFIX + reason);
+			preflightFinished = true;
+		}
 		Microbot.status = reason;
 		Microbot.log("Quest helper stopped: " + reason, Level.ERROR);
 		if (Microbot.getConfigManager() != null) {

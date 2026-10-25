@@ -156,6 +156,47 @@ public final class QuestCombatDetector
 		return ids;
 	}
 
+	/**
+	 * The detailed steps still ahead (the current one included), walked like {@link #remainingStepItemIds}, or null
+	 * when the step map or the progress cannot be read.
+	 */
+	public static List<DetailedQuestStep> remainingDetailedSteps(QuestHelper quest)
+	{
+		Map<Integer, QuestStep> all = quest instanceof BasicQuestHelper ? ((BasicQuestHelper) quest).getStepList() : null;
+		Integer progress = all == null ? null : progressOf(quest);
+		if (progress == null)
+		{
+			return null;
+		}
+		List<DetailedQuestStep> out = new ArrayList<>();
+		Set<QuestStep> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+		collectDetailedSteps(valuesFrom(all, progress), seen, out);
+		if (quest.getCurrentStep() != null)
+		{
+			collectDetailedSteps(Collections.singleton(quest.getCurrentStep()), seen, out);
+		}
+		return out;
+	}
+
+	private static void collectDetailedSteps(Collection<QuestStep> steps, Set<QuestStep> seen, List<DetailedQuestStep> out)
+	{
+		for (QuestStep step : steps)
+		{
+			if (step == null || !seen.add(step))
+			{
+				continue;
+			}
+			if (step instanceof DetailedQuestStep)
+			{
+				out.add((DetailedQuestStep) step);
+			}
+			if (step instanceof OwnerStep)
+			{
+				collectDetailedSteps(((OwnerStep) step).getSteps(), seen, out);
+			}
+		}
+	}
+
 	private static void collectItemIds(Collection<QuestStep> steps, Set<QuestStep> seen, Set<Integer> out)
 	{
 		for (QuestStep step : steps)

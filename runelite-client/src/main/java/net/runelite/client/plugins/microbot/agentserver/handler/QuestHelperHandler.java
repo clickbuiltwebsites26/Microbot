@@ -13,6 +13,7 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperConfig;
 import net.runelite.client.plugins.microbot.questhelper.QuestHelperPlugin;
+import net.runelite.client.plugins.microbot.questhelper.QuestPreflight;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
@@ -91,6 +92,7 @@ public class QuestHelperHandler extends AgentHandler
 			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "TurnOn"));
 
 		result.put("awaitingSetup", QuestCombatHandler.isAwaitingSetup());
+		result.put("preflight", QuestPreflight.getStatus());
 
 		QuestHelper selectedQuest = plugin.getSelectedQuest();
 		result.put("selected", selectedQuest != null);
@@ -201,8 +203,17 @@ public class QuestHelperHandler extends AgentHandler
 			QuestCombatStore.save(questKey, loadout);
 		}
 
+		Object preflight = body.get("preflight");
+		if (preflight != null && !(preflight instanceof Boolean))
+		{
+			sendJson(exchange, 400, errorResponse("preflight must be true or false"));
+			return;
+		}
+		// The quest script reads this when it sees the start, so it applies to this start only
+		QuestPreflight.skipNextStart(Boolean.FALSE.equals(preflight));
 		if (!plugin.startQuestHelper(name))
 		{
+			QuestPreflight.skipNextStart(false);
 			sendJson(exchange, 404, errorResponse("Quest helper not found or not loaded: " + name));
 			return;
 		}

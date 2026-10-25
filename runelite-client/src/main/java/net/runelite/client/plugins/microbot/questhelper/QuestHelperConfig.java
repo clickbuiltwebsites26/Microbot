@@ -306,6 +306,16 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "preflightQuestItems",
+			name = "Check and buy all quest items before starting",
+			description = "Before each quest, check that the items the whole quest needs are on you or in your bank, and buy what is missing from the Grand Exchange.",
+			section = microbotSection
+	)
+	default boolean preflightQuestItems() {
+		return true;
+	}
+
+	@ConfigItem(
 			keyName = "resetCombatSetups",
 			name = "Reset quest setups",
 			description = "Turn on to forget every saved quest setup (including skipped ones). Switches itself back off.",
