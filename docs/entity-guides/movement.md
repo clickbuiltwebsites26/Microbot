@@ -617,3 +617,13 @@ Inside the Black Knights' Fortress the only exits are push-walls and ladders tha
 **Pattern to follow:** `Rs2Bank.getPathAndBankToNearestBank` re-seeds the search from nearby standable tiles (`Rs2PathApi.isStandable`), then falls back to the straight-line nearest bank (the walker handles doors/ladders via the scene) and backs off 45 s for the same tile (`NearestBankPolicy`). Missing object transports (push walls, ladders) belong in the TSV.
 
 **Where this applies:** any helper that treats a failed/partial pathfinder result as "unreachable".
+
+## 30. A walled-recovery replan that returns the same hop must be blacklisted, not repeated
+
+`recovery_target_walled` replans the route when the recovery click target is unreachable. If the planner hands back the same walled hop from the same tile, replanning never converges. `WalledReplanLedger` counts consecutive replans per (player tile, target) and at 5 the walker calls `Rs2PathApi.learnBlockedEdge` for the target edge and first hop (session-only), then recomputes. Permanent map gaps still belong in `blocked_edges.tsv`.
+
+**Why this matters:** Live bug #45 (Twilight's Promise): the four decorative ladders around 2664,3334 (Ardougne) lead to a roof with no plane-1 collision data, and the walker looped on `recovery_target_walled` at 2665,3334,p1 for minutes.
+
+**Pattern to follow:** Pure counter in `recovery/WalledReplanLedger`, call site in `Rs2Walker.blacklistRepeatedWalledReplan` (outside `processWalk`, which is line-capped by `WalkerArchitectureGuardTest`). Dead-end platforms get bidirectional rows in `blocked_edges.tsv` for every plane-1 neighbour edge.
+
+**Where this applies:** `Rs2Walker` recovery block, `blocked_edges.tsv`, ladder rows in `transports.tsv` whose plane-1 side has empty collision.
