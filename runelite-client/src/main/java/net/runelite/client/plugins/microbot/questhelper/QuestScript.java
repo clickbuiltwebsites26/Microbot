@@ -2615,6 +2615,27 @@ public class QuestScript extends Script {
     private static final int FALLBACK_NPC_RADIUS = 10;
     private static final long NO_NPC_LOG_INTERVAL_MS = 30_000;
     private final Map<Integer, String> npcNameById = new HashMap<>();
+    private static final int MISSING_LOG_RADIUS = 8;
+    private static final long MISSING_LOG_IDLE_MS = 10_000;
+    private long missingIdleSince = 0;
+
+    /** True when a missing NPC/object is worth logging: player within 8 tiles on the same plane, or (no point) idle for 10 s. */
+    private boolean shouldLogMissingEntity(WorldPoint point) {
+        long now = System.currentTimeMillis();
+        if (Rs2Player.isMoving() || Rs2Player.isAnimating()) {
+            missingIdleSince = 0;
+            return false;
+        }
+        if (point != null) {
+            WorldPoint me = Rs2Player.getWorldLocation();
+            return me != null && me.distanceTo(point) <= MISSING_LOG_RADIUS;
+        }
+        if (missingIdleSince == 0) {
+            missingIdleSince = now;
+        }
+        return now - missingIdleSince >= MISSING_LOG_IDLE_MS;
+    }
+
     private QuestStep lastNoNpcLoggedStep = null;
     private long lastNoNpcLoggedAt = 0;
 
@@ -2652,7 +2673,7 @@ public class QuestScript extends Script {
                     .withName(name)
                     .nearestOnClientThread(point, FALLBACK_NPC_RADIUS);
         }
-        if (found == null) {
+        if (found == null && shouldLogMissingEntity(point)) {
             long now = System.currentTimeMillis();
             if (lastNoNpcLoggedStep != step || now - lastNoNpcLoggedAt > NO_NPC_LOG_INTERVAL_MS) {
                 lastNoNpcLoggedStep = step;
@@ -2908,8 +2929,7 @@ public class QuestScript extends Script {
                 return found;
             }
         }
-        WorldPoint me = Rs2Player.getWorldLocation();
-        if (me != null && me.distanceTo(point) <= 1) {
+        if (shouldLogMissingEntity(point)) {
             long now = System.currentTimeMillis();
             if (lastNoObjectLoggedStep != step || now - lastNoObjectLoggedAt > NO_OBJECT_LOG_INTERVAL_MS) {
                 lastNoObjectLoggedStep = step;
