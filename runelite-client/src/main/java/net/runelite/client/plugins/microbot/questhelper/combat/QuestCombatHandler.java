@@ -335,6 +335,7 @@ public class QuestCombatHandler
 	private QuestCombatSetupDialog.Context buildContext(QuestHelper quest)
 	{
 		QuestCombatSetupDialog.Context context = new QuestCombatSetupDialog.Context();
+		context.obtainMissingItems = config.get().obtainMissingItems().name();
 		context.questName = quest.getQuest().getName();
 		context.hasFights = questHasFights;
 		List<String> notes = quest.getCombatRequirements();
@@ -499,7 +500,12 @@ public class QuestCombatHandler
 		{
 			if (inInventory(item))
 			{
-				if (item.getId() > 0)
+				Rs2ItemModel held = inventoryVariant(item);
+				if (held != null)
+				{
+					Rs2Inventory.wear(held.getId());
+				}
+				else if (item.getId() > 0)
 				{
 					Rs2Inventory.wear(item.getId());
 				}
@@ -530,7 +536,9 @@ public class QuestCombatHandler
 		boolean anyFetched = false;
 		for (QuestCombatLoadout.GearItem item : inBank)
 		{
-			int available = item.getId() > 0 ? Rs2Bank.count(item.getId()) : Rs2Bank.count(item.getName(), true);
+			Rs2ItemModel variant = item.getName().isEmpty() ? null : bankVariant(item.getId(), item.getName());
+			int available = variant != null ? variant.getQuantity()
+				: (item.getId() > 0 ? Rs2Bank.count(item.getId()) : Rs2Bank.count(item.getName(), true));
 			if (available <= 0)
 			{
 				warnOnce("bank:" + item.getId() + item.getName(), "Quest helper: "
@@ -540,7 +548,11 @@ public class QuestCombatHandler
 			}
 			int qty = Math.min(available, Math.max(1, item.getQty()));
 			anyFetched = true;
-			if (item.getId() > 0)
+			if (variant != null)
+			{
+				Rs2Bank.withdrawXAndEquip(variant.getId(), qty);
+			}
+			else if (item.getId() > 0)
 			{
 				Rs2Bank.withdrawXAndEquip(item.getId(), qty);
 			}
@@ -562,12 +574,49 @@ public class QuestCombatHandler
 
 	private static boolean isWorn(QuestCombatLoadout.GearItem item)
 	{
-		return item.getId() > 0 ? Rs2Equipment.isWearing(item.getId()) : Rs2Equipment.isWearing(item.getName(), true);
+		if (item.getId() > 0 && Rs2Equipment.isWearing(item.getId()))
+		{
+			return true;
+		}
+		if (item.getName().isEmpty())
+		{
+			return item.getId() <= 0 && Rs2Equipment.isWearing(item.getName(), true);
+		}
+		// the same item at another charge counts as worn
+		return Rs2Equipment.all().anyMatch(worn -> ChargedItemNames.sameFamily(worn.getName(), item.getName()));
 	}
 
 	private static boolean inInventory(QuestCombatLoadout.GearItem item)
 	{
-		return item.getId() > 0 ? Rs2Inventory.hasItem(item.getId()) : Rs2Inventory.hasItem(item.getName(), true);
+		if (item.getId() > 0 && Rs2Inventory.hasItem(item.getId()))
+		{
+			return true;
+		}
+		if (item.getName().isEmpty())
+		{
+			return item.getId() <= 0 && Rs2Inventory.hasItem(item.getName(), true);
+		}
+		return inventoryVariant(item) != null;
+	}
+
+	/** Exact id, else any charge/dose of the same item held in the inventory (highest first). */
+	private static Rs2ItemModel inventoryVariant(QuestCombatLoadout.GearItem item)
+	{
+		return ChargedItemNames.pick(Rs2Inventory.items(i -> !i.isNoted()).collect(java.util.stream.Collectors.toList()),
+			Rs2ItemModel::getId, Rs2ItemModel::getName, item.getId(), item.getName());
+	}
+
+	/** Exact id, else any charge/dose of the same item in the bank (highest first), else the uncharged base. */
+	private static Rs2ItemModel bankVariant(int wantedId, String wantedName)
+	{
+		List<Rs2ItemModel> bank = Rs2Bank.bankItems();
+		if (bank == null)
+		{
+			return null;
+		}
+		return ChargedItemNames.pick(bank.stream().filter(i -> i != null && !i.isNoted() && i.getQuantity() > 0)
+				.collect(java.util.stream.Collectors.toList()),
+			Rs2ItemModel::getId, Rs2ItemModel::getName, wantedId, wantedName);
 	}
 
 	private void warnOnce(String key, String message)
@@ -796,9 +845,8 @@ public class QuestCombatHandler
 
 	private static int invQuantity(QuestCombatLoadout.InventoryItem wanted)
 	{
-		return Rs2Inventory.items(i -> !i.isNoted() && (wanted.getId() > 0
-			? i.getId() == wanted.getId()
-			: i.getName() != null && i.getName().equalsIgnoreCase(wanted.getName())))
+		return Rs2Inventory.items(i -> !i.isNoted() && (wanted.getId() > 0 && i.getId() == wanted.getId()
+			|| !wanted.getName().isEmpty() && ChargedItemNames.sameFamily(i.getName(), wanted.getName())))
 			.mapToInt(Rs2ItemModel::getQuantity).sum();
 	}
 
@@ -806,16 +854,7 @@ public class QuestCombatHandler
 	{
 		String label = wanted.getName().isEmpty() ? "item " + wanted.getId() : wanted.getName();
 		Rs2ItemModel inBank = null;
-		for (Rs2ItemModel item : Rs2Bank.bankItems())
-		{
-			if (item != null && !item.isNoted() && (wanted.getId() > 0
-				? item.getId() == wanted.getId()
-				: item.getName() != null && item.getName().equalsIgnoreCase(wanted.getName())))
-			{
-				inBank = item;
-				break;
-			}
-		}
+		inBank = bankVariant(wanted.getId(), wanted.getName());
 		if (inBank == null)
 		{
 			warnOnce("custom:" + label, "Quest helper: " + label + " is not in the bank, continuing without it");

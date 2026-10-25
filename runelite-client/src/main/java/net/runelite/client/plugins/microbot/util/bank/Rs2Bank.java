@@ -2455,30 +2455,59 @@ public class Rs2Bank {
             Microbot.log("No accessible banks found");
             return null;
         }
-        Set<WorldPoint> targets = accessibleBanks.stream()
+        // Minigame-only banks (Isle of Souls, Clan Hall, ...) are priced as near-free by minigame teleports,
+        // so they only compete when the player is already standing near them. See NearestBankPolicy.
+        Set<BankLocation> candidates = accessibleBanks.stream()
+                .filter(b -> NearestBankPolicy.isEligibleTarget(worldPoint, b))
+                .collect(Collectors.toCollection(HashSet::new));
+        Set<WorldPoint> allCandidatePoints = candidates.stream()
                 .map(BankLocation::getWorldPoint)
                 .collect(Collectors.toSet());
 
-        Rs2RouteRequest request = Rs2RouteRequest.toAny(worldPoint, targets);
-        if (useBankItems != null) {
-            request = request.withBankItems(useBankItems);
+        Rs2RouteResult route = null;
+        List<WorldPoint> path = Collections.emptyList();
+        Optional<BankLocation> byPath = Optional.empty();
+        // Re-plan without a rejected bank a few times: a route that is implausible versus the straight-line
+        // nearest bank (and not a genuine item/spell teleport) is dropped rather than walked.
+        for (int attempt = 0; attempt < 4 && !candidates.isEmpty(); attempt++) {
+            Set<WorldPoint> targets = candidates.stream()
+                    .map(BankLocation::getWorldPoint)
+                    .collect(Collectors.toSet());
+            Rs2RouteRequest request = Rs2RouteRequest.toAny(worldPoint, targets);
+            if (useBankItems != null) {
+                request = request.withBankItems(useBankItems);
+            }
+            route = Rs2PathApi.plan(request);
+            path = route.getPath();
+            if (path.isEmpty()) {
+                Microbot.log("Unable to find path to nearest bank");
+                return null;
+            }
+            // Create a WorldArea around the final tile to be more generous
+            WorldPoint endTile = path.get(path.size() - 1);
+            WorldArea endTileArea = new WorldArea(endTile, 2, 2);
+            byPath = candidates.stream()
+                    .filter(b -> new WorldArea(b.getWorldPoint(), 2, 2).intersectsWith2D(endTileArea))
+                    .findFirst();
+            if (!byPath.isPresent()) {
+                break;
+            }
+            if (NearestBankPolicy.isPlausible(worldPoint, byPath.get().getWorldPoint(), allCandidatePoints,
+                    NearestBankPolicy.usesMinigameTransport(route),
+                    NearestBankPolicy.usesItemOrSpellTeleport(route))) {
+                break;
+            }
+            Microbot.log("Rejecting implausible nearest bank " + byPath.get() + " from " + worldPoint + "; trying others");
+            candidates.remove(byPath.get());
+            byPath = Optional.empty();
+            route = null;
+            path = Collections.emptyList();
         }
-        Rs2RouteResult route = Rs2PathApi.plan(request);
-        List<WorldPoint> path = route.getPath();
-
-        if (path.isEmpty()) {
-            Microbot.log("Unable to find path to nearest bank");
+        if (route == null) {
+            Microbot.log("No plausible bank route from " + worldPoint);
             return null;
         }
-        // Create a WorldArea around the final tile to be more generous
         WorldPoint nearestTile = path.get(path.size() - 1);
-        WorldArea nearestTileArea = new WorldArea(nearestTile, 2, 2);
-        Optional<BankLocation> byPath = accessibleBanks.stream()
-                .filter(b -> {
-                    WorldArea accessibleBankArea = new WorldArea(b.getWorldPoint(), 2, 2);
-                    return accessibleBankArea.intersectsWith2D(nearestTileArea);
-                })
-                .findFirst();
         if (!byPath.isPresent()) {
             // The pathfinder returns its BEST EFFORT, not only complete routes: with no reachable bank
             // it hands back a partial path that stops short — sometimes one or two tiles from the start,

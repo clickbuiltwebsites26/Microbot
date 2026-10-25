@@ -591,3 +591,13 @@ return Rs2Tile.fullPathTo(sourceTile, targetTile);
 **Where this applies:** `Rs2WorldPoint.pathTo`, `Rs2Tile.pathTo`, `Rs2Tile.fullPathTo`, and any helper that reads a `Tile` from the scene array.
 
 **Defensive check:** Mock a scene with an empty source or target slot and assert the path is `null`, as in `Rs2WorldPointNullSceneTileTest` and `Rs2TileNullPathEndpointTest`.
+
+## 30. Minigame teleports make a far bank look free to "nearest bank"
+
+The pathfinder prices minigame teleports (Soul Wars, Clan Wars) as nearly free, so a multi-target search for the nearest bank can pick `ISLE_OF_SOULS` from Falador and walk to a portal.
+
+**Why this matters:** a quester short of items walked from Falador to Edgeville to take the Soul Wars portal to a bank 1000 tiles away.
+
+**Pattern to follow:** `Rs2Bank.getPathAndBankToNearestBank` drops minigame-only banks unless within 40 tiles and re-plans without a bank whose route uses a minigame teleport, or whose tile distance is over 3x the nearest bank, unless the route uses an item or spell teleport (`NearestBankPolicy`).
+
+**Where this applies:** any "nearest X" chosen from pathfinder cost alone.

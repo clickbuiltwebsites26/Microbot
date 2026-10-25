@@ -65,6 +65,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import javax.swing.JDialog;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import org.slf4j.event.Level;
@@ -296,8 +297,23 @@ public class QuestScript extends Script {
 						return;
 					}
 
-					if (questStep instanceof DetailedQuestStep && shouldObtainMissingItems() && handleMissingItemRequirements((DetailedQuestStep) questStep)) {
-						return;
+					if (questStep instanceof DetailedQuestStep) {
+						DetailedQuestStep detailedStep = (DetailedQuestStep) questStep;
+						if (hasUnmetItemRequirements(detailedStep)) {
+							boolean obtain = shouldObtainMissingItems();
+							if (config.obtainMissingItems() == QuestHelperConfig.ObtainMissingItemsOption.ASK
+									&& obtainItemsSessionChoice == null) {
+								// the consent prompt is open: do nothing until it is answered
+								Microbot.status = "Quest helper: waiting for your answer on buying missing items";
+								return;
+							}
+							if (obtain && handleMissingItemRequirements(detailedStep)) {
+								return;
+							}
+							if (blockedByMissingEquipment(detailedStep)) {
+								return;
+							}
+						}
 					}
 
 					if (combat.recoverHealth(questStep, slotsReservedForStep(questStep))) {
@@ -393,6 +409,7 @@ public class QuestScript extends Script {
 					&& obtainItemsSessionChoice == null) {
 				return true; // the consent prompt is still open
 			}
+			Microbot.log("Quest helper preflight: not buying quest items (Obtain Missing Items is off)", Level.INFO);
 			finishPreflight(QuestPreflight.DONE);
 			return false;
 		}
@@ -1554,6 +1571,50 @@ public class QuestScript extends Script {
 		}
 	}
 
+	/** True when any item requirement of the step (or the quest) is not on the player. */
+	private boolean hasUnmetItemRequirements(DetailedQuestStep questStep) {
+		for (Requirement requirement : collectAllItemRequirements(questStep)) {
+			if (requirement instanceof ItemRequirement
+					&& !hasItemRequirementOnPlayer((ItemRequirement) requirement)
+					&& !isFilledToCarryCapacity((ItemRequirement) requirement)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static volatile String lastBlockedEquipmentNotice = "";
+
+	/**
+	 * A must-be-equipped requirement (a disguise, a key worn item) that is not on the player cannot be worked
+	 * around by performing the step: the door/NPC refuses. Hold the step and say why, logging once per item.
+	 */
+	private boolean blockedByMissingEquipment(DetailedQuestStep questStep) {
+		List<String> missing = new ArrayList<>();
+		for (Requirement requirement : questStep.getRequirements()) {
+			if (requirement instanceof ItemRequirement) {
+				ItemRequirement item = (ItemRequirement) requirement;
+				if (item.mustBeEquipped() && !hasItemRequirementOnPlayer(item)) {
+					missing.add(item.getName() != null && !item.getName().isEmpty() ? item.getName() : "item " + item.getId());
+				}
+			}
+		}
+		if (missing.isEmpty()) {
+			lastBlockedEquipmentNotice = "";
+			return false;
+		}
+		String joined = String.join(", ", missing);
+		Microbot.status = "Quest helper waiting: need to wear " + joined
+				+ (config.obtainMissingItems() == QuestHelperConfig.ObtainMissingItemsOption.NO
+				? " (buying is off)" : "");
+		if (!joined.equals(lastBlockedEquipmentNotice)) {
+			lastBlockedEquipmentNotice = joined;
+			Microbot.log("Quest helper holding this step: required worn items are missing and could not be obtained: "
+					+ joined, Level.WARN);
+		}
+		return true;
+	}
+
 	private boolean shouldObtainMissingItems() {
 		if (Rs2Player.isIronman()) {
 			return false;
@@ -1579,20 +1640,47 @@ public class QuestScript extends Script {
 
 		SwingUtilities.invokeLater(() -> {
 			try {
-				int choice = JOptionPane.showConfirmDialog(
-						null,
-						"The quest helper has detected missing items.\n\n" +
-								"Would you like the quest helper to automatically obtain\n" +
-								"missing items from the bank and Grand Exchange?",
-						"Obtain Missing Items",
-						JOptionPane.YES_NO_OPTION,
-						JOptionPane.QUESTION_MESSAGE);
+				JDialog parentDialog = new JDialog(clientFrameForPrompt());
+				parentDialog.setAlwaysOnTop(true);
+				parentDialog.setUndecorated(true);
+				int choice;
+				try {
+					parentDialog.setLocationRelativeTo(parentDialog.getOwner());
+					parentDialog.setVisible(true);
+					parentDialog.toFront();
+					choice = JOptionPane.showConfirmDialog(
+							parentDialog,
+							"The quest helper has detected missing items.\n\n" +
+									"Would you like the quest helper to automatically obtain\n" +
+									"missing items from the bank and Grand Exchange?",
+							"Obtain Missing Items",
+							JOptionPane.YES_NO_OPTION,
+							JOptionPane.QUESTION_MESSAGE);
+				} finally {
+					parentDialog.dispose();
+				}
 
 				obtainItemsSessionChoice = (choice == JOptionPane.YES_OPTION);
 			} finally {
 				obtainItemsPromptInFlight.set(false);
 			}
 		});
+	}
+
+	private static java.awt.Frame clientFrameForPrompt() {
+		java.awt.Frame best = null;
+		for (java.awt.Frame frame : java.awt.Frame.getFrames()) {
+			if (!frame.isShowing()) {
+				continue;
+			}
+			if (frame.getTitle() != null && frame.getTitle().toLowerCase(java.util.Locale.ROOT).contains("runelite")) {
+				return frame;
+			}
+			if (best == null) {
+				best = frame;
+			}
+		}
+		return best;
 	}
 
 	private void promptValeTotemsWoodType() {
@@ -1930,6 +2018,7 @@ public class QuestScript extends Script {
         valeTotemsSessionWoodType = null;
         obtainItemsPromptInFlight.set(false);
         obtainItemsSessionChoice = null;
+        lastBlockedEquipmentNotice = "";
     }
 
     public boolean applyStep(QuestStep step) {
