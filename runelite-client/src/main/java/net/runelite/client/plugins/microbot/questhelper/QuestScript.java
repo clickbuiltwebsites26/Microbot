@@ -366,6 +366,10 @@ public class QuestScript extends Script {
 					 * This portion is needed when using item on another item in your inventory.
 					 * If we do not prioritize this, the script will think we are missing items
 					 */
+					if (QuestCombatDetector.isKillStep(questStep) && combat.positionForKill(questStep)) {
+						return;
+					}
+
 					if (manageAutoRetaliate(questStep)) {
 						return;
 					}

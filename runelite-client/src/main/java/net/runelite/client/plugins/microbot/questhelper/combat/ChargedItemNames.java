@@ -1,6 +1,9 @@
 package net.runelite.client.plugins.microbot.questhelper.combat;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
@@ -45,6 +48,31 @@ public final class ChargedItemNames
 	{
 		String base = baseName(a);
 		return !base.isEmpty() && base.equals(baseName(b));
+	}
+
+	/**
+	 * Every candidate of the wanted item's family (any dose or charge), highest charge first; the exact id comes
+	 * first when present. Empty when nothing matches.
+	 */
+	public static <T> List<T> ordered(Collection<T> candidates, ToIntFunction<T> id, Function<T, String> name,
+		int wantedId, String wantedName)
+	{
+		List<T> out = new ArrayList<>();
+		for (T candidate : candidates)
+		{
+			if (candidate == null)
+			{
+				continue;
+			}
+			boolean exact = wantedId > 0 && id.applyAsInt(candidate) == wantedId;
+			if (exact || (wantedName != null && !wantedName.isEmpty() && sameFamily(name.apply(candidate), wantedName)))
+			{
+				out.add(candidate);
+			}
+		}
+		out.sort(Comparator.<T>comparingInt(c -> wantedId > 0 && id.applyAsInt(c) == wantedId ? 0 : 1)
+			.thenComparing(Comparator.<T>comparingInt(c -> charge(name.apply(c))).reversed()));
+		return out;
 	}
 
 	/**

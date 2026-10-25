@@ -27,6 +27,7 @@ import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper
 import net.runelite.client.plugins.microbot.questhelper.steps.DetailedQuestStep;
 import net.runelite.client.plugins.microbot.questhelper.requirements.Requirement;
 import net.runelite.client.plugins.microbot.questhelper.requirements.item.ItemRequirement;
+import net.runelite.client.plugins.microbot.questhelper.steps.ObjectStep;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
 import net.runelite.client.plugins.microbot.util.Rs2InventorySetup;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
@@ -105,6 +106,18 @@ public class QuestCombatHandler
 	private volatile long lastStaminaMs;
 	private volatile WorldPoint lastSafeTile;
 	private boolean recovering;
+	/** Epoch ms when an escape from combat without food began; 0 when not escaping. */
+	private volatile long escapeStartMs;
+	private volatile long lastAntifireMs;
+	private volatile boolean antifireSeenActive;
+	private volatile long antifireDurationMs = 6 * 60_000L;
+	private boolean defaultFoodTried;
+	private boolean antifireTried;
+	private int safeSpotFailures;
+	private static final long ESCAPE_STOP_AFTER_MS = 15_000L;
+	private static final int ESCAPE_STOP_HP_PERCENT = 20;
+	private static final int ESCAPE_OBJECT_RANGE = 6;
+	private static final int DEFAULT_FOOD_QTY = 5;
 	private int recoveryBankAttempts;
 
 	private volatile QuestHelper activeQuest;
@@ -174,6 +187,12 @@ public class QuestCombatHandler
 		lastStaminaMs = 0;
 		recovering = false;
 		recoveryBankAttempts = 0;
+		escapeStartMs = 0;
+		lastAntifireMs = 0;
+		antifireSeenActive = false;
+		defaultFoodTried = false;
+		antifireTried = false;
+		safeSpotFailures = 0;
 	}
 
 	/**
@@ -214,7 +233,7 @@ public class QuestCombatHandler
 		}
 
 		QuestCombatLoadout current = loadout;
-		if (current == null || gearDone)
+		if (current == null || gearDone || Rs2Combat.inCombat())
 		{
 			return false;
 		}
@@ -422,6 +441,113 @@ public class QuestCombatHandler
 
 	// ---- gear ----
 
+	private volatile Set<String> questGearSlots = Collections.emptySet();
+	private volatile QuestStep questGearSlotsStep;
+	private volatile QuestHelper questGearSlotsQuest;
+
+	/** Equipment slot name of a stored gear item: the recorded slot, else looked up from the item's stats. */
+	private static String gearSlotOf(QuestCombatLoadout.GearItem item)
+	{
+		if (item.getSlot() != null && !item.getSlot().isEmpty())
+		{
+			return item.getSlot();
+		}
+		return slotNameOfItem(item.getId());
+	}
+
+	private static String slotNameOfItem(int itemId)
+	{
+		if (itemId <= 0)
+		{
+			return "";
+		}
+		try
+		{
+			net.runelite.client.game.ItemStats stats = Microbot.getItemManager().getItemStats(itemId);
+			if (stats != null && stats.getEquipment() != null)
+			{
+				return slotName(stats.getEquipment().getSlot());
+			}
+		}
+		catch (RuntimeException ignored)
+		{
+			// unknown slot: treated as no conflict
+		}
+		return "";
+	}
+
+	/**
+	 * Equipment slots the quest needs worn: every must-be-equipped item requirement of the quest, the current step
+	 * and the steps still ahead. Quest requirements always win over the saved combat gear.
+	 */
+	private Set<String> questGearSlots()
+	{
+		QuestHelper quest = activeQuest;
+		QuestStep step = activeStep;
+		if (quest == questGearSlotsQuest && step == questGearSlotsStep)
+		{
+			return questGearSlots;
+		}
+		Set<String> slots = new HashSet<>();
+		try
+		{
+			List<ItemRequirement> requirements = new ArrayList<>();
+			if (quest != null && quest.getItemRequirements() != null)
+			{
+				requirements.addAll(quest.getItemRequirements());
+			}
+			if (step instanceof DetailedQuestStep)
+			{
+				for (Requirement requirement : ((DetailedQuestStep) step).getRequirements())
+				{
+					if (requirement instanceof ItemRequirement)
+					{
+						requirements.add((ItemRequirement) requirement);
+					}
+				}
+			}
+			List<DetailedQuestStep> ahead = quest == null ? null : QuestCombatDetector.remainingDetailedSteps(quest);
+			if (ahead != null)
+			{
+				for (DetailedQuestStep detailed : ahead)
+				{
+					for (Requirement requirement : detailed.getRequirements())
+					{
+						if (requirement instanceof ItemRequirement)
+						{
+							requirements.add((ItemRequirement) requirement);
+						}
+					}
+				}
+			}
+			for (ItemRequirement requirement : requirements)
+			{
+				if (requirement == null || !requirement.mustBeEquipped())
+				{
+					continue;
+				}
+				for (Integer id : requirement.getAllIds())
+				{
+					String slot = id == null ? "" : slotNameOfItem(id);
+					if (!slot.isEmpty())
+					{
+						slots.add(slot);
+						break;
+					}
+				}
+			}
+		}
+		catch (RuntimeException e)
+		{
+			Microbot.log("Quest helper: could not list the slots the quest needs worn: " + e.getMessage(), Level.WARN);
+		}
+		questGearSlots = slots;
+		questGearSlotsQuest = quest;
+		questGearSlotsStep = step;
+		return slots;
+	}
+
+
 	private static String specKey(GearSpec spec)
 	{
 		if (!spec.getSetup().isEmpty())
@@ -461,6 +587,14 @@ public class QuestCombatHandler
 			return false;
 		}
 
+		Set<String> reservedSlots = questGearSlots();
+		if (!spec.getSetup().isEmpty() && !reservedSlots.isEmpty())
+		{
+			warnOnce("setup-slots:" + key, "Quest helper: the quest needs " + reservedSlots
+				+ " worn, so the inventory setup '" + spec.getSetup() + "' is not applied");
+			wornSpecKey = key;
+			return false;
+		}
 		if (!spec.getSetup().isEmpty())
 		{
 			if (QuestCombatSetupDialog.setupNames().stream().noneMatch(name -> name.equalsIgnoreCase(spec.getSetup())))
@@ -482,6 +616,12 @@ public class QuestCombatHandler
 		List<QuestCombatLoadout.GearItem> missing = new ArrayList<>();
 		for (QuestCombatLoadout.GearItem item : spec.getItems())
 		{
+			if (QuestFightSupport.slotConflicts(gearSlotOf(item), reservedSlots))
+			{
+				warnOnce("slot:" + item.getId() + item.getName(), "Quest helper: leaving the " + gearSlotOf(item)
+					+ " slot alone, the quest needs it worn");
+				continue;
+			}
 			if (!isWorn(item))
 			{
 				missing.add(item);
@@ -657,6 +797,11 @@ public class QuestCombatHandler
 	public boolean prepareForKill(QuestStep step, int reservedSlots)
 	{
 		QuestCombatLoadout current = loadout;
+		if (phase == Phase.ACTIVE && current != null && !Rs2Combat.inCombat() && needsDefaultFood(current)
+			&& fetchDefaultFood(step, reservedSlots, current))
+		{
+			return true;
+		}
 		if (phase != Phase.ACTIVE || current == null || current.isSkip() || Rs2Combat.inCombat()
 			|| !QuestCombatDetector.hasFightsRemaining(activeQuest))
 		{
@@ -690,11 +835,269 @@ public class QuestCombatHandler
 			applyStyle(current, step);
 		}
 
+		if (isDragonFight(step) && !antifireTried && antifireCount() == 0)
+		{
+			antifireTried = true;
+			return restock(current, reservedSlots);
+		}
 		if (!needsSupplies(current))
 		{
 			return false;
 		}
 		return restock(current, reservedSlots);
+	}
+
+	/** True while the player is trying to get away from a fight with no food; QuestScript may read it. */
+	public boolean shouldEscape()
+	{
+		return escapeStartMs > 0;
+	}
+
+	private void noteNoFoodInCombat(long now)
+	{
+		if (escapeStartMs == 0)
+		{
+			escapeStartMs = now;
+		}
+	}
+
+	/** The step is an object step (ladder, stairs, door) whose object is close: the way out of a fight. */
+	private static boolean stepTransportNearby(QuestStep step)
+	{
+		if (!(step instanceof ObjectStep) || ((ObjectStep) step).getDefinedPoint() == null)
+		{
+			return false;
+		}
+		WorldPoint target = ((ObjectStep) step).getDefinedPoint().getWorldPoint();
+		WorldPoint here = Rs2Player.getWorldLocation();
+		return target != null && here != null && target.getPlane() == here.getPlane()
+			&& target.distanceTo(here) <= ESCAPE_OBJECT_RANGE;
+	}
+
+	private boolean needsDefaultFood(QuestCombatLoadout current)
+	{
+		if (defaultFoodTried || current.wantsFood() || hasEdibleFood() || bankAttempts >= MAX_BANK_ATTEMPTS)
+		{
+			return false;
+		}
+		QuestHelper quest = activeQuest;
+		if (quest == null)
+		{
+			return false;
+		}
+		List<String> combatRequirements = quest.getCombatRequirements();
+		return QuestCombatDetector.hasFightsRemaining(quest)
+			|| (combatRequirements != null && !combatRequirements.isEmpty());
+	}
+
+	/** Setup is Skip or brings no food, yet fights lie ahead: still carry a small stack of the bank's best food. */
+	private boolean fetchDefaultFood(QuestStep step, int reservedSlots, QuestCombatLoadout current)
+	{
+		defaultFoodTried = true;
+		Microbot.status = "Quest helper: fetching emergency food";
+		if (!Rs2Bank.isOpen())
+		{
+			Rs2Bank.walkToBankAndUseBank();
+			if (!sleepUntil(Rs2Bank::isOpen, 15_000))
+			{
+				bankAttempts++;
+				defaultFoodTried = false;
+				return true;
+			}
+		}
+		if (!Rs2Bank.setWithdrawAsItem())
+		{
+			Rs2Bank.closeBank();
+			stopper.accept("Failed to set bank withdraw mode to Item. Toggle it manually and restart.");
+			return true;
+		}
+		prepareBankInventory(activeQuest, step);
+		String best = bestBankFood();
+		if (best != null)
+		{
+			int reserved = Math.min(27, reservedSlots + reserveFor(current));
+			withdraw(best, true, carry(DEFAULT_FOOD_QTY, 0, reserved));
+		}
+		else
+		{
+			warnOnce("defaultfood", "Quest helper: no food in the bank, continuing without any");
+		}
+		Rs2Bank.closeBank();
+		sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+		return true;
+	}
+
+	/** Whether this kill step is against a dragon or the step text talks about dragonfire. */
+	private static boolean isDragonFight(QuestStep step)
+	{
+		return step != null && QuestCombatDetector.isKillStep(step)
+			&& QuestFightSupport.isDragonFight(QuestCombatDetector.fightKeyOf(step), step.getText());
+	}
+
+	/** Inventory antifire potions, best protection first then smallest dose; quest items excluded. */
+	private List<Rs2ItemModel> antifireItems()
+	{
+		Set<Integer> keep = protectedItemIds();
+		List<Rs2ItemModel> out = Rs2Inventory.items(i -> !i.isNoted() && !keep.contains(i.getId())
+			&& QuestFightSupport.isAntifire(i.getName())).collect(Collectors.toList());
+		out.sort(Comparator.<Rs2ItemModel>comparingInt(i -> antifireRank(i.getName()))
+			.thenComparingInt(QuestCombatHandler::dose));
+		return out;
+	}
+
+	private static int antifireRank(String itemName)
+	{
+		for (int i = 0; i < QuestFightSupport.ANTIFIRE_NAMES.size(); i++)
+		{
+			if (ChargedItemNames.sameFamily(QuestFightSupport.ANTIFIRE_NAMES.get(i), itemName))
+			{
+				return i;
+			}
+		}
+		return QuestFightSupport.ANTIFIRE_NAMES.size();
+	}
+
+	private int antifireCount()
+	{
+		return antifireItems().size();
+	}
+
+	private void withdrawAntifire(int reserved)
+	{
+		if (antifireCount() > 0 || Rs2Inventory.emptySlotCount() - reserved < 1)
+		{
+			return;
+		}
+		List<Rs2ItemModel> bank = Rs2Bank.bankItems();
+		if (bank != null)
+		{
+			List<Rs2ItemModel> usable = bank.stream().filter(i -> i != null && !i.isNoted() && i.getQuantity() > 0)
+				.collect(Collectors.toList());
+			for (String name : QuestFightSupport.ANTIFIRE_NAMES)
+			{
+				List<Rs2ItemModel> options = ChargedItemNames.ordered(usable, Rs2ItemModel::getId,
+					Rs2ItemModel::getName, 0, name);
+				if (!options.isEmpty())
+				{
+					Rs2Bank.withdrawX(options.get(0).getId(), 1);
+					if (!sleepUntil(() -> antifireCount() > 0, 3_000))
+					{
+						Microbot.log("Quest helper: withdrawing antifire did not land in time", Level.WARN);
+					}
+					return;
+				}
+			}
+		}
+		warnOnce("antifire", "Quest helper: no antifire potion in the bank for the dragon fight");
+	}
+
+	/** Drinks antifire when a dragon fight starts and again when it wears off. Never touches quest items. */
+	private void antifireTick(QuestStep step, long now)
+	{
+		if (!isDragonFight(step) || !Rs2Combat.inCombat() || Rs2Bank.isOpen()
+			|| now - lastConsumeMs < CONSUME_COOLDOWN_MS)
+		{
+			return;
+		}
+		boolean active = Rs2Player.hasAntiFireActive();
+		if (active)
+		{
+			antifireSeenActive = true;
+		}
+		if (!QuestFightSupport.antifireDue(lastAntifireMs, now, antifireDurationMs, antifireSeenActive, active))
+		{
+			return;
+		}
+		List<Rs2ItemModel> items = antifireItems();
+		if (items.isEmpty())
+		{
+			return;
+		}
+		Rs2ItemModel potion = items.get(0);
+		if (Rs2Inventory.interact(potion, "Drink"))
+		{
+			lastConsumeMs = now;
+			lastAntifireMs = now;
+			antifireSeenActive = false;
+			antifireDurationMs = QuestFightSupport.antifireDurationMs(potion.getName());
+		}
+	}
+
+	private QuestCombatLoadout.Style effectiveStyle(QuestCombatLoadout current, QuestStep step)
+	{
+		QuestCombatLoadout.Style style = current.styleFor(QuestCombatDetector.fightKeyOf(step));
+		if (style == QuestCombatLoadout.Style.AUTO)
+		{
+			Rs2ItemModel weapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+			style = QuestCombatLoadout.styleOfWeapon(weapon == null ? null : weapon.getName());
+		}
+		return style;
+	}
+
+	private static java.lang.reflect.Field markedTilesField;
+
+	/** Safespot tiles the kill step carries (addSafeSpots); DetailedQuestStep has no getter for its marked tiles. */
+	@SuppressWarnings("unchecked")
+	private static List<WorldPoint> safeSpotsOf(QuestStep step)
+	{
+		if (!(step instanceof DetailedQuestStep))
+		{
+			return Collections.emptyList();
+		}
+		try
+		{
+			if (markedTilesField == null)
+			{
+				java.lang.reflect.Field field = DetailedQuestStep.class.getDeclaredField("markedTiles");
+				field.setAccessible(true);
+				markedTilesField = field;
+			}
+			List<net.runelite.client.plugins.microbot.questhelper.tools.QuestTile> tiles =
+				(List<net.runelite.client.plugins.microbot.questhelper.tools.QuestTile>) markedTilesField.get(step);
+			List<WorldPoint> out = new ArrayList<>();
+			for (net.runelite.client.plugins.microbot.questhelper.tools.QuestTile tile : new ArrayList<>(tiles))
+			{
+				if (tile != null && tile.getWorldPoint() != null
+					&& tile.getIconID() == net.runelite.api.gameval.SpriteID.SideIcons.COMBAT)
+				{
+					out.add(tile.getWorldPoint());
+				}
+			}
+			return out;
+		}
+		catch (ReflectiveOperationException | RuntimeException e)
+		{
+			return Collections.emptyList();
+		}
+	}
+
+	/**
+	 * Before attacking a kill step with a safespot while fighting ranged or magic: walk to the nearest safespot and
+	 * stay on it. Melee ignores safespots.
+	 *
+	 * @return true when this tick walked toward the safespot and the script must skip the attack click
+	 */
+	public boolean positionForKill(QuestStep step)
+	{
+		QuestCombatLoadout current = loadout;
+		if (phase != Phase.ACTIVE || current == null || current.isSkip() || !QuestCombatDetector.isKillStep(step)
+			|| !QuestFightSupport.usesSafeSpot(effectiveStyle(current, step)) || safeSpotFailures >= 6)
+		{
+			return false;
+		}
+		WorldPoint here = Rs2Player.getWorldLocation();
+		WorldPoint spot = QuestFightSupport.nearestSafeSpot(here, safeSpotsOf(step));
+		if (spot == null || spot.equals(here))
+		{
+			safeSpotFailures = 0;
+			return false;
+		}
+		Microbot.status = "Quest helper: moving to the safespot";
+		if (!Rs2Walker.walkTo(spot, 0))
+		{
+			safeSpotFailures++;
+		}
+		return true;
 	}
 
 	private void applyStyle(QuestCombatLoadout current, QuestStep step)
@@ -791,6 +1194,10 @@ public class QuestCombatHandler
 			supplied = true;
 			return true;
 		}
+		if (isDragonFight(activeStep))
+		{
+			withdrawAntifire(reserved);
+		}
 		if (current.wantsPotions())
 		{
 			int held = potionCount(current);
@@ -826,21 +1233,44 @@ public class QuestCombatHandler
 		return true;
 	}
 
+	/** Withdraws {@code missing} of a potion, any dose, highest dose first. */
 	private void withdrawPotion(String itemName, int missing)
 	{
 		if (missing <= 0)
 		{
 			return;
 		}
-		String dosed = itemName + "(4)";
-		if (Rs2Bank.count(dosed, true) > 0)
+		List<Rs2ItemModel> bank = Rs2Bank.bankItems();
+		if (bank == null)
 		{
-			withdraw(dosed, true, missing);
+			return;
 		}
-		else
+		List<Rs2ItemModel> options = ChargedItemNames.ordered(
+			bank.stream().filter(i -> i != null && !i.isNoted() && i.getQuantity() > 0).collect(Collectors.toList()),
+			Rs2ItemModel::getId, Rs2ItemModel::getName, 0, itemName);
+		int remaining = missing;
+		for (Rs2ItemModel option : options)
 		{
-			withdraw(itemName, false, missing);
+			if (remaining <= 0)
+			{
+				break;
+			}
+			int amount = Math.min(remaining, option.getQuantity());
+			int before = potionFamilyCount(itemName);
+			Rs2Bank.withdrawX(option.getId(), amount);
+			if (!sleepUntil(() -> potionFamilyCount(itemName) > before, 3_000))
+			{
+				Microbot.log("Quest helper: withdrawing " + itemName + " did not land in time", Level.WARN);
+				return;
+			}
+			remaining -= Math.max(1, potionFamilyCount(itemName) - before);
 		}
+	}
+
+	private static int potionFamilyCount(String itemName)
+	{
+		return Rs2Inventory.items(i -> !i.isNoted() && ChargedItemNames.sameFamily(i.getName(), itemName))
+			.mapToInt(Rs2ItemModel::getQuantity).sum();
 	}
 
 	private static int invQuantity(QuestCombatLoadout.InventoryItem wanted)
@@ -1255,6 +1685,10 @@ public class QuestCombatHandler
 		{
 			return true;
 		}
+		if (QuestFightSupport.isAntifire(name))
+		{
+			return true;
+		}
 		if (current.wantsPotions() && baseName(item).equalsIgnoreCase(current.getPotion().getItemName()))
 		{
 			return true;
@@ -1426,13 +1860,22 @@ public class QuestCombatHandler
 
 		if (fighting)
 		{
-			Microbot.status = "Quest helper: low HP and no food, backing away";
-			WorldPoint retreat = lastSafeTile;
-			if (step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null
-				&& ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint() != null)
+			Microbot.status = "Quest helper: low HP and no food, escaping";
+			long nowMs = System.currentTimeMillis();
+			if (escapeStartMs == 0)
 			{
-				retreat = ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint();
+				escapeStartMs = nowMs;
 			}
+			if (hp <= ESCAPE_STOP_HP_PERCENT && nowMs - escapeStartMs >= ESCAPE_STOP_AFTER_MS)
+			{
+				stopper.accept("Could not escape the fight at " + Math.round(hp) + "% HP with no food. Stopping so you do not die.");
+				return true;
+			}
+			if (stepTransportNearby(step))
+			{
+				return false; // the step's own ladder, stairs or door is the way out: let the script click it
+			}
+			WorldPoint retreat = lastSafeTile;
 			if (retreat != null)
 			{
 				Rs2Walker.walkTo(retreat, 2);
@@ -1550,10 +1993,22 @@ public class QuestCombatHandler
 			staminaTick(current, tickNow);
 		}
 		// Safety net regardless of loadout: any food in the inventory is eaten at the threshold
-		if (Rs2Player.getHealthPercentage() <= eatThreshold() && eatAnyFood(tickNow))
+		if (Rs2Player.getHealthPercentage() <= eatThreshold())
 		{
-			return;
+			if (eatAnyFood(tickNow))
+			{
+				return;
+			}
+			if (Rs2Combat.inCombat())
+			{
+				noteNoFoodInCombat(tickNow);
+			}
 		}
+		else if (!Rs2Combat.inCombat())
+		{
+			escapeStartMs = 0;
+		}
+		antifireTick(step, tickNow);
 		if (phase != Phase.ACTIVE || current == null || current.isSkip())
 		{
 			return;
@@ -1579,7 +2034,7 @@ public class QuestCombatHandler
 		{
 			return;
 		}
-		if (current.usesPrayer())
+		if (current.usesPrayer() && QuestCombatDetector.isKillStep(step))
 		{
 			managePrayer(current, now);
 		}
@@ -1592,11 +2047,7 @@ public class QuestCombatHandler
 		boolean hasAny = hasEdibleFood();
 		if (!hasNamed && !hasAny)
 		{
-			if (current.wantsFood())
-			{
-				stopper.accept("Out of food at " + Math.round(Rs2Player.getHealthPercentage())
-					+ "% HP during a fight. Stopping so you do not die.");
-			}
+			noteNoFoodInCombat(now);
 			return false;
 		}
 		if (now - lastConsumeMs < CONSUME_COOLDOWN_MS)
