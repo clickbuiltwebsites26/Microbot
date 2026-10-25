@@ -7,7 +7,10 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2RouteStep;
 import net.runelite.client.plugins.microbot.util.walker.Rs2TransportEdge;
 import net.runelite.client.plugins.microbot.util.walker.Rs2TransportType;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.function.Predicate;
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -31,7 +34,66 @@ final class NearestBankPolicy {
             BankLocation.HALLOWED_SEPULCHRE,
             BankLocation.GUARDIANS_OF_THE_RIFT);
 
+    /** Re-seed the search from standable tiles within this radius when the start tile is enclosed. */
+    static final int SEED_RADIUS = 3;
+    static final int MAX_SEEDS = 3;
+    /** Back off re-running a failed search from the same tile for this long. */
+    static final long BACKOFF_MS = 45_000L;
+    /** Straight-line fallback only considers banks within this many tiles. */
+    static final int FALLBACK_MAX_TILES = 150;
+
     private NearestBankPolicy() {
+    }
+
+    /** Standable tiles around {@code start} (nearest ring first, start excluded), at most {@code limit}. */
+    static List<WorldPoint> seedTiles(WorldPoint start, Predicate<WorldPoint> standable, int maxRadius, int limit) {
+        List<WorldPoint> seeds = new ArrayList<>();
+        if (start == null) {
+            return seeds;
+        }
+        for (int r = 1; r <= maxRadius && seeds.size() < limit; r++) {
+            for (int dx = -r; dx <= r && seeds.size() < limit; dx++) {
+                for (int dy = -r; dy <= r && seeds.size() < limit; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) != r) {
+                        continue;
+                    }
+                    WorldPoint p = new WorldPoint(start.getX() + dx, start.getY() + dy, start.getPlane());
+                    if (standable.test(p)) {
+                        seeds.add(p);
+                    }
+                }
+            }
+        }
+        return seeds;
+    }
+
+    /** Whether a search from {@code tile} failed recently enough that it should not be repeated yet. */
+    static boolean shouldBackOff(WorldPoint lastFailureTile, long lastFailureMs, long nowMs, WorldPoint tile) {
+        return lastFailureTile != null && lastFailureTile.equals(tile) && nowMs - lastFailureMs < BACKOFF_MS;
+    }
+
+    /** Nearest bank by straight-line tiles within {@code maxTiles} (same plane preferred); null if none. */
+    static BankLocation nearestByDistance(WorldPoint start, Collection<BankLocation> banks, int maxTiles) {
+        if (start == null) {
+            return null;
+        }
+        BankLocation best = null;
+        long bestScore = Long.MAX_VALUE;
+        for (BankLocation b : banks) {
+            if (isMinigameBank(b) && !isEligibleTarget(start, b)) {
+                continue;
+            }
+            int d = start.distanceTo2D(b.getWorldPoint());
+            if (d > maxTiles) {
+                continue;
+            }
+            long score = d + (b.getWorldPoint().getPlane() == start.getPlane() ? 0 : 1);
+            if (score < bestScore) {
+                bestScore = score;
+                best = b;
+            }
+        }
+        return best;
     }
 
     static boolean isMinigameBank(BankLocation bank) {

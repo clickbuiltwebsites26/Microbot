@@ -1034,41 +1034,23 @@ public class QuestCombatHandler
 		return style;
 	}
 
-	private static java.lang.reflect.Field markedTilesField;
-
-	/** Safespot tiles the kill step carries (addSafeSpots); DetailedQuestStep has no getter for its marked tiles. */
-	@SuppressWarnings("unchecked")
+	/** Safespot tiles the kill step carries (addSafeSpots). */
 	private static List<WorldPoint> safeSpotsOf(QuestStep step)
 	{
 		if (!(step instanceof DetailedQuestStep))
 		{
 			return Collections.emptyList();
 		}
-		try
+		List<WorldPoint> out = new ArrayList<>();
+		for (net.runelite.client.plugins.microbot.questhelper.tools.QuestTile tile : new ArrayList<>(((DetailedQuestStep) step).getMarkedTiles()))
 		{
-			if (markedTilesField == null)
+			if (tile != null && tile.getWorldPoint() != null
+				&& tile.getIconID() == net.runelite.api.gameval.SpriteID.SideIcons.COMBAT)
 			{
-				java.lang.reflect.Field field = DetailedQuestStep.class.getDeclaredField("markedTiles");
-				field.setAccessible(true);
-				markedTilesField = field;
+				out.add(tile.getWorldPoint());
 			}
-			List<net.runelite.client.plugins.microbot.questhelper.tools.QuestTile> tiles =
-				(List<net.runelite.client.plugins.microbot.questhelper.tools.QuestTile>) markedTilesField.get(step);
-			List<WorldPoint> out = new ArrayList<>();
-			for (net.runelite.client.plugins.microbot.questhelper.tools.QuestTile tile : new ArrayList<>(tiles))
-			{
-				if (tile != null && tile.getWorldPoint() != null
-					&& tile.getIconID() == net.runelite.api.gameval.SpriteID.SideIcons.COMBAT)
-				{
-					out.add(tile.getWorldPoint());
-				}
-			}
-			return out;
 		}
-		catch (ReflectiveOperationException | RuntimeException e)
-		{
-			return Collections.emptyList();
-		}
+		return out;
 	}
 
 	/**

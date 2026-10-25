@@ -15,6 +15,7 @@ import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.api.tileobject.models.TileObjectType;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatDetector;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
+import net.runelite.client.plugins.microbot.questhelper.combat.QuestFightSupport;
 import net.runelite.client.plugins.microbot.questhelper.logic.PiratesTreasure;
 import net.runelite.client.plugins.microbot.questhelper.logic.QuestRegistry;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
@@ -28,6 +29,7 @@ import net.runelite.client.plugins.microbot.questhelper.steps.widget.WidgetHighl
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
+import net.runelite.client.plugins.microbot.util.dialogues.DialogueChoiceProvider;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.grandexchange.Rs2GrandExchange;
@@ -128,7 +130,7 @@ public class QuestScript extends Script {
     QuestStep dialogueStartedStep = null;
 
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
-    private String lastDialogueLine = "";
+    private volatile String lastDialogueLine = "";
     private String menuRepeatKey;
     private int menuRepeats;
     private String menuLoggedKey;
@@ -167,6 +169,10 @@ public class QuestScript extends Script {
                 if (handleShortBreak()) return;
 
                 QuestStep questStep = getQuestHelperPlugin().getSelectedQuest().getCurrentStep().getActiveStep();
+
+                publishDialogueChoices(questStep);
+                // Dialogue is answered first and at ~100 ms, regardless of combat or animation state.
+                answerDialogueFast(questStep);
 
                 // Being hit while a non-kill step is active must not stall it: skip the settle wait and keep acting.
                 boolean attackedOnNonKillStep = isAttackedOnNonKillStep(questStep);
@@ -362,14 +368,14 @@ public class QuestScript extends Script {
 						return;
 					}
 
-					/**
-					 * This portion is needed when using item on another item in your inventory.
-					 * If we do not prioritize this, the script will think we are missing items
-					 */
 					if (QuestCombatDetector.isKillStep(questStep) && combat.positionForKill(questStep)) {
 						return;
 					}
 
+					/**
+					 * This portion is needed when using item on another item in your inventory.
+					 * If we do not prioritize this, the script will think we are missing items
+					 */
 					if (manageAutoRetaliate(questStep)) {
 						return;
 					}
@@ -412,6 +418,89 @@ public class QuestScript extends Script {
                 600, 600, TimeUnit.MILLISECONDS);
         return true;
     }
+
+	/** Publishes the active step's wanted dialogue options so the walker can answer doors' conversations itself. */
+	private void publishDialogueChoices(QuestStep step) {
+		if (step == null) {
+			DialogueChoiceProvider.clear();
+			return;
+		}
+		DialogueChoiceProvider.set(() -> stepChoiceTexts(step));
+	}
+
+	/** The step's choices that currently apply (expected previous line / excluded widgets honoured), in order. */
+	private List<String> stepChoiceTexts(QuestStep step) {
+		List<String> out = new ArrayList<>();
+		for (var choice : step.getChoices().getChoices()) {
+			if (choice.getChoice() == null) {
+				continue;
+			}
+			if (choice.getExpectedPreviousLine() != null
+					&& !QuestDialogueRules.previousLineMatches(choice.getExpectedPreviousLine(), lastDialogueLine)) {
+				continue;
+			}
+			if (choice.getExcludedStrings() != null && choice.getExcludedStrings().stream().anyMatch(Rs2Widget::hasWidget)) {
+				continue;
+			}
+			out.add(choice.getChoice());
+		}
+		return out;
+	}
+
+	/**
+	 * While a conversation is open, answers the step's options and clicks continues every ~100 ms (bounded to 10 s).
+	 * Leaves the rest to the normal tick when an options menu matches none of the step's choices.
+	 */
+	private void answerDialogueFast(QuestStep step) {
+		if (step == null || !Rs2Dialogue.isInDialogue()) {
+			return;
+		}
+		long end = System.currentTimeMillis() + 10_000L;
+		int stuck = 0;
+		String lastMenu = null;
+		while (System.currentTimeMillis() < end && !Thread.currentThread().isInterrupted()
+				&& config.startStopQuestHelper() && Rs2Dialogue.isInDialogue()) {
+			String line = Rs2Dialogue.getDialogueText();
+			if (line != null && !line.isEmpty()) {
+				lastDialogueLine = line;
+			}
+			if (dialogueStartedStep == null) {
+				dialogueStartedStep = step;
+			}
+			if (Rs2Dialogue.hasSelectAnOption()) {
+				List<Widget> widgets = Rs2Dialogue.getDialogueOptions();
+				List<String> texts = widgets.stream().map(Widget::getText).collect(Collectors.toList());
+				if (DialogueChoiceProvider.pickIndex(texts, stepChoiceTexts(step)) < 0) {
+					return;
+				}
+				String menu = String.join("|", texts);
+				stuck = menu.equals(lastMenu) ? stuck + 1 : 0;
+				if (stuck >= 3) {
+					return;
+				}
+				lastMenu = menu;
+				Widget[] children = Rs2Widget.getWidget(ComponentID.DIALOG_OPTION_OPTIONS).getDynamicChildren();
+				boolean sent = false;
+				for (String wanted : stepChoiceTexts(step)) {
+					if (children != null && selectDialogChoice(children, wanted)) {
+						sent = true;
+						break;
+					}
+				}
+				if (!sent) {
+					return;
+				}
+				sleepUntil(() -> !Rs2Dialogue.hasSelectAnOption()
+						|| !menu.equals(Rs2Dialogue.getDialogueOptions().stream().map(Widget::getText).collect(Collectors.joining("|"))), 600);
+			} else if (Rs2Dialogue.hasContinue()) {
+				Rs2Walker.clearWalkingRoute("quest-helper:dialogue-fast-continue");
+				Rs2Dialogue.clickContinue();
+				sleepUntil(() -> !Rs2Dialogue.hasContinue(), 600);
+			} else {
+				return;
+			}
+		}
+	}
 
 	private boolean isAttackedOnNonKillStep(QuestStep step) {
 		return step != null && !isKillNpcStep(step) && Rs2Combat.inCombat();
@@ -591,6 +680,12 @@ public class QuestScript extends Script {
 	 * @return true while the preflight used this tick and the quest must not act yet
 	 */
 	private boolean runPreflight(QuestHelper quest) {
+		String soloFailure = QuestPreflight.anotherPlayerFailure(quest.getQuest().name(), quest.getQuest().getName());
+		if (soloFailure != null) {
+			finishPreflight(soloFailure);
+			stopQuesterWithReason(soloFailure.substring(QuestPreflight.FAILED_PREFIX.length()));
+			return true;
+		}
 		int nonce = QuestCombatHandler.startNonce();
 		String key = quest.getQuest().name();
 		if (nonce != preflightNonce || !key.equals(preflightQuestKey)) {
@@ -767,6 +862,10 @@ public class QuestScript extends Script {
 
 		Map<Integer, Boolean> tradableByPrimaryId = new HashMap<>();
 		List<QuestPreflight.Need> needs = new ArrayList<>();
+		if (steps != null && steps.stream().anyMatch(step -> QuestCombatDetector.isKillStep(step)
+				&& QuestFightSupport.isDragonFight(QuestCombatDetector.fightKeyOf(step), step.getText()))) {
+			needs.add(QuestPreflight.antifireNeed());
+		}
 		for (Requirement requirement : candidates) {
 			// Subclasses (keyrings, followers, composites) have their own ownership rules; leave them to the steps
 			if (requirement == null || requirement.getClass() != ItemRequirement.class) {
@@ -2219,6 +2318,7 @@ public class QuestScript extends Script {
 
 	@Override
 	public void shutdown() {
+		DialogueChoiceProvider.clear();
 		if (combatSupportFuture != null) {
 			combatSupportFuture.cancel(true);
 			combatSupportFuture = null;
