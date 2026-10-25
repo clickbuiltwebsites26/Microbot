@@ -71,6 +71,7 @@ import net.runelite.client.plugins.microbot.util.walker.obstacle.ObstacleResolut
 import net.runelite.client.plugins.microbot.util.walker.obstacle.PlannedEdge;
 import net.runelite.client.plugins.microbot.util.walker.recovery.FrontierDecision;
 import net.runelite.client.plugins.microbot.util.walker.recovery.RouteRecovery;
+import net.runelite.client.plugins.microbot.util.walker.recovery.WalkLivelockPolicy;
 import net.runelite.client.plugins.microbot.util.walker.recovery.WalledReplanLedger;
 import net.runelite.client.plugins.microbot.util.walker.segment.SegmentGate;
 import net.runelite.client.plugins.microbot.util.walker.recovery.TailDecision;
@@ -1592,6 +1593,10 @@ public class Rs2Walker {
                 walkBudgetLastProgressAtMs = nowMs;
             }
         }
+        if (WalkLivelockPolicy.shouldAbort(walkBudgetLastProgressAtMs, nowMs, WalkLivelockPolicy.getAbortMs())) {
+            abortLivelockedWalk(target, nowMs);
+            return;
+        }
         if (!TailDecision.isWallClockExhausted(walkBudgetLastProgressAtMs, nowMs, WALK_WALL_CLOCK_BUDGET_MS)
                 || walkBudgetReportedForSessionAtMs == startedAt) {
             return;
@@ -1602,6 +1607,20 @@ public class Rs2Walker {
                         + " cap cannot catch this because exempt exits refund it",
                 WALK_WALL_CLOCK_BUDGET_MS, nowMs - walkBudgetLastProgressAtMs, nowMs - startedAt,
                 target, Rs2Player.getWorldLocation(), processWalkTail);
+    }
+
+    /**
+     * Aborts a walk that has not closed distance on its goal for the livelock window so the caller
+     * (quest watchdog, scripts) can recover. The loop's next cancel check observes the cleared target.
+     */
+    private static void abortLivelockedWalk(WorldPoint target, long nowMs) {
+        WorldPoint at = Rs2Player.getWorldLocation();
+        String reason = "livelock-abort: no distance gain for " + (nowMs - walkBudgetLastProgressAtMs)
+                + "ms target=" + target + " at=" + at;
+        log.warn("[Walker] {} — aborting walk so the caller can recover", reason);
+        WalkLivelockPolicy.recordAbort(reason, nowMs);
+        walkBudgetLastProgressAtMs = nowMs;
+        setTarget(null, "rs2walker:processWalk:" + reason);
     }
 
     /** How long the route progress index may hold still before the route is declared stagnant. */

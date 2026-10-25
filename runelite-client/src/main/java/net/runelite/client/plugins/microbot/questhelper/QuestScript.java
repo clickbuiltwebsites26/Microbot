@@ -113,6 +113,18 @@ public class QuestScript extends Script {
     private final QuestCombatHandler combat = new QuestCombatHandler(
             () -> this.config, () -> mainScheduledFuture, this::stopQuesterWithReason);
     private ScheduledFuture<?> combatSupportFuture;
+    private ScheduledFuture<?> supervisorFuture;
+    private final QuestStuckWatchdog stuckWatchdog = new QuestStuckWatchdog(QuestStuckWatchdog.DEFAULT_STAGE_INTERVAL_MS);
+    private static volatile String stuckStage = "NONE";
+    private static volatile long stuckForMs;
+    private volatile boolean automationWasOn;
+    private volatile long pausedAtMs;
+    private volatile WorldPoint lastWalkTarget;
+
+    /** Watchdog stage for GET /quest-helper/status ("NONE" when making progress). */
+    public static String getStuckStage() { return stuckStage; }
+
+    public static long getStuckForMs() { return stuckForMs; }
     private long nextBreakAtMs;
     private long breakEndsAtMs;
 
@@ -416,8 +428,80 @@ public class QuestScript extends Script {
 
         combatSupportFuture = scheduledExecutorService.scheduleWithFixedDelay(this::combatSupportTick,
                 600, 600, TimeUnit.MILLISECONDS);
+        supervisorFuture = scheduledExecutorService.scheduleWithFixedDelay(this::supervisorTick,
+                1000, 1000, TimeUnit.MILLISECONDS);
         return true;
     }
+
+	/**
+	 * Runs beside the main loop (which blocks inside walks): cancels the in-flight walk the moment
+	 * automation is paused or the quest deselected, and drives the stuck watchdog.
+	 */
+	private void supervisorTick() {
+		try {
+			boolean on = config != null && config.startStopQuestHelper();
+			QuestHelper selected = getQuestHelperPlugin() == null ? null : getQuestHelperPlugin().getSelectedQuest();
+			long now = System.currentTimeMillis();
+			if (!on || selected == null) {
+				if (automationWasOn) {
+					automationWasOn = false;
+					pausedAtMs = now;
+				}
+				// keep cancelling for a few seconds: the main loop may re-issue a walk before it sees the pause
+				if (now - pausedAtMs < 10_000L && Rs2Walker.getCurrentTarget() != null) {
+					Rs2Walker.clearWalkingRoute(on ? "quest-helper:quest-deselected" : "quest-helper:paused");
+				}
+				stuckWatchdog.reset(now);
+				stuckStage = "NONE";
+				stuckForMs = 0;
+				return;
+			}
+			automationWasOn = true;
+			if (!Microbot.isLoggedIn()) {
+				stuckWatchdog.reset(now);
+				return;
+			}
+			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();
+			if (walkTarget != null) lastWalkTarget = walkTarget;
+			QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
+			int var = Microbot.getClientThread().runOnClientThreadOptional(selected::getVar).orElse(-1);
+			boolean suppressed = (config.takeShortBreaks() && breakEndsAtMs > now)
+					|| QuestCombatHandler.isAwaitingSetup() || QuestPreflight.isInProgress()
+					|| Rs2Combat.inCombat() || Rs2Bank.isOpen();
+			QuestStuckWatchdog.Stage entered = stuckWatchdog.tick(now,
+					QuestStuckRecovery.signature(step, var, Rs2Dialogue.isInDialogue()), suppressed);
+			stuckStage = stuckWatchdog.current().name();
+			stuckForMs = stuckWatchdog.stuckForMs(now);
+			if (entered == null) return;
+			WorldPoint at = Rs2Player.getWorldLocation();
+			Microbot.log("[QuestWatchdog] stuck " + (stuckForMs / 1000) + "s at " + at + " step=\"" 
+					+ (step == null ? "?" : step.getText()) + "\" -> stage " + entered, Level.WARN);
+			WorldPoint stepPoint = step instanceof DetailedQuestStep && ((DetailedQuestStep) step).getDefinedPoint() != null
+					? ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint() : lastWalkTarget;
+			switch (entered) {
+				case REPLAN:
+					QuestStuckRecovery.replan();
+					break;
+				case BLACKLIST:
+					QuestStuckRecovery.blacklist(lastWalkTarget != null ? lastWalkTarget : stepPoint);
+					break;
+				case PLANE_ESCAPE:
+					QuestStuckRecovery.escapePlane();
+					break;
+				case TELEPORT:
+					QuestStuckRecovery.teleport(stepPoint);
+					break;
+				case GIVE_UP:
+					stopQuesterWithReason("Stuck for " + (stuckForMs / 1000) + "s at " + at + " on step \""
+							+ (step == null ? "?" : step.getText()) + "\" after all recovery stages");
+					break;
+				default:
+					break;
+			}
+		} catch (Exception ex) {
+			Microbot.log("[QuestWatchdog] supervisor tick failed: " + ex, Level.DEBUG);
+		}
+	}
 
 	/** Publishes the active step's wanted dialogue options so the walker can answer doors' conversations itself. */
 	private void publishDialogueChoices(QuestStep step) {
@@ -2353,6 +2437,12 @@ public class QuestScript extends Script {
 			combatSupportFuture.cancel(true);
 			combatSupportFuture = null;
 		}
+		if (supervisorFuture != null) {
+			supervisorFuture.cancel(true);
+			supervisorFuture = null;
+		}
+		stuckWatchdog.reset(System.currentTimeMillis());
+		stuckStage = "NONE";
 		combat.reset();
 		if (autoRetaliateDisabledByUs) {
 			// shutdown may run on a caller that must not block, so restore off-thread

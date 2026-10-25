@@ -627,3 +627,15 @@ Inside the Black Knights' Fortress the only exits are push-walls and ladders tha
 **Pattern to follow:** Pure counter in `recovery/WalledReplanLedger`, call site in `Rs2Walker.blacklistRepeatedWalledReplan` (outside `processWalk`, which is line-capped by `WalkerArchitectureGuardTest`). Dead-end platforms get bidirectional rows in `blocked_edges.tsv` for every plane-1 neighbour edge.
 
 **Where this applies:** `Rs2Walker` recovery block, `blocked_edges.tsv`, ladder rows in `transports.tsv` whose plane-1 side has empty collision.
+
+## 30. A no-progress walk budget must abort, not just log, and a paused quest must cancel its walk from a second thread
+
+`Rs2Walker.reportWalkBudgetIfExhausted` used to only warn after 300 s without a 10-tile distance gain (Lumbridge stairs livelock, exempt exits refunding the tail cap). It now aborts at `WalkLivelockPolicy.getAbortMs()` (45 s default, `<=0` disables) via `setTarget(null, "...livelock-abort...")`; `WalkLivelockPolicy.getLastAbortReason()` tells callers why. A script whose main loop blocks inside a walk cannot observe its own pause flag: cancel from a separate scheduled task (see `QuestScript.supervisorTick`), and drive stuck recovery from `QuestStuckWatchdog`.
+
+**Why this matters:** a 300 s livelock or a paused quest that keeps transporting for minutes defeats hands-off automation.
+
+**Where this applies:** `Rs2Walker.abortLivelockedWalk`, `QuestScript.supervisorTick`, `QuestStuckRecovery`.
+
+## 31. Quest-locked gates need a Quests column in transports.tsv
+
+The Varrock museum guard gate (3261,3446/3447, object 24536) refuses entry without The Dig Site; the walker only learned that after ~20 s of dialogue. Put the quest name (e.g. `The Dig Site`, column 7) on the transport rows so the planner never uses it unmet.

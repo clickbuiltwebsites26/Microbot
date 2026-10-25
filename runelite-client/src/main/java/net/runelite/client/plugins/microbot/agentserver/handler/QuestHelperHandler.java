@@ -92,6 +92,8 @@ public class QuestHelperHandler extends AgentHandler
 			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "TurnOn"));
 
 		result.put("awaitingSetup", QuestCombatHandler.isAwaitingSetup());
+		result.put("stuckStage", net.runelite.client.plugins.microbot.questhelper.QuestScript.getStuckStage());
+		result.put("stuckForMs", net.runelite.client.plugins.microbot.questhelper.QuestScript.getStuckForMs());
 		result.put("preflight", QuestPreflight.getStatus());
 
 		QuestHelper selectedQuest = plugin.getSelectedQuest();
