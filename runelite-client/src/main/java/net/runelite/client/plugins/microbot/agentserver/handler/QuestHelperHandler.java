@@ -18,6 +18,13 @@ import net.runelite.client.plugins.microbot.questhelper.QuestPurchasePlan;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatHandler;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatStore;
+import net.runelite.client.plugins.microbot.questhelper.QuestPause;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestApproval;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestWindow;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestPlannerLauncher;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestQueue;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestQueueRequest;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
@@ -52,6 +59,15 @@ public class QuestHelperHandler extends AgentHandler
 				break;
 			case "/stop":
 				handleStop(exchange);
+				break;
+			case "/queue":
+				handleQueue(exchange);
+				break;
+			case "/pause":
+				handlePause(exchange, true);
+				break;
+			case "/resume":
+				handlePause(exchange, false);
 				break;
 			case "/list":
 			case "":
@@ -92,6 +108,12 @@ public class QuestHelperHandler extends AgentHandler
 		result.put("turnOn", Microbot.getConfigManager()
 			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "TurnOn"));
 
+		result.put("paused", QuestPause.isPaused());
+		result.put("fullyAutomated", Microbot.getConfigManager()
+			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "fullyAutomated"));
+		result.put("maxSpendPerQuest", Microbot.getConfigManager()
+			.getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "maxSpendPerQuest"));
+		result.put("queueActive", QuestQueue.shared().isActive());
 		result.put("awaitingSetup", QuestCombatHandler.isAwaitingSetup());
 		result.put("stuckStage", net.runelite.client.plugins.microbot.questhelper.QuestScript.getStuckStage());
 		result.put("stuckForMs", net.runelite.client.plugins.microbot.questhelper.QuestScript.getStuckForMs());
@@ -254,6 +276,9 @@ public class QuestHelperHandler extends AgentHandler
 				"obtainMissingItems",
 				obtainOption);
 		}
+		// a single start replaces any queue that was running
+		QuestQueue.shared().stop();
+		QuestPlannerLauncher.noteExternalStart();
 		// The quest script reads this when it sees the start, so it applies to this start only
 		QuestPreflight.skipNextStart(Boolean.FALSE.equals(preflight));
 		QuestPurchasePlan.overrideNextStart((Boolean) confirmPurchases);
@@ -300,6 +325,9 @@ public class QuestHelperHandler extends AgentHandler
 			return;
 		}
 
+		QuestQueue.shared().stop();
+		QuestPause.resume();
+		QuestWindow.dismiss();
 		boolean stopped = Microbot.getClientThread()
 			.runOnClientThreadOptional(() ->
 			{
@@ -323,6 +351,170 @@ public class QuestHelperHandler extends AgentHandler
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("success", true);
 		sendJson(exchange, 200, result);
+	}
+
+	/** GET: the queue and its state. POST: replace the queue and settings, optionally start it. */
+	private void handleQueue(HttpExchange exchange) throws IOException
+	{
+		QuestQueue queue = QuestQueue.shared();
+		if ("GET".equalsIgnoreCase(exchange.getRequestMethod()))
+		{
+			sendJson(exchange, 200, queueStatus(queue));
+			return;
+		}
+		try
+		{
+			requirePost(exchange);
+		}
+		catch (HttpMethodException e)
+		{
+			sendJson(exchange, 405, errorResponse(e.getMessage()));
+			return;
+		}
+		Map<String, Object> body = readJsonBody(exchange);
+		QuestQueueRequest request = QuestQueueRequest.parse(body, name -> QuestHelperQuest.getByName(name) != null,
+			QuestPlannerLauncher::profileFor);
+		if (request.error != null)
+		{
+			sendJson(exchange, 400, errorResponse(request.error));
+			return;
+		}
+		if (request.fullyAutomated != null && Microbot.getConfigManager() != null)
+		{
+			Microbot.getConfigManager().setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "fullyAutomated",
+				request.fullyAutomated);
+		}
+		if (request.maxSpendPerQuest != null && Microbot.getConfigManager() != null)
+		{
+			Microbot.getConfigManager().setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "maxSpendPerQuest",
+				request.maxSpendPerQuest);
+		}
+		if (request.clear)
+		{
+			queue.stop();
+			queue.setEntries(new ArrayList<>());
+		}
+		if (request.mode != null)
+		{
+			queue.setMode(request.mode);
+		}
+		if (request.pool != null)
+		{
+			queue.setPool(request.pool);
+		}
+		if (request.pauseMin != null || request.pauseMax != null)
+		{
+			queue.setPause(request.pauseMin != null ? request.pauseMin : queue.pauseMinMinutes(),
+				request.pauseMax != null ? request.pauseMax : queue.pauseMaxMinutes());
+		}
+		if (request.defaultMinStamina != null)
+		{
+			queue.setDefaultMinStamina(request.defaultMinStamina);
+		}
+		if (request.hasQuests)
+		{
+			queue.stop();
+			List<QuestProfile> profiles = new ArrayList<>();
+			for (QuestQueueRequest.Entry entry : request.entries)
+			{
+				profiles.add(entry.profile);
+				QuestHelper helper = QuestHelperQuest.getByName(entry.profile.getQuestName());
+				if (entry.combat != null && helper != null)
+				{
+					try
+					{
+						QuestCombatLoadout loadout = "skip".equals(entry.combat) ? QuestCombatLoadout.skipped()
+							: QuestCombatLoadout.fromMap((Map<?, ?>) entry.combat);
+						QuestCombatStore.save(helper.getQuest().name(), loadout);
+					}
+					catch (IllegalArgumentException e)
+					{
+						sendJson(exchange, 400, errorResponse(entry.profile.getQuestName() + ": " + e.getMessage()));
+						return;
+					}
+				}
+			}
+			queue.setEntries(profiles);
+		}
+		if (request.start)
+		{
+			QuestHelperPlugin plugin = Microbot.getPlugin(QuestHelperPlugin.class);
+			PluginManager pluginManager = Microbot.getPluginManager();
+			if (plugin == null || pluginManager == null || !pluginManager.isActive(plugin))
+			{
+				sendJson(exchange, 409, errorResponse("Quest Helper plugin is not active"));
+				return;
+			}
+			List<QuestProfile> run = new ArrayList<>(queue.entries());
+			if (!queue.isRandom() && run.isEmpty())
+			{
+				sendJson(exchange, 400, errorResponse("The queue is empty"));
+				return;
+			}
+			if (!QuestPlannerLauncher.startRun(plugin, run,
+				request.approve ? QuestApproval.everything() : null))
+			{
+				sendJson(exchange, 400, errorResponse("Nothing to run"));
+				return;
+			}
+		}
+		sendJson(exchange, 200, queueStatus(queue));
+	}
+
+	private void handlePause(HttpExchange exchange, boolean pause) throws IOException
+	{
+		try
+		{
+			requirePost(exchange);
+		}
+		catch (HttpMethodException e)
+		{
+			sendJson(exchange, 405, errorResponse(e.getMessage()));
+			return;
+		}
+		if (pause)
+		{
+			QuestPause.pause();
+		}
+		else
+		{
+			QuestPause.resume();
+		}
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put("success", true);
+		result.put("paused", QuestPause.isPaused());
+		sendJson(exchange, 200, result);
+	}
+
+	private static Map<String, Object> queueStatus(QuestQueue queue)
+	{
+		Map<String, Object> out = new LinkedHashMap<>();
+		out.put("paused", QuestPause.isPaused());
+		out.put("active", queue.isActive());
+		out.put("mode", queue.mode().name());
+		out.put("index", queue.index());
+		QuestProfile current = queue.current();
+		out.put("current", current == null ? null : current.getQuestName());
+		out.put("pool", queue.pool());
+		out.put("skipped", new ArrayList<>(queue.skipped()));
+		out.put("pauseMinMinutes", queue.pauseMinMinutes());
+		out.put("pauseMaxMinutes", queue.pauseMaxMinutes());
+		out.put("defaultMinStamina", queue.defaultMinStamina());
+		List<Map<String, Object>> quests = new ArrayList<>();
+		for (QuestProfile profile : queue.entries())
+		{
+			Map<String, Object> row = new LinkedHashMap<>();
+			row.put("name", profile.getQuestName());
+			row.put("obtain", profile.getObtain().name());
+			row.put("type", profile.getType().name());
+			row.put("minStamina", profile.getMinStamina());
+			row.put("staminaDoses", profile.getSupplies().isStaminaOn() ? profile.getSupplies().getStaminaQty() : 0);
+			row.put("food", profile.getSupplies().getFood());
+			row.put("foodQty", profile.getSupplies().getFoodQty());
+			quests.add(row);
+		}
+		out.put("quests", quests);
+		return out;
 	}
 
 	private void handleList(HttpExchange exchange) throws IOException

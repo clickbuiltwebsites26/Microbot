@@ -316,6 +316,12 @@ public final class QuestPreflight
 		return CHECKING.equals(status) || BUYING.equals(status);
 	}
 
+	/** Stop: back to idle, so the status no longer says checking or buying. */
+	static void resetToIdle()
+	{
+		status = PENDING;
+	}
+
 	/** Called by the Agent Server before a start that asked to skip the preflight. */
 	public static void skipNextStart(boolean skip)
 	{

@@ -428,6 +428,57 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "fullyAutomated",
+			name = "Fully automated: auto-approve purchases",
+			description = "Never show a dialog: use each quest's saved profile (or the defaults), take what the bank has first, buy only the shortfall at the Grand Exchange without asking, and answer setup prompts from saved choices. A quest whose purchases would pass the max spend is skipped and logged.",
+			section = microbotSection
+	)
+	default boolean fullyAutomated() {
+		return false;
+	}
+
+	@ConfigItem(
+			keyName = "maxSpendPerQuest",
+			name = "Max spend per quest (gp)",
+			description = "Used by Fully automated: a quest whose Grand Exchange purchases would cost more than this is skipped instead of asking.",
+			section = microbotSection
+	)
+	default int maxSpendPerQuest() {
+		return 100_000;
+	}
+
+	@ConfigItem(
+			keyName = "minStaminaPotions",
+			name = "Keep at least N stamina potions (0-4)",
+			description = "Default for every quest: keep this many stamina potions in the inventory when the step allows items. A quest profile can override it. Banked for steps that forbid carrying items and fetched again at the next bank visit.",
+			section = microbotSection
+	)
+	@Range(min = 0, max = 4)
+	default int minStaminaPotions() {
+		return 0;
+	}
+
+	@ConfigItem(
+			keyName = "pauseHotkey",
+			name = "Pause / resume hotkey",
+			description = "Press to pause the quest automation where it is, and again to resume. Keeps the quest, step, queue and purchase progress.",
+			section = microbotSection
+	)
+	default Keybind pauseHotkey() {
+		return new Keybind(java.awt.event.KeyEvent.VK_P, java.awt.event.InputEvent.CTRL_DOWN_MASK);
+	}
+
+	@ConfigItem(
+			keyName = "openPlanner",
+			name = "Open quest planner",
+			description = "Turn on to open the quest planner: pick quests (fixed order or random), review each one and start the queue. Switches itself back off.",
+			section = microbotSection
+	)
+	default boolean openPlanner() {
+		return false;
+	}
+
+	@ConfigItem(
 			keyName = "pathVariation",
 			name = "Vary walking paths",
 			description = "Click slightly different intermediate route tiles each walk so a quest is not walked identically every time. Never changes the final tile, doors, transports or exact-tile steps.",

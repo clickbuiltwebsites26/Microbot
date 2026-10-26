@@ -226,6 +226,7 @@ public class QuestCombatHandler
 		fightGearDone = true;
 		styleAppliedFor = null;
 		supplied = false;
+		staminaPending = false;
 		bankAttempts = 0;
 		restocks = 0;
 		defaultReserve = -1;
@@ -341,7 +342,8 @@ public class QuestCombatHandler
 		{
 			swapUnanswered = true;
 		}
-		if (decidePrompt(config.get().setupPrompt(), false, global != null, questHasFights, swapUnanswered)
+		if (decidePrompt(config.get().fullyAutomated() ? QuestHelperConfig.SetupPromptOption.NEVER : config.get().setupPrompt(),
+			false, global != null, questHasFights, swapUnanswered)
 			== PromptDecision.AUTO_APPLY)
 		{
 			loadout = autoLoadout(global);
@@ -398,22 +400,19 @@ public class QuestCombatHandler
 		return copy.normalised();
 	}
 
-	/** Opens the setup window from the config panel for the selected quest; a Save becomes the new default setup. */
-	public void openSetupWindow(QuestHelper quest)
+	/** What the combat tabs of the quest window show for a quest (running or not). Call off the EDT. */
+	public QuestCombatSetupDialog.Context contextFor(QuestHelper quest)
 	{
-		if (quest == null)
-		{
-			Microbot.log("Quest helper: select a quest first to open its setup window.", Level.INFO);
-			return;
-		}
 		QuestCombatSetupDialog.Context context = buildContext(quest);
-		QuestCombatSetupDialog.showAsync(context, result ->
+		try
 		{
-			if (result.outcome == QuestCombatSetupDialog.Outcome.SAVE && result.loadout != null)
-			{
-				QuestCombatStore.saveGlobal(result.loadout);
-			}
-		});
+			context.hasFights = QuestCombatDetector.hasFights(quest);
+		}
+		catch (RuntimeException e)
+		{
+			context.hasFights = true;
+		}
+		return context;
 	}
 
 	private boolean awaitAnswer(QuestHelper quest)
@@ -434,9 +433,15 @@ public class QuestCombatHandler
 				askedIn = generation;
 				AWAITING_SETUP.set(true);
 			}
-			QuestCombatSetupDialog.Context context = buildContext(quest);
 			Microbot.log("Quest helper: waiting for quest setup for " + quest.getQuest().getName(), Level.INFO);
-			QuestCombatSetupDialog.showAsync(context, result -> onDialogResult(askedIn, result));
+			final String questName = quest.getQuest().getName();
+			net.runelite.client.plugins.microbot.questhelper.planner.QuestPlannerLauncher.openForQuest(questName, window ->
+			{
+				QuestCombatLoadout chosen = window == null ? null : window.loadouts.get(questName);
+				onDialogResult(askedIn, chosen == null
+					? QuestCombatSetupDialog.Result.of(QuestCombatSetupDialog.Outcome.CANCEL, null, false)
+					: QuestCombatSetupDialog.Result.of(QuestCombatSetupDialog.Outcome.SAVE, chosen, false));
+			});
 			return true;
 		}
 
@@ -1367,6 +1372,78 @@ public class QuestCombatHandler
 		return Rs2Player.getWorldLocation();
 	}
 
+	private volatile boolean carryRestricted;
+	private boolean staminaPending;
+
+	/** The current or upcoming step forbids carrying items; set by the quest script every tick. */
+	public void setCarryRestricted(boolean restricted)
+	{
+		carryRestricted = restricted;
+	}
+
+	/** True while stamina potions were left in the bank because of a restricted step and still need fetching. */
+	public boolean staminaPending()
+	{
+		return staminaPending;
+	}
+
+	/**
+	 * With the bank open: puts stamina potions back when the step forbids carrying them, or when quest items or
+	 * reserved slots need the room (the potions go first). Returns true when it deposited something.
+	 */
+	public boolean depositStamina(int stepReserved)
+	{
+		QuestCombatLoadout current = loadout;
+		if (current == null || phase != Phase.ACTIVE || !Rs2Bank.isOpen() || !current.wantsLegacyStamina())
+		{
+			return false;
+		}
+		List<Rs2ItemModel> held = staminaItems(current);
+		int reserved = Math.min(27, stepReserved + reserveFor(current));
+		int free = Rs2Inventory.emptySlotCount();
+		if (held.isEmpty() || !net.runelite.client.plugins.microbot.questhelper.planner.QuestStaminaRules.mustDeposit(
+			current.getStaminaQty(), held.size(), free, reserved, carryRestricted, 27))
+		{
+			return false;
+		}
+		int keep = net.runelite.client.plugins.microbot.questhelper.planner.QuestStaminaRules.allowed(
+			current.getStaminaQty(), held.size(), free, reserved, carryRestricted, 27);
+		boolean acted = false;
+		for (int i = 0; i < held.size() - keep; i++)
+		{
+			acted |= Rs2Bank.depositOne(held.get(i).getId());
+			sleepUntil(() -> true, 200);
+		}
+		if (acted)
+		{
+			staminaPending = true;
+			Microbot.log("Quest helper: stamina potions banked for this step, back at the next bank visit", Level.INFO);
+		}
+		return acted;
+	}
+
+	/** With the bank open and the step allowing items: fetches the stamina potions left behind. No walking. */
+	public boolean topUpStamina(int stepReserved)
+	{
+		QuestCombatLoadout current = loadout;
+		if (!staminaPending || carryRestricted || current == null || phase != Phase.ACTIVE || !Rs2Bank.isOpen()
+			|| !current.wantsLegacyStamina() || !Rs2Bank.setWithdrawAsItem())
+		{
+			return false;
+		}
+		int reserved = Math.min(27, stepReserved + reserveFor(current));
+		int held = staminaCount(current);
+		int target = net.runelite.client.plugins.microbot.questhelper.planner.QuestStaminaRules.allowed(
+			current.getStaminaQty(), held, Rs2Inventory.emptySlotCount(), reserved, false, 27);
+		staminaPending = false;
+		if (target <= held)
+		{
+			return false;
+		}
+		withdrawPotion(current.getStaminaType().getItemName(), target - held);
+		return true;
+	}
+
 	private boolean restock(QuestCombatLoadout current, int stepReserved)
 	{
 		Microbot.status = "Quest helper: fetching supplies";
@@ -1392,7 +1469,11 @@ public class QuestCombatHandler
 
 		int reserved = Math.min(27, stepReserved + reserveFor(current));
 
-		if (current.wantsLegacyStamina())
+		if (current.wantsLegacyStamina() && carryRestricted)
+		{
+			staminaPending = true; // a restricted step: left in the bank, fetched at the next bank visit
+		}
+		else if (current.wantsLegacyStamina())
 		{
 			int held = staminaCount(current);
 			// with no fights left the free slots go to the quest items, so a single run potion is all that is kept
@@ -2546,7 +2627,7 @@ public class QuestCombatHandler
 	}
 
 	/** Item id for a swap kit name: a default-kit id, else an exact tradable-name match, else -1. */
-	private static int resolveItemId(String name)
+	public static int resolveItemId(String name)
 	{
 		int known = QuestStyleSwap.knownItemId(name);
 		if (known > 0 || name == null || name.isEmpty())
