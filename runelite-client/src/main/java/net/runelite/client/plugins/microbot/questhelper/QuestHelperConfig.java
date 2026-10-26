@@ -256,6 +256,16 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "dismissRandomEvents",
+			name = "Dismiss random events",
+			description = "Automatically dismiss random-event NPCs that target you while the quest helper is running.",
+			section = microbotSection
+	)
+	default boolean dismissRandomEvents() {
+		return true;
+	}
+
+	@ConfigItem(
 			keyName = "takeShortBreaks",
 			name = "Take short breaks",
 			description = "Now and then idle for a few seconds, never during a fight, dialogue or kill step.",

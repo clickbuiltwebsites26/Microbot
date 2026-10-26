@@ -31,6 +31,7 @@ import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.dialogues.DialogueChoiceProvider;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
+import net.runelite.client.plugins.microbot.util.npc.Rs2Npc;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.grandexchange.Rs2GrandExchange;
 import net.runelite.client.plugins.microbot.util.grandexchange.models.WikiPrice;
@@ -450,6 +451,22 @@ public class QuestScript extends Script {
     }
 
 	/**
+	private final RandomEventDismissRule randomEventRule = new RandomEventDismissRule();
+
+	/** Dismisses a random-event NPC that targets us; rate-limited per NPC, and clears any dialogue it opened. */
+	private void dismissRandomEventTick(long now) {
+		if (config == null || !config.dismissRandomEvents()) return;
+		net.runelite.client.plugins.microbot.util.npc.Rs2NpcModel event = Rs2Npc.getRandomEventNPC();
+		if (event == null) return;
+		if (Rs2Dialogue.hasContinue()) {
+			Rs2Dialogue.clickContinue();
+			return;
+		}
+		if (!randomEventRule.shouldDismiss(event.getIndex(), now)) return;
+		Microbot.log("[QuestHelper] Dismissing random event NPC " + event.getName(), Level.INFO);
+		Rs2Npc.interact(event, "Dismiss");
+	}
+
 	 * Runs beside the main loop (which blocks inside walks): cancels the in-flight walk the moment
 	 * automation is paused or the quest deselected, and drives the stuck watchdog.
 	 */
@@ -478,6 +495,7 @@ public class QuestScript extends Script {
 				return;
 			}
 			endEscortIfInactive(selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep());
+			dismissRandomEventTick(now);
 			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();
 			if (walkTarget != null) lastWalkTarget = walkTarget;
 			QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
