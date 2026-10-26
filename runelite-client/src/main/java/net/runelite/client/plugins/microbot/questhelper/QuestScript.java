@@ -178,7 +178,10 @@ public class QuestScript extends Script {
 
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
+                net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
+                        config.pathVariation(), config.pathVariationStrength().getLevel());
                 if (!config.startStopQuestHelper()) {
+                    net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
                     combat.reset();
                     return;
@@ -2641,6 +2644,11 @@ public class QuestScript extends Script {
 		}
 
 		return item.click("");
+	}
+
+	/** Config-panel entry point: opens the quest setup window for the selected quest. */
+	public void openSetupWindow() {
+		new Thread(() -> combat.openSetupWindow(getQuestHelperPlugin().getSelectedQuest()), "quest-setup-window").start();
 	}
 
 	@Override

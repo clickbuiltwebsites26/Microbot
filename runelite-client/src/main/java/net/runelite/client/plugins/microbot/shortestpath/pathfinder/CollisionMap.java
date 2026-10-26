@@ -360,7 +360,9 @@ public class CollisionMap {
                             + DANGEROUS_TILE_PENALTY;
                     neighbors.add(new Node(neighborPacked, node, penalizedCost));
                 } else {
-                    neighbors.add(new Node(neighborPacked, node));
+                    neighbors.add(PathJitter.isActive() && !targets.contains(neighborPacked)
+                            ? new Node(neighborPacked, node, node.cost + WorldPointUtil.distanceBetween(node.packedPosition, neighborPacked) + PathJitter.penalty(neighborPacked))
+                            : new Node(neighborPacked, node));
                 }
             } else if (Math.abs(d.x + d.y) == 1 && isBlocked(x + d.x, y + d.y, z)) {
                 // The transport starts from a blocked adjacent tile, e.g. fairy ring
@@ -466,7 +468,9 @@ public class CollisionMap {
                             + DANGEROUS_TILE_PENALTY;
                     neighbors.add(new Node(prevPacked, node, penalizedCost));
                 } else {
-                    neighbors.add(new Node(prevPacked, node));
+                    neighbors.add(PathJitter.isActive()
+                            ? new Node(prevPacked, node, node.cost + WorldPointUtil.distanceBetween(node.packedPosition, prevPacked) + PathJitter.penalty(node.packedPosition))
+                            : new Node(prevPacked, node));
                 }
             } else if (Math.abs(d.x + d.y) == 1
                     && isBlocked(WorldPointUtil.unpackWorldX(prevPacked), WorldPointUtil.unpackWorldY(prevPacked), z)) {

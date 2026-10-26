@@ -398,6 +398,24 @@ public class QuestCombatHandler
 		return copy.normalised();
 	}
 
+	/** Opens the setup window from the config panel for the selected quest; a Save becomes the new default setup. */
+	public void openSetupWindow(QuestHelper quest)
+	{
+		if (quest == null)
+		{
+			Microbot.log("Quest helper: select a quest first to open its setup window.", Level.INFO);
+			return;
+		}
+		QuestCombatSetupDialog.Context context = buildContext(quest);
+		QuestCombatSetupDialog.showAsync(context, result ->
+		{
+			if (result.outcome == QuestCombatSetupDialog.Outcome.SAVE && result.loadout != null)
+			{
+				QuestCombatStore.saveGlobal(result.loadout);
+			}
+		});
+	}
+
 	private boolean awaitAnswer(QuestHelper quest)
 	{
 		Microbot.status = "Quest helper: choose your quest setup in the dialog";
@@ -1713,10 +1731,13 @@ public class QuestCombatHandler
 	}
 
 
+	private int eatOffset = EatPolicy.rollOffset(new java.util.Random());
+
 	private int eatThreshold()
 	{
 		QuestCombatLoadout current = loadout;
-		return current != null && !current.isSkip() ? current.getEatAtPercent() : 50;
+		QuestHelperConfig cfg = config.get();
+		return EatPolicy.threshold(cfg == null ? 50 : cfg.eatAtHealthPercent(), current, eatOffset);
 	}
 
 	/** Edible inventory food that is not a quest item. */
@@ -1800,6 +1821,7 @@ public class QuestCombatHandler
 			return true;
 		}
 		lastConsumeMs = now;
+		eatOffset = EatPolicy.rollOffset(new java.util.Random());
 		QuestCombatLoadout current = loadout;
 		if (current != null && !current.isSkip() && current.wantsFood())
 		{
@@ -2990,7 +3012,7 @@ public class QuestCombatHandler
 			return;
 		}
 
-		if (Rs2Player.getHealthPercentage() <= current.getEatAtPercent() && eat(current, now))
+		if (Rs2Player.getHealthPercentage() <= eatThreshold() && eat(current, now))
 		{
 			return;
 		}
@@ -3138,6 +3160,7 @@ public class QuestCombatHandler
 			return true;
 		}
 		lastConsumeMs = now;
+		eatOffset = EatPolicy.rollOffset(new java.util.Random());
 		return hasNamed ? Rs2Inventory.interact(named.get(0), "Eat") : eatBest();
 	}
 

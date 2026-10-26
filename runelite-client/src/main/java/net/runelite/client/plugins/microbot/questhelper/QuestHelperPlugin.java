@@ -382,6 +382,13 @@ public class QuestHelperPlugin extends Plugin
 			return;
 		}
 
+		if ("openCombatSetup".equals(event.getKey()) && "true".equals(event.getNewValue()))
+		{
+			configManager.setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "openCombatSetup", false);
+			questScript.openSetupWindow();
+			return;
+		}
+
 		if ("resetCombatSetups".equals(event.getKey()) && "true".equals(event.getNewValue()))
 		{
 			QuestCombatStore.clearAll();

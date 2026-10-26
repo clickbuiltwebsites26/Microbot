@@ -105,6 +105,9 @@ public class Pathfinder implements Runnable {
             this.targetsPacked[idx++] = t;
         }
         targetInWilderness = PathfinderConfig.isInWildernessPackedPoint(targets);
+        if (PathJitter.isActive() && !targets.isEmpty()) {
+            PathJitter.beginWalk(java.util.Collections.min(targets), System.currentTimeMillis());
+        }
         wildernessLevel = 31;
         WebWalkLog.pf("created src={} dst={} config={}",
                 WorldPointUtil.toString(this.start),

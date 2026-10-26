@@ -238,7 +238,7 @@ public interface QuestHelperConfig extends Config
 
 	@ConfigSection(
 			position = 0,
-			name = "Microbot",
+			name = "Automation",
 			description = "Microbot Options",
 			closedByDefault = false
 	)
@@ -364,6 +364,64 @@ public interface QuestHelperConfig extends Config
 	)
 	default boolean resetCombatSetups() {
 		return false;
+	}
+
+	@ConfigItem(
+			keyName = "eatAtHealthPercent",
+			name = "Eat at HP %",
+			description = "Eat the chosen food when health drops below this percentage (varied by about 5 percent each meal). A quest's own setup value overrides it for that quest.",
+			section = microbotSection
+	)
+	@net.runelite.client.config.Range(min = 10, max = 90)
+	default int eatAtHealthPercent() {
+		return 50;
+	}
+
+	@ConfigItem(
+			keyName = "openCombatSetup",
+			name = "Open quest setup window",
+			description = "Turn on to open the setup window (gear, food, potions, stamina, prayer, combat styles) for the selected quest. Switches itself back off.",
+			section = microbotSection
+	)
+	default boolean openCombatSetup() {
+		return false;
+	}
+
+	@ConfigItem(
+			keyName = "pathVariation",
+			name = "Vary walking paths",
+			description = "Click slightly different intermediate route tiles each walk so a quest is not walked identically every time. Never changes the final tile, doors, transports or exact-tile steps.",
+			section = microbotSection
+	)
+	default boolean pathVariation() {
+		return true;
+	}
+
+	@ConfigItem(
+			keyName = "pathVariationStrength",
+			name = "Path variation strength",
+			description = "How different each walk may be: low, medium or high. Extra distance stays small (about 20 percent at most) and doors, transports, exact-tile steps and the final tile are never changed.",
+			section = microbotSection
+	)
+	default PathVariationStrength pathVariationStrength() {
+		return PathVariationStrength.MEDIUM;
+	}
+
+	enum PathVariationStrength
+	{
+		LOW(1), MEDIUM(2), HIGH(3);
+
+		private final int level;
+
+		PathVariationStrength(int level)
+		{
+			this.level = level;
+		}
+
+		public int getLevel()
+		{
+			return level;
+		}
 	}
 
 	@ConfigItem(
