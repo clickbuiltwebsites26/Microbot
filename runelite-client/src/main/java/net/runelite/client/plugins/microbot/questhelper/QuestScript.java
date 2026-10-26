@@ -4000,13 +4000,16 @@ public class QuestScript extends Script {
                 Rs2TileObjectModel finalObject = object;
                 targetTile = Rs2Tile.getWalkableTilesAroundTile(stepLocation, radius)
                         .stream().filter(x -> hasLineOfSightFrom(x, finalObject))
-                        .sorted(Comparator.comparing(x -> x.distanceTo(Rs2Player.getWorldLocation()))).findFirst().orElse(null);
+                        .sorted(Comparator.comparingInt((WorldPoint x) -> Rs2Tile.isTileReachable(x) ? 0 : 1)
+                                .thenComparing(x -> x.distanceTo(Rs2Player.getWorldLocation()))).findFirst().orElse(null);
 
                 if (radius > 10 && targetTile == null)
                     targetTile = stepLocation;
             }
 
-            WalkerState walkState = Rs2Walker.walkWithState(targetTile, 3);
+            // A tolerance of 3 tiles is only honest when the tile is on our side of any wall: through a wall it would
+            // report "arrived" next to the object (Port Sarim back-room crate) and never walk round to the door.
+            WalkerState walkState = Rs2Walker.walkWithState(targetTile, QuestObjectActions.arrivalTolerance(Rs2Tile.isTileReachable(targetTile)));
 
             var activeRoute = Rs2PathApi.getActiveRouteStatus();
             if (activeRoute.isPresent()) {

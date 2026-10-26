@@ -35,6 +35,26 @@ public final class TransportRefusalLedger {
         return strikeCount == STRIKE_LIMIT;
     }
 
+    /** One refusal is enough when the walk can go round on foot instead. */
+    public static boolean isStrikeOut(int strikeCount, boolean onFootRouteExists) {
+        return onFootRouteExists ? strikeCount >= 1 : isStrikeOut(strikeCount);
+    }
+
+    /**
+     * True when the walk target lies on the surface and on the transport origin's plane while the transport
+     * leads underground or to another plane: the transport is only a shortcut, so walking round is possible.
+     */
+    public static boolean onFootRouteLikely(WorldPoint origin, WorldPoint destination, WorldPoint target) {
+        if (origin == null || destination == null || target == null) {
+            return false;
+        }
+        final int undergroundY = 6400;
+        boolean targetOnOriginLevel = target.getPlane() == origin.getPlane()
+                && target.getY() < undergroundY && origin.getY() < undergroundY;
+        boolean leavesLevel = destination.getPlane() != origin.getPlane() || destination.getY() >= undergroundY;
+        return targetOnOriginLevel && leavesLevel;
+    }
+
     public static boolean isFallThroughStrikeOut(int fallThroughCount) {
         return fallThroughCount == FALL_THROUGH_STRIKE_LIMIT;
     }

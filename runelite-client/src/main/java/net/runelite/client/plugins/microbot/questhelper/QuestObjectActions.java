@@ -89,6 +89,12 @@ public final class QuestObjectActions
 		return "";
 	}
 
+	/** Distance at which an approach counts as arrived: loose only when the tile is reachable without crossing a wall. */
+	public static int arrivalTolerance(boolean tileReachableFromHere)
+	{
+		return tileReachableFromHere ? 3 : 0;
+	}
+
 	/** True when the object's actions include the wanted one (case-insensitive). */
 	public static boolean hasAction(String[] objectActions, String wanted)
 	{
