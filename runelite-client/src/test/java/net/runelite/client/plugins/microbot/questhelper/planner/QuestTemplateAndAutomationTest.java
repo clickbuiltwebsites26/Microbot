@@ -41,7 +41,7 @@ public class QuestTemplateAndAutomationTest
 		assertEquals("", travel.getSupplies().getFood());
 		QuestProfile combat = QuestProfile.defaultFor("B", true);
 		assertEquals("Lobster", combat.getSupplies().getFood());
-		assertEquals(10, combat.getSupplies().getFoodQty());
+		assertEquals(5, combat.getSupplies().getFoodQty());
 		assertFalse("the quest setup keeps the armour until supplies are edited", combat.getSupplies().isCustomised());
 	}
 

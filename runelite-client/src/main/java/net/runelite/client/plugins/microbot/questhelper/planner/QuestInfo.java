@@ -8,6 +8,7 @@ import java.util.Map;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.questhelper.QuestInventoryRules;
 import net.runelite.client.plugins.microbot.questhelper.QuestPreflight;
 import net.runelite.client.plugins.microbot.questhelper.QuestPurchasePlan;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatDetector;
@@ -106,11 +107,16 @@ public final class QuestInfo
 	/** Suggested extras: stamina for travel, food for combat, teleports. Ticking one adds it to the profile. */
 	static List<String[]> suggestionDefs(boolean hasCombat)
 	{
+		return suggestionDefs(hasCombat, QuestInventoryRules.DEFAULT_FOOD_QTY);
+	}
+
+	static List<String[]> suggestionDefs(boolean hasCombat, int foodQty)
+	{
 		List<String[]> out = new ArrayList<>();
 		out.add(new String[] {"Stamina potion(4)", "2", "Travel-heavy quests drain run energy"});
-		if (hasCombat)
+		if (hasCombat && foodQty > 0)
 		{
-			out.add(new String[] {"Lobster", "10", "Food for the fights"});
+			out.add(new String[] {"Lobster", String.valueOf(foodQty), "Food for the fights"});
 		}
 		out.add(new String[] {"Varrock teleport", "3", "Teleport back to a bank"});
 		out.add(new String[] {"Falador teleport", "3", "Teleport back to a bank"});
@@ -163,7 +169,7 @@ public final class QuestInfo
 				}
 			}
 			collect(info.recommended, helper.getItemRecommended(), player, bank, "quest");
-			for (String[] suggestion : suggestionDefs(combat))
+			for (String[] suggestion : suggestionDefs(combat, safeFoodQty(helper, combat)))
 			{
 				info.recommended.add(new ItemLine(suggestion[0], Integer.parseInt(suggestion[1]),
 					new ArrayList<>(), true, 0, 0, 0, "suggested", suggestion[2]));
@@ -216,6 +222,22 @@ public final class QuestInfo
 			Microbot.log("Quest planner: could not read the notes of " + helper.getQuest().getName() + ": " + e, Level.WARN);
 		}
 		return texts;
+	}
+
+	private static int safeFoodQty(QuestHelper helper, boolean combat)
+	{
+		if (!combat)
+		{
+			return 0;
+		}
+		try
+		{
+			return QuestCombatDetector.defaultFoodQty(helper);
+		}
+		catch (RuntimeException e)
+		{
+			return QuestInventoryRules.DEFAULT_FOOD_QTY;
+		}
 	}
 
 	private static boolean safeHasCombat(QuestHelper helper)

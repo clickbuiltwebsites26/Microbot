@@ -34,6 +34,12 @@ public final class QuestQueueRunner
 		/** Buys, in one go, what the remaining quests need; returns true while it is still working. */
 		boolean runQueuePreflight(List<QuestProfile> remaining);
 
+		/**
+		 * Banks what the quest about to start does not need (other quests' items and food); returns true while it is
+		 * still working.
+		 */
+		boolean bankLeftovers(QuestProfile current);
+
 		/** The player needs items for this quest that they did not allow buying and do not own. */
 		boolean needsBlockedItems(QuestHelper helper, QuestProfile profile);
 
@@ -48,6 +54,7 @@ public final class QuestQueueRunner
 	}
 
 	private static final long START_RETRY_MS = 4_000L;
+	private static final int LEFTOVER_MAX_ROUNDS = 3;
 
 	/** The profile and approval the quest window gave the quest that is starting or running; null when none. */
 	private volatile QuestProfile windowProfile;
@@ -60,6 +67,8 @@ public final class QuestQueueRunner
 	private final java.util.Map<String, Integer> stepInsertions = new java.util.HashMap<>();
 	private final Random random = new Random();
 	private long lastStartAttemptMs;
+	private String leftoversBankedFor = "";
+	private int leftoverRounds;
 
 	public QuestQueueRunner(Host host)
 	{
@@ -225,6 +234,15 @@ public final class QuestQueueRunner
 		if (requirementsGate(current))
 		{
 			return true;
+		}
+		if (!current.getQuestName().equals(leftoversBankedFor))
+		{
+			if (leftoverRounds++ < LEFTOVER_MAX_ROUNDS && host.bankLeftovers(current))
+			{
+				return true;
+			}
+			leftoversBankedFor = current.getQuestName();
+			leftoverRounds = 0;
 		}
 		lastStartAttemptMs = now;
 		QuestPlannerLauncher.applyProfile(current);

@@ -184,18 +184,23 @@ public final class QuestPlannerLauncher
 	{
 		QuestHelper helper = QuestHelperQuest.getByName(questName);
 		boolean combat = false;
+		int food = QuestProfile.DEFAULT_COMBAT_FOOD_QTY;
 		if (helper != null)
 		{
 			try
 			{
 				combat = QuestCombatDetector.hasFights(helper);
+				if (combat)
+				{
+					food = QuestCombatDetector.defaultFoodQty(helper);
+				}
 			}
 			catch (RuntimeException e)
 			{
 				combat = false;
 			}
 		}
-		return QuestQueue.shared().applyTemplate(QuestProfile.defaultFor(questName, combat));
+		return QuestQueue.shared().applyTemplate(QuestProfile.defaultFor(questName, combat, food));
 	}
 
 	/** The profile to run a quest with: the saved one, else the suggested default. */

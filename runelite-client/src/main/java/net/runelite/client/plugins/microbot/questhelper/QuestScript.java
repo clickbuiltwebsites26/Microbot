@@ -1533,6 +1533,10 @@ public class QuestScript extends Script {
 			if (idToWithdraw == -1 || qty <= 0) {
 				continue;
 			}
+			qty = roomFor(ir, qty);
+			if (qty <= 0) {
+				continue;
+			}
 
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
 			Rs2Bank.withdrawX(idToWithdraw, qty);
@@ -1542,6 +1546,36 @@ public class QuestScript extends Script {
 		}
 
 		return true;
+	}
+
+	/**
+	 * With the bank open, how much of a withdrawal fits in the inventory. Banks what the quest does not need first when
+	 * the free slots are short, so a withdrawal never waits on a full inventory. 0 means no room even after that.
+	 */
+	private int roomFor(ItemRequirement ir, int qty) {
+		if (qty <= 0) {
+			return 0;
+		}
+		boolean stackable = isStackable(ir);
+		boolean held = inventoryQuantity(ir) > 0;
+		int need = QuestInventoryRules.slotsNeeded(stackable, held, qty);
+		for (int attempt = 0; attempt < 4 && Rs2Bank.isOpen() && Rs2Inventory.emptySlotCount() < need; attempt++) {
+			int before = Rs2Inventory.emptySlotCount();
+			clearInventoryForQuest();
+			sleepUntil(() -> Rs2Inventory.emptySlotCount() > before, 1_500);
+			if (Rs2Inventory.emptySlotCount() < need) {
+				ensureFreeSlotInBank(java.util.Collections.singletonList(ir));
+			}
+			if (Rs2Inventory.emptySlotCount() <= before) {
+				break;
+			}
+		}
+		int fit = QuestInventoryRules.fitQuantity(stackable, held, qty, Rs2Inventory.emptySlotCount());
+		if (fit < qty) {
+			Microbot.log("Quest helper: room for " + fit + " of " + qty + " " + ir.getName() + " in the inventory",
+					Level.WARN);
+		}
+		return fit;
 	}
 
 	/** With the bank open, banks what the rest of the quest no longer needs before any carry cap is computed. */
@@ -1781,7 +1815,7 @@ public class QuestScript extends Script {
 			if (idToWithdraw == null || idToWithdraw <= 0) {
 				continue;
 			}
-			int qty = Math.min(remainingQuantityNeeded(ir), Rs2Bank.count(idToWithdraw));
+			int qty = roomFor(ir, Math.min(remainingQuantityNeeded(ir), Rs2Bank.count(idToWithdraw)));
 			if (qty <= 0) {
 				continue;
 			}
@@ -1852,13 +1886,16 @@ public class QuestScript extends Script {
 
 			String canonicalName = canonicalItemName(primaryId);
 			if (canonicalName == null || canonicalName.isEmpty() || "null".equalsIgnoreCase(canonicalName)) {
-				stopQuesterWithReason("Unable to resolve in-game name for: " + ir.getName());
-				return true;
+				Microbot.log("Quest helper: no in-game name for " + ir.getName() + ", skipping it (the steps will obtain it)",
+						Level.WARN);
+				continue;
 			}
 
 			Microbot.status = "Buying " + canonicalName + " x" + qty;
 			if (Rs2GrandExchange.buyItem(canonicalName, offerPrice, qty)) {
 				placedOffers++;
+			} else {
+				Microbot.log("Quest helper: could not place an offer for " + canonicalName + ", skipping it", Level.WARN);
 			}
 			sleep(800, 1500);
 		}
@@ -2034,12 +2071,11 @@ public class QuestScript extends Script {
 		if (stockpile) {
 			// Purchases stay in the bank; wait for the bank snapshot to show them so they are not bought twice
 			sleepUntil(() -> items.stream().allMatch(this::isHeldInBank), 3_000);
-			// Same visit: take the purchases (carry cap and reserved slots apply) and check they arrived
-			withdrawNonTradablesFromBank(items);
-			boolean arrived = sleepUntil(() -> items.stream().allMatch(
-					ir -> hasItemInInventoryOrEquipped(ir) || isFilledToCarryCapacity(ir)), 3_000);
-			if (!arrived) {
-				Microbot.log("Quest helper: purchased items are in the bank; the steps will fetch them", Level.WARN);
+			// Nothing is withdrawn here: the items may be for several queued quests. Each quest withdraws its own at
+			// its start, within the free slots, the carry cap and the reserved slots.
+			if (!items.stream().allMatch(this::isHeldInBank)) {
+				Microbot.log("Quest helper: purchased items are not in the bank yet; the next round counts them again",
+						Level.WARN);
 			}
 			Rs2Bank.closeBank();
 			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
@@ -2068,7 +2104,10 @@ public class QuestScript extends Script {
 				continue;
 			}
 
-			qty = Math.min(qty, Rs2Bank.count(idToWithdraw));
+			qty = roomFor(ir, Math.min(qty, Rs2Bank.count(idToWithdraw)));
+			if (qty <= 0) {
+				continue;
+			}
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
 			Rs2Bank.withdrawX(idToWithdraw, qty);
 			if (!sleepUntil(() -> hasItemInInventoryOrEquipped(ir) || isFilledToCarryCapacity(ir), 2_000)) {
@@ -2088,7 +2127,7 @@ public class QuestScript extends Script {
 					continue;
 				}
 				ItemComposition def = Microbot.getClient().getItemDefinition(id);
-				if (def != null && def.isTradeable()) {
+				if (def != null && QuestInventoryRules.geTradable(id, def.isTradeable())) {
 					return true;
 				}
 			}
@@ -2104,7 +2143,7 @@ public class QuestScript extends Script {
 					continue;
 				}
 				ItemComposition def = Microbot.getClient().getItemDefinition(id);
-				if (def != null && def.isTradeable()) {
+				if (def != null && QuestInventoryRules.geTradable(id, def.isTradeable())) {
 					ids.add(id);
 				}
 			}
@@ -2617,7 +2656,7 @@ public class QuestScript extends Script {
 	private boolean isIdTradable(int id) {
 		return Microbot.getClientThread().runOnClientThreadOptional(() -> {
 			ItemComposition def = Microbot.getClient().getItemDefinition(id);
-			return def != null && def.isTradeable();
+			return def != null && QuestInventoryRules.geTradable(id, def.isTradeable());
 		}).orElse(false);
 	}
 
@@ -2866,6 +2905,11 @@ public class QuestScript extends Script {
 		}
 
 		@Override
+		public boolean bankLeftovers(net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile current) {
+			return bankLeftoversForQuest(current);
+		}
+
+		@Override
 		public double fatigue() {
 			return humanTiming == null ? 0 : humanTiming.fatigue();
 		}
@@ -2878,6 +2922,61 @@ public class QuestScript extends Script {
 			}
 		}
 	});
+
+	/**
+	 * At a queued quest's start: banks what the inventory holds that this quest does not need and the user did not
+	 * select (other quests' items, other quests' food). Coins, runes, this quest's items and its selected supplies stay.
+	 *
+	 * @return true while it is still working
+	 */
+	private boolean bankLeftoversForQuest(net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile profile) {
+		QuestHelper helper = net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest
+				.getByName(profile.getQuestName());
+		if (helper == null || Rs2Player.isIronman()) {
+			return false;
+		}
+		Set<Integer> needed = new HashSet<>();
+		try {
+			Microbot.getClientThread().runOnClientThreadOptional(() -> {
+				helper.initializeRequirements();
+				return true;
+			});
+			List<ItemRequirement> requirements = helper.getItemRequirements();
+			if (requirements != null) {
+				for (ItemRequirement requirement : requirements) {
+					if (requirement != null) {
+						for (Integer id : requirement.getAllIds()) {
+							if (id != null) {
+								needed.add(id);
+							}
+						}
+					}
+				}
+			}
+		} catch (RuntimeException e) {
+			Microbot.log("Quest queue: could not read the items of " + profile.getQuestName() + ": " + e, Level.WARN);
+			return false;
+		}
+		Set<String> supplies = QuestInventoryRules.selectedSupplyNames(profile.getSupplies());
+		Predicate<Rs2ItemModel> leftover = item -> !QuestInventoryRules.keepAtQuestStart(item.getId(), item.getName(),
+				needed, supplies);
+		if (!Rs2Inventory.items(leftover).findAny().isPresent()) {
+			return false;
+		}
+		Microbot.status = "Quest queue: banking items " + profile.getQuestName() + " does not need";
+		if (!Rs2Bank.isOpen()) {
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
+			sleepUntil(Rs2Bank::isOpen, 15_000);
+			if (!Rs2Bank.isOpen()) {
+				return true;
+			}
+		}
+		Rs2Bank.depositAll(leftover);
+		sleepUntil(() -> !Rs2Inventory.items(leftover).findAny().isPresent(), 3_000);
+		Rs2Bank.closeBank();
+		sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+		return true;
+	}
 
 	private int queuePreflightBankAttempts;
 	private int queuePreflightBuyRounds;

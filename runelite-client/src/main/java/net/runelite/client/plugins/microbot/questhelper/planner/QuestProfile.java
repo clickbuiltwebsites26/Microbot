@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import lombok.Data;
+import net.runelite.client.plugins.microbot.questhelper.QuestInventoryRules;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatLoadout;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestPotions;
 
@@ -24,6 +25,9 @@ public class QuestProfile
 
 	/** Highest "keep at least N stamina potions" value. */
 	public static final int MAX_MIN_STAMINA = 4;
+
+	/** Food a combat quest brings when nothing says how weak its fights are. */
+	public static final int DEFAULT_COMBAT_FOOD_QTY = QuestInventoryRules.DEFAULT_FOOD_QTY;
 
 	/** Where missing quest items may come from. */
 	public enum Obtain
@@ -314,21 +318,32 @@ public class QuestProfile
 	/** The profile a quest starts with: Combat when it has fights, Travel otherwise. */
 	public static QuestProfile defaultFor(String questName, boolean hasCombat)
 	{
+		return defaultFor(questName, hasCombat, DEFAULT_COMBAT_FOOD_QTY);
+	}
+
+	/** As {@link #defaultFor(String, boolean)} with the food count the quest's fights call for (0 for none). */
+	public static QuestProfile defaultFor(String questName, boolean hasCombat, int foodQty)
+	{
 		QuestProfile profile = new QuestProfile();
 		profile.questName = questName == null ? "" : questName;
 		profile.type = hasCombat ? Type.COMBAT : Type.TRAVEL;
-		profile.supplies = defaultSupplies(profile.type);
+		profile.supplies = defaultSupplies(profile.type, foodQty);
 		return profile;
 	}
 
 	/** Travel quests bring stamina potions only; combat quests also bring food (the armour comes from the setup). */
 	public static Supplies defaultSupplies(Type type)
 	{
+		return defaultSupplies(type, DEFAULT_COMBAT_FOOD_QTY);
+	}
+
+	public static Supplies defaultSupplies(Type type, int foodQty)
+	{
 		Supplies supplies = new Supplies();
-		if (type == Type.COMBAT)
+		if (type == Type.COMBAT && foodQty > 0)
 		{
 			supplies.setFood("Lobster");
-			supplies.setFoodQty(10);
+			supplies.setFoodQty(foodQty);
 		}
 		return supplies;
 	}
