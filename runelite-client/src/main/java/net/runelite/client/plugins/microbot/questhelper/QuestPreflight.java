@@ -277,6 +277,12 @@ public final class QuestPreflight
 		return bankLastUpdatedTick >= 0;
 	}
 
+	/** Whether the bank holds enough of a needed item (or, if the item is carry-limited, any of it) to withdraw it. */
+	public static boolean bankCovers(int inBank, int needed, boolean carryLimited)
+	{
+		return needed > 0 && (inBank >= needed || (inBank > 0 && carryLimited));
+	}
+
 	/** Total held of the given ids (each id counted once). */
 	public static int countOwned(Iterable<Integer> ids, Map<Integer, Integer> owned)
 	{

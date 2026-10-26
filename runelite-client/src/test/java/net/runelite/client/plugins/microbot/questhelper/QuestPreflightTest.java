@@ -137,4 +137,14 @@ public class QuestPreflightTest
 		assertTrue(QuestPreflight.bankScanned(0));
 		assertTrue(QuestPreflight.bankScanned(1234));
 	}
+
+	@Test
+	public void bankCoversNeedOrCarryLimitedPartial()
+	{
+		assertTrue(QuestPreflight.bankCovers(4, 4, false));
+		assertFalse(QuestPreflight.bankCovers(2, 4, false));
+		assertTrue(QuestPreflight.bankCovers(2, 4, true));
+		assertFalse(QuestPreflight.bankCovers(0, 4, true));
+		assertFalse(QuestPreflight.bankCovers(5, 0, false));
+	}
 }

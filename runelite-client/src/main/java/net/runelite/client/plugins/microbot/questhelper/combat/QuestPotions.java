@@ -41,7 +41,8 @@ public final class QuestPotions
 		SUPER_ANTIFIRE("super_antifire", "Super antifire potion", Role.ANTIFIRE, null, 21978, 21981, 21984, 21987),
 		ENERGY("energy_potion", "Energy potion", Role.ENERGY, null, 3008, 3010, 3012, 3014),
 		SUPER_ENERGY("super_energy", "Super energy", Role.ENERGY, null, 3016, 3018, 3020, 3022),
-		STAMINA("stamina_potion", "Stamina potion", Role.ENERGY, null, 12625, 12627, 12629, 12631);
+		STAMINA("stamina_potion", "Stamina potion", Role.ENERGY, null, 12625, 12627, 12629, 12631,
+			31638, 31641, 31644, 31647);
 
 		private final String key;
 		private final String itemName;

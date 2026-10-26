@@ -1417,9 +1417,19 @@ public class QuestScript extends Script {
 			return false;
 		}
 
+		for (ItemRequirement ir : missing) {
+			if (ir.getAllIds().contains(ItemID.BURNT_MEAT) && !Rs2Inventory.contains(ItemID.BURNT_MEAT)) {
+				return makeBurntMeat();
+			}
+		}
+
+		// Whatever the bank already holds (bought earlier, or kept there) is fetched by walking to the bank,
+		// rather than looping on "missing required item" or buying it again
 		List<ItemRequirement> nonTradableInBank = new ArrayList<>();
 		for (ItemRequirement ir : missing) {
-			if (!isItemRequirementTradable(ir) && isHeldInBank(ir)) {
+			if (isHeldInBank(ir) && (!isItemRequirementTradable(ir)
+					|| QuestPreflight.bankCovers(ir.checkTotalMatchesInContainers(QuestContainerManager.getBankData()),
+							remainingQuantityNeeded(ir), isCarryLimited(ir)))) {
 				nonTradableInBank.add(ir);
 			}
 		}
@@ -1438,6 +1448,47 @@ public class QuestScript extends Script {
 		}
 
 		return acquireMissingTradableItems(missing);
+	}
+
+	private static final int[] BURNT_MEAT_SOURCES = {ItemID.COOKED_MEAT, ItemID.RAW_BEEF, ItemID.RAW_RAT_MEAT,
+			ItemID.RAW_BEAR_MEAT};
+	private static final WorldPoint LUMBRIDGE_RANGE = new WorldPoint(3211, 3215, 0);
+
+	/** Burnt meat is not on the Grand Exchange: get (or buy) meat and burn it on a range or fire. */
+	private boolean makeBurntMeat() {
+		Microbot.status = "Quest helper: burning meat";
+		Integer meatId = null;
+		for (int id : BURNT_MEAT_SOURCES) {
+			if (Rs2Inventory.contains(id)) {
+				meatId = id;
+				break;
+			}
+		}
+		if (meatId == null) {
+			List<Integer> ids = new ArrayList<>();
+			for (int id : BURNT_MEAT_SOURCES) {
+				ids.add(id);
+			}
+			return acquireMissingTradableItems(new ArrayList<>(java.util.Collections.singletonList(
+					new ItemRequirement("Cooked meat", ids, 1))));
+		}
+		TileObject heat = null;
+		for (String name : new String[]{"Fire", "Range", "Cooking range"}) {
+			heat = net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject.getGameObject(name, true, 15);
+			if (heat != null) {
+				break;
+			}
+		}
+		if (heat == null) {
+			if (LUMBRIDGE_RANGE.distanceTo(Rs2Player.getWorldLocation()) > 3) {
+				Rs2Walker.walkTo(LUMBRIDGE_RANGE, 2);
+			}
+			return true;
+		}
+		if (Rs2Inventory.use(meatId) && net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject.interact(heat)) {
+			sleepUntil(() -> Rs2Inventory.contains(ItemID.BURNT_MEAT), 6_000);
+		}
+		return true;
 	}
 
 	/** Only true once the bank has been opened this session, so an unknown bank falls back to the old behaviour. */
@@ -1945,6 +1996,13 @@ public class QuestScript extends Script {
 		if (stockpile) {
 			// Purchases stay in the bank; wait for the bank snapshot to show them so they are not bought twice
 			sleepUntil(() -> items.stream().allMatch(this::isHeldInBank), 3_000);
+			// Same visit: take the purchases (carry cap and reserved slots apply) and check they arrived
+			withdrawNonTradablesFromBank(items);
+			boolean arrived = sleepUntil(() -> items.stream().allMatch(
+					ir -> hasItemInInventoryOrEquipped(ir) || isFilledToCarryCapacity(ir)), 3_000);
+			if (!arrived) {
+				Microbot.log("Quest helper: purchased items are in the bank; the steps will fetch them", Level.WARN);
+			}
 			Rs2Bank.closeBank();
 			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
 			return;

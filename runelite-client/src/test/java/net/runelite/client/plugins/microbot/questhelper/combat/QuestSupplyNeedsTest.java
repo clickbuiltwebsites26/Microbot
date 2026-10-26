@@ -80,4 +80,13 @@ public class QuestSupplyNeedsTest
 		assertTrue(QuestPotions.runPotionMatches("Extended stamina potion", "Stamina potion"));
 		assertFalse(QuestPotions.runPotionMatches("Extended stamina potion", "Energy potion"));
 	}
+
+	@Test
+	public void extendedStaminaDosesCountTowardStamina()
+	{
+		List<QuestPreflight.Need> needs = QuestSupplyNeeds.fromLoadout(loadout(), n -> -1, id -> true);
+		Map<Integer, Integer> owned = new HashMap<>();
+		owned.put(31638, 2); // Extended stamina potion(4) x2
+		assertEquals(0, QuestPreflight.compute(needs, owned).get(0).missing);
+	}
 }
