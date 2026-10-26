@@ -185,6 +185,7 @@ public class QuestScript extends Script {
             try {
                 net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
                         config.pathVariation() && !escortActive, config.pathVariationStrength().getLevel());
+                net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule.setActive(config.startStopQuestHelper());
                 if (!config.startStopQuestHelper()) {
                     net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
@@ -3511,6 +3512,7 @@ public class QuestScript extends Script {
 
 	@Override
 	public void shutdown() {
+		net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule.setActive(false);
 		DialogueChoiceProvider.clear();
 		if (combatSupportFuture != null) {
 			combatSupportFuture.cancel(true);

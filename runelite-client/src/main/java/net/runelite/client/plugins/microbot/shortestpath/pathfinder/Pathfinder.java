@@ -840,6 +840,26 @@ public class Pathfinder implements Runnable {
 
     @Override
     public void run() {
+        runInner();
+        if (!QuestWalkRule.isActive() || QuestWalkRule.inFallback() || cancelled
+                || terminationReason == PathTerminationReason.TARGET_REACHED) {
+            return;
+        }
+        // quest walking found no route on foot: allow ships and the like, and say which are used
+        QuestWalkRule.allowAll(this::runInner);
+        if (terminationReason == PathTerminationReason.TARGET_REACHED) {
+            Set<String> used = new LinkedHashSet<>();
+            for (PathEdge edge : getPathEdges()) {
+                if (edge.isTransport() && QuestWalkRule.isRestrictedType(edge.getTransport().getType(), edge.getTransport().getOrigin())) {
+                    used.add(edge.getTransport().getType() + " " + edge.getFrom() + " -> " + edge.getTo());
+                }
+            }
+            Microbot.log("Quest walking: no route on foot to " + WorldPointUtil.toString(targets)
+                    + "; falling back to transports: " + used);
+        }
+    }
+
+    private void runInner() {
         if (!PathJitter.isActive() || jitterKey == null) {
             runSearch();
             return;
