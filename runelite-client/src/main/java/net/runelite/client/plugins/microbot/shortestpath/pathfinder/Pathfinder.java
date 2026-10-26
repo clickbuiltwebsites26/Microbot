@@ -840,6 +840,64 @@ public class Pathfinder implements Runnable {
 
     @Override
     public void run() {
+        if (!PathJitter.isActive() || jitterKey == null) {
+            runSearch();
+            return;
+        }
+        runVaried();
+    }
+
+    private int variedBaseLength() {
+        int[] base = {-1};
+        PathJitter.withoutJitter(() -> {
+            runSearch();
+            if (terminationReason == PathTerminationReason.TARGET_REACHED && !getPath().isEmpty()) {
+                base[0] = PathJitter.routeLength(getPath());
+            }
+        });
+        return base[0];
+    }
+
+    /** Seeded variation with a runtime length bound and a short per-key route history; falls back to the base route. */
+    private void runVaried() {
+        int baseLen = -1;
+        for (int attempt = 0; attempt < 3 && !cancelled; attempt++) {
+            if (attempt > 0) {
+                PathJitter.reroll(jitterKey, System.currentTimeMillis(), start, (Integer) jitterKey);
+            }
+            runSearch();
+            if (terminationReason != PathTerminationReason.TARGET_REACHED || getPath().isEmpty()) {
+                return;
+            }
+            List<WorldPoint> route = getPath();
+            int len = PathJitter.routeLength(route);
+            boolean needsBase = !PathJitter.withinBound(len, minChebyshevStartToAnyTarget());
+            if (needsBase) {
+                if (baseLen < 0) {
+                    baseLen = variedBaseLength();
+                    if (baseLen < 0) {
+                        return;
+                    }
+                }
+                if (!PathJitter.withinBound(len, baseLen)) {
+                    continue;
+                }
+            }
+            int hash = PathJitter.routeHash(route);
+            if (attempt == 2 || !PathJitter.seenRoute(jitterKey, hash)) {
+                PathJitter.recordRoute(jitterKey, hash);
+                if (needsBase) {
+                    runSearch(); // the base measurement overwrote the state; same seed gives the same route
+                }
+                return;
+            }
+        }
+        if (!cancelled) {
+            PathJitter.withoutJitter(this::runSearch);
+        }
+    }
+
+    private void runSearch() {
         WebWalkLog.pf("run_start src={} dst={} cutoffMs={}",
                 WorldPointUtil.toString(start), WorldPointUtil.toString(targets), config.getCalculationCutoffMillis());
         path = Collections.emptyList();
