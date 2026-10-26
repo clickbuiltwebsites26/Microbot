@@ -26,6 +26,12 @@ public interface DDChopperConfig extends Config
 	@ConfigSection(name = "World hopping", description = "Hop away from crowded spots.", position = 4, closedByDefault = true)
 	String hopSection = "hopSection";
 
+	@ConfigSection(name = "Display", description = "What is drawn in the game.", position = 6)
+	String displaySection = "displaySection";
+
+	@ConfigSection(name = "Forestry", description = "Forestry random events while chopping.", position = 7, closedByDefault = true)
+	String forestrySection = "forestrySection";
+
 	@ConfigSection(name = "Humanizer", description = "Human-like delays, fatigue and idle pauses.", position = 5)
 	String humanSection = "humanSection";
 
@@ -255,5 +261,99 @@ public interface DDChopperConfig extends Config
 	default int idlePauseChance()
 	{
 		return 2;
+	}
+
+	// ---- Display ----
+	@ConfigItem(keyName = "showOverlay", name = "Show overlay", position = 28, section = displaySection,
+		description = "Show the in-game overlay with level, XP/hr, tree, axe and status.")
+	default boolean showOverlay()
+	{
+		return true;
+	}
+
+	// ---- Forestry ----
+	@ConfigItem(keyName = "forestryEnabled", name = "Forestry events", position = 29, section = forestrySection,
+		description = "Master switch: handle Forestry random events while chopping. Each event has its own switch below.")
+	default boolean forestryEnabled()
+	{
+		return false;
+	}
+
+	@ConfigItem(keyName = "forestryBusyWorld", name = "Busy world", position = 30, section = forestrySection,
+		description = "Prefer a busy world: Forestry events are more frequent and easier with more players chopping nearby. Hops when fewer than Min players are at the spot, with the usual hop limits. Overrides Hop if crowded while Forestry events are on.")
+	default boolean forestryBusyWorld()
+	{
+		return false;
+	}
+
+	@Range(min = 1, max = 50)
+	@ConfigItem(keyName = "forestryMinPlayers", name = "Min players", position = 31, section = forestrySection,
+		description = "Players wanted at the spot when Busy world is on.")
+	default int forestryMinPlayers()
+	{
+		return 8;
+	}
+
+	@ConfigItem(keyName = "forestryRoots", name = "Rising Roots", position = 32, section = forestrySection,
+		description = "Chop the glowing root.")
+	default boolean forestryRoots()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestrySapling", name = "Sapling", position = 33, section = forestrySection,
+		description = "Struggling Sapling: add ingredients to the mulch.")
+	default boolean forestrySapling()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryEntlings", name = "Entlings", position = 34, section = forestrySection,
+		description = "Friendly Entlings: prune to the request.")
+	default boolean forestryEntlings()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryBeehives", name = "Beehives", position = 35, section = forestrySection,
+		description = "Build beehives with logs.")
+	default boolean forestryBeehives()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryPheasant", name = "Pheasant", position = 36, section = forestrySection,
+		description = "Pheasant Control: return eggs.")
+	default boolean forestryPheasant()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryPoachers", name = "Poachers / Fox", position = 37, section = forestrySection,
+		description = "Disarm traps.")
+	default boolean forestryPoachers()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryRitual", name = "Ritual", position = 38, section = forestrySection,
+		description = "Enchantment Ritual: click the matching circle.")
+	default boolean forestryRitual()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryLeprechaun", name = "Leprechaun", position = 39, section = forestrySection,
+		description = "Deposit logs with the Woodcutting Leprechaun.")
+	default boolean forestryLeprechaun()
+	{
+		return true;
+	}
+
+	@ConfigItem(keyName = "forestryFlowering", name = "Flowering Tree", position = 40, section = forestrySection,
+		description = "Pollinate the flowering tree.")
+	default boolean forestryFlowering()
+	{
+		return true;
 	}
 }
