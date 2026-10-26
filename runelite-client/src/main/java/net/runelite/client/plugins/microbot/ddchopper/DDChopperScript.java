@@ -92,6 +92,10 @@ public class DDChopperScript extends Script
 	private WorldPoint lastTarget;
 	private int failedClicks;
 
+	// Human pacing.
+	private HumanPacing pacing;
+	private boolean wasBusy;
+
 	public boolean run(DDChopperConfig config)
 	{
 		this.config = config;
@@ -106,6 +110,7 @@ public class DDChopperScript extends Script
 			QuestWalkRule.setActive(true);
 			questRuleSetByUs = true;
 		}
+		pacing = new HumanPacing(new Random(), config.humanizedTiming(), config.humanizedFatigue(), config.idlePauseChance());
 		hopGate = new HopGate(config.maxOthers(), config.maxHopsPerHour());
 		breakPlan = new BreakPlan(config.minPlay(), config.maxPlay(), config.minBreak(), config.maxBreak(), new Random());
 		rotation = new SpotRotation(new Random(), config.rotateMinMinutes(), config.rotateMaxMinutes());
@@ -132,6 +137,7 @@ public class DDChopperScript extends Script
 		lastTotalBreaks = -1;
 		blacklist.clear();
 		failedClicks = 0;
+		wasBusy = false;
 		currentAxe = null;
 		currentTree = null;
 		currentSpot = null;
@@ -168,6 +174,11 @@ public class DDChopperScript extends Script
 				activeMillis += Math.min(now - lastTickMillis, 5_000);
 			}
 			lastTickMillis = now;
+			if (pacing != null && pacing.isEnabled())
+			{
+				pacing.update(now, BreakHandlerScript.isBreakActive());
+				Rs2Antiban.mouseFatigue.noiseAmplitude = pacing.mouseNoiseAmplitude();
+			}
 			if (Microbot.isHopping())
 			{
 				status = "Hopping worlds";
@@ -606,12 +617,50 @@ public class DDChopperScript extends Script
 		return false;
 	}
 
+	/** Waits a human reaction delay (and now and then an idle pause) after a tree fell or chopping stopped. */
+	private void reactBeforeNextTree()
+	{
+		if (pacing == null || !pacing.isEnabled())
+		{
+			return;
+		}
+		long idle = pacing.idlePauseMs(System.currentTimeMillis(), !Rs2Inventory.isFull());
+		if (idle > 0)
+		{
+			status = "Idle pause";
+			Microbot.log("DD Chopper: idle pause " + idle / 1000 + " s");
+			sleep((int) idle);
+		}
+		status = "Reacting";
+		sleep((int) pacing.reactionDelayMs());
+	}
+
+	/** Drops the logs one by one with a varying pace. */
+	private void dropLogs()
+	{
+		java.util.function.Predicate<net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel> logs =
+			item -> item.getName() != null && item.getName().toLowerCase().endsWith("logs");
+		if (pacing == null || !pacing.isEnabled())
+		{
+			Rs2Inventory.dropAll(logs);
+			return;
+		}
+		for (int i = 0; i < 30 && Rs2Inventory.items(logs).findAny().isPresent() && isRunning(); i++)
+		{
+			if (!Rs2Inventory.drop(logs))
+			{
+				break;
+			}
+			sleep((int) pacing.dropDelayMs());
+		}
+	}
+
 	private void handleFull()
 	{
 		if (config.mode() == ChopMode.POWER_CHOP)
 		{
 			status = "Dropping logs";
-			Rs2Inventory.dropAll(item -> item.getName() != null && item.getName().toLowerCase().endsWith("logs"));
+			dropLogs();
 			return;
 		}
 		status = "Banking logs";
@@ -632,6 +681,7 @@ public class DDChopperScript extends Script
 		if (Rs2Player.isAnimating(1800) || Rs2Player.isMoving())
 		{
 			status = "Chopping " + plan.tree.getObjectName();
+			wasBusy = true;
 			return;
 		}
 		Spot spot = activeSpot();
@@ -674,6 +724,11 @@ public class DDChopperScript extends Script
 			blacklist.put(at, now + 60_000);
 			failedClicks = 0;
 			return;
+		}
+		if (wasBusy)
+		{
+			reactBeforeNextTree();
+			wasBusy = false;
 		}
 		if (best.click("Chop down"))
 		{

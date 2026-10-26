@@ -2,8 +2,8 @@ package net.runelite.client.plugins.microbot.ddchopper;
 
 public enum ChopMode
 {
-	POWER_CHOP("Power-chop (drop logs)"),
-	BANK("Bank logs");
+	POWER_CHOP("Power-chop"),
+	BANK("Bank");
 
 	private final String label;
 
