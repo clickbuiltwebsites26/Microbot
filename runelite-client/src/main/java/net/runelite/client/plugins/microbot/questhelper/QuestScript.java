@@ -192,6 +192,7 @@ public class QuestScript extends Script {
                 if (getQuestHelperPlugin().getSelectedQuest() == null) return;
 
                 if (handleShortBreak()) return;
+                humanizePause();
 
                 QuestStep questStep = getQuestHelperPlugin().getSelectedQuest().getCurrentStep().getActiveStep();
 
@@ -1157,6 +1158,38 @@ public class QuestScript extends Script {
 		}
 		return needs;
 	}
+
+    private HumanizedTiming humanTiming;
+
+    /** Skewed random pause before an action, with fatigue and rare hesitations; skipped when timing matters. */
+    private void humanizePause() {
+        if (!config.humanizedTiming()) {
+            humanTiming = null;
+            return;
+        }
+        if (humanTiming == null) {
+            humanTiming = new HumanizedTiming(new java.util.Random(), config.humanizedFatigue());
+        }
+        long now = System.currentTimeMillis();
+        humanTiming.update(now, breakEndsAtMs > now);
+        net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban.mouseFatigue.noiseAmplitude =
+                5.0 + 10.0 * humanTiming.fatigue();
+        QuestHelper selected = getQuestHelperPlugin().getSelectedQuest();
+        QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
+        if (Rs2Dialogue.isInDialogue() || Rs2Combat.inCombat() || QuestCombatDetector.isKillStep(step)
+                || Rs2Player.getHealthPercentage() < 60) {
+            return;
+        }
+        boolean idle = !Rs2Bank.isOpen() && !Rs2Player.isMoving() && !Rs2Player.isInteracting()
+                && !Rs2Player.isAnimating() && !QuestCombatHandler.isAwaitingSetup() && !QuestPreflight.isInProgress();
+        long hesitation = humanTiming.maybeHesitate(now, config.hesitationChancePercent() / 100.0, idle);
+        if (hesitation > 0) {
+            Microbot.status = "Quest helper: hesitating (" + (hesitation / 1000) + "s)";
+            sleep((int) hesitation);
+            return;
+        }
+        sleep((int) humanTiming.nextDelayMs(150));
+    }
 
     /** Idles for a few seconds now and then; true while a break is running. Timestamp based, never blocks. */
     private boolean handleShortBreak() {

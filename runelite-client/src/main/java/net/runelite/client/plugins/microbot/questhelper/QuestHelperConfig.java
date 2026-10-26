@@ -306,6 +306,36 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "humanizedTiming",
+			name = "Humanized timing",
+			description = "Vary the delay between actions with a skewed random distribution instead of fixed pauses.",
+			section = microbotSection
+	)
+	default boolean humanizedTiming() {
+		return true;
+	}
+
+	@ConfigItem(
+			keyName = "humanizedFatigue",
+			name = "Fatigue",
+			description = "Delays and hesitations grow with continuous play time and recover during short breaks.",
+			section = microbotSection
+	)
+	default boolean humanizedFatigue() {
+		return true;
+	}
+
+	@ConfigItem(
+			keyName = "hesitationChancePercent",
+			name = "Hesitation chance (%)",
+			description = "Chance per action of a 10-20 second pause, tripled at full fatigue. Never during combat, kill steps, low health or dialogue.",
+			section = microbotSection
+	)
+	default int hesitationChancePercent() {
+		return 1;
+	}
+
+	@ConfigItem(
 			keyName = "askCombatSetup",
 			name = "Ask for quest setup",
 			description = "Ask which gear, food, potions, prayer, stamina potions, extra items and combat styles to use the first time a quest runs.",
