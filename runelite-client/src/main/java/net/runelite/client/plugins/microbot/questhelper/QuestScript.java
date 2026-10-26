@@ -451,8 +451,10 @@ public class QuestScript extends Script {
                     }
 
                     if (selectedQuest.getCurrentStep() instanceof ConditionalStep) {
-                        QuestStep conditionalStep = selectedQuest.getCurrentStep().getActiveStep();
-                        applyStep(conditionalStep);
+                        QuestStep conditionalStep = conditionalCommitment.select(selectedQuest.getCurrentStep().getActiveStep());
+                        if (applyStep(conditionalStep)) {
+                            conditionalCommitment.markTried();
+                        }
                     } else if (selectedQuest.getCurrentStep() instanceof NpcStep) {
                         applyNpcStep((NpcStep) selectedQuest.getCurrentStep());
                     } else if (selectedQuest.getCurrentStep() instanceof ObjectStep) {
@@ -3925,6 +3927,9 @@ public class QuestScript extends Script {
         }).orElse(false);
     }
 
+    /** Keeps a combined step on its sub-step for a couple of ticks so a flipping condition cannot ping-pong targets. */
+    private final StepCommitment<QuestStep> conditionalCommitment = new StepCommitment<>(2);
+
     public boolean applyObjectStep(ObjectStep step) {
         Rs2TileObjectModel object = step.getObjects().stream()
                 .filter(Objects::nonNull)
@@ -4127,6 +4132,10 @@ public class QuestScript extends Script {
 
     /** Action implied by the step text (climb up/down, open), or null when the text says nothing specific. */
     private static String wantedObjectAction(ObjectStep step) {
+        String rightClick = QuestObjectActions.rightClickAction(step.getText());
+        if (rightClick != null) {
+            return rightClick;
+        }
         String text = step.getText() == null ? "" : String.join(" ", step.getText()).toLowerCase();
         if (text.contains("climb up") || text.contains("upstairs") || text.contains("go up")
                 || text.contains("back up")) {
@@ -4200,18 +4209,8 @@ public class QuestScript extends Script {
             actions = objComp.getActions();
         }
 
-        for (var action : actions) {
-            if (action != null && step.getText().stream().anyMatch(x -> x.toLowerCase().contains(action.toLowerCase())))
-                return action;
-        }
-
-        // Fallback: first non-empty action (the object's default left-click).
-        for (var action : actions) {
-            if (action != null && !action.isEmpty())
-                return action;
-        }
-
-        return "";
+        // "Right-click <action>" in the step text, else an action named in the text, else the object's default.
+        return QuestObjectActions.choose(step.getText(), actions);
     }
 
     private String chooseCorrectNPCOption(QuestStep step, Rs2NpcModel npc) {
