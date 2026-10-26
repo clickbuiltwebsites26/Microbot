@@ -360,8 +360,9 @@ public class CollisionMap {
                             + DANGEROUS_TILE_PENALTY;
                     neighbors.add(new Node(neighborPacked, node, penalizedCost));
                 } else {
-                    neighbors.add(PathJitter.isActive() && !targets.contains(neighborPacked)
-                            ? new Node(neighborPacked, node, node.cost + WorldPointUtil.distanceBetween(node.packedPosition, neighborPacked) + PathJitter.penalty(neighborPacked))
+                    neighbors.add(PathJitter.isActive() && (!targets.contains(neighborPacked) || targets.size() > 1)
+                            ? new Node(neighborPacked, node, node.cost + WorldPointUtil.distanceBetween(node.packedPosition, neighborPacked)
+                                    + (targets.contains(neighborPacked) ? PathJitter.targetPenalty(neighborPacked) : PathJitter.penalty(neighborPacked)))
                             : new Node(neighborPacked, node));
                 }
             } else if (Math.abs(d.x + d.y) == 1 && isBlocked(x + d.x, y + d.y, z)) {

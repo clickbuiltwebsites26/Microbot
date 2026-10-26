@@ -112,6 +112,53 @@ public class PathJitterTest
 		}
 	}
 
+	@Test
+	public void boundHistoryAndSuspension()
+	{
+		assertTrue(PathJitter.withinBound(120, 100));
+		assertTrue(!PathJitter.withinBound(121, 100));
+		assertEquals(0, PathJitter.routeLength(new ArrayList<>()));
+		java.util.List<net.runelite.api.coords.WorldPoint> p = new ArrayList<>();
+		p.add(new net.runelite.api.coords.WorldPoint(3200, 3200, 0));
+		p.add(new net.runelite.api.coords.WorldPoint(3201, 3201, 0));
+		p.add(new net.runelite.api.coords.WorldPoint(3300, 3300, 0)); // teleport jump is free
+		p.add(new net.runelite.api.coords.WorldPoint(3300, 3302, 0));
+		assertEquals(3, PathJitter.routeLength(p));
+
+		Object key = "step-history";
+		int h = PathJitter.routeHash(p);
+		assertTrue(!PathJitter.seenRoute(key, h));
+		PathJitter.recordRoute(key, h);
+		assertTrue(PathJitter.seenRoute(key, h));
+		for (int i = 1; i <= 3; i++) PathJitter.recordRoute(key, h + i);
+		assertTrue("history is short", !PathJitter.seenRoute(key, h));
+
+		PathJitter.configure(true, 3);
+		try
+		{
+			boolean nonZero = false;
+			for (int i = 0; i < 200; i++)
+			{
+				int tp = PathJitter.transportPenalty(i * 977);
+				int gp = PathJitter.targetPenalty(i * 977);
+				assertTrue(tp >= 0 && tp <= 4 && gp >= 0 && gp <= 7);
+				nonZero |= tp > 0;
+			}
+			assertTrue(nonZero);
+			PathJitter.withoutJitter(() ->
+			{
+				assertTrue(!PathJitter.isActive());
+				assertEquals(0, PathJitter.transportPenalty(5));
+				assertEquals(0, PathJitter.targetPenalty(5));
+			});
+			assertTrue(PathJitter.isActive());
+		}
+		finally
+		{
+			PathJitter.configure(false, 2);
+		}
+	}
+
 	private static int[] sample()
 	{
 		int[] s = new int[400];

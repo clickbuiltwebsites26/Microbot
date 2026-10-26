@@ -93,6 +93,7 @@ public class Pathfinder implements Runnable {
      * 31 = no teleports can be used
      */
     private int wildernessLevel;
+    private Object jitterKey;
 
     public Pathfinder(PathfinderConfig config, int start, Set<Integer> targets) {
         stats = new PathfinderStats();
@@ -106,7 +107,8 @@ public class Pathfinder implements Runnable {
         }
         targetInWilderness = PathfinderConfig.isInWildernessPackedPoint(targets);
         if (PathJitter.isActive() && !targets.isEmpty()) {
-            PathJitter.beginWalk(java.util.Collections.min(targets), System.currentTimeMillis());
+            jitterKey = java.util.Collections.min(targets);
+            PathJitter.beginWalk(jitterKey, System.currentTimeMillis(), start, (int) jitterKey);
         }
         wildernessLevel = 31;
         WebWalkLog.pf("created src={} dst={} config={}",

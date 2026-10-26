@@ -22,6 +22,157 @@ public final class PathJitter
 	private static final Map<Object, Integer> LAST_SEED = new HashMap<>();
 	private static final long RESEED_AFTER_MS = 120_000L;
 
+    /** Which part of the pass a thread is in; base searches suspend jitter on their thread only. */
+    private static final ThreadLocal<Boolean> SUSPENDED = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final Map<Object, int[]> ROUTE_HISTORY = new HashMap<>();
+    private static final int HISTORY_DEPTH = 3;
+    private static volatile boolean detourOn;
+    private static volatile int detourX;
+    private static volatile int detourY;
+    private static volatile int detourPlane;
+    private static final int DETOUR_RADIUS = 2;
+    private static final int DETOUR_PENALTY = 6;
+
+    /** Maximum real length of a varied route relative to the base route. */
+    public static final double MAX_LENGTH_FACTOR = 1.2;
+
+    /** Runs {@code body} with jitter off on this thread (used to measure the base route). */
+    public static void withoutJitter(Runnable body)
+    {
+        SUSPENDED.set(Boolean.TRUE);
+        try
+        {
+            body.run();
+        }
+        finally
+        {
+            SUSPENDED.set(Boolean.FALSE);
+        }
+    }
+
+    /** Same walk, new seed and detour; used when a route repeats a recent one. */
+    public static void reroll(Object key, long nowMs, int startPacked, int targetPacked)
+    {
+        synchronized (LOCK)
+        {
+            walkKey = null;
+        }
+        beginWalk(key, nowMs, startPacked, targetPacked);
+    }
+
+    public static void beginWalk(Object key, long nowMs, int startPacked, int targetPacked)
+    {
+        beginWalk(key, nowMs);
+        synchronized (LOCK)
+        {
+            // pick the detour once per seed: about one walk in four bends around a spot on the direct line
+            Random rng = new Random(seed);
+            boolean on = rng.nextInt(4) == 0;
+            double f = 0.3 + rng.nextDouble() * 0.4;
+            int sx = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldX(startPacked);
+            int sy = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldY(startPacked);
+            int tx = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldX(targetPacked);
+            int ty = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldY(targetPacked);
+            detourX = (int) Math.round(sx + (tx - sx) * f);
+            detourY = (int) Math.round(sy + (ty - sy) * f);
+            detourPlane = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldPlane(startPacked);
+            detourOn = on && Math.max(Math.abs(tx - sx), Math.abs(ty - sy)) > 20;
+        }
+    }
+
+    /** Extra cost for entering a transport destination; small so only near-equal transports flip. */
+    public static int transportPenalty(int destinationPacked)
+    {
+        int lv = level;
+        if (lv == 0 || SUSPENDED.get())
+        {
+            return 0;
+        }
+        return Integer.remainderUnsigned(mix(destinationPacked * 0x7FEB352D ^ seed), lv + 2);
+    }
+
+    /** Extra cost for arriving at one of several equivalent targets (e.g. banks) so close ones alternate. */
+    public static int targetPenalty(int targetPacked)
+    {
+        int lv = level;
+        if (lv == 0 || SUSPENDED.get())
+        {
+            return 0;
+        }
+        return Integer.remainderUnsigned(mix(targetPacked * 0x2C1B3C6D ^ seed), 2 * lv + 2);
+    }
+
+    public static boolean seenRoute(Object key, int routeHash)
+    {
+        synchronized (LOCK)
+        {
+            int[] h = ROUTE_HISTORY.get(key);
+            if (h != null)
+            {
+                for (int v : h)
+                {
+                    if (v == routeHash)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    }
+
+    public static void recordRoute(Object key, int routeHash)
+    {
+        synchronized (LOCK)
+        {
+            if (ROUTE_HISTORY.size() > 256)
+            {
+                ROUTE_HISTORY.clear();
+            }
+            int[] old = ROUTE_HISTORY.get(key);
+            int[] next = new int[old == null ? 1 : Math.min(HISTORY_DEPTH, old.length + 1)];
+            next[0] = routeHash;
+            if (old != null)
+            {
+                System.arraycopy(old, 0, next, 1, next.length - 1);
+            }
+            ROUTE_HISTORY.put(key, next);
+        }
+    }
+
+    /** Order-sensitive hash of a route sampled every few points. */
+    public static int routeHash(java.util.List<net.runelite.api.coords.WorldPoint> path)
+    {
+        int h = 17;
+        for (int i = 0; i < path.size(); i += 4)
+        {
+            h = h * 31 + path.get(i).hashCode();
+        }
+        return h;
+    }
+
+    /** Walked length: Chebyshev steps; jumps over 2 tiles (transports) cost nothing. */
+    public static int routeLength(java.util.List<net.runelite.api.coords.WorldPoint> path)
+    {
+        int len = 0;
+        for (int i = 1; i < path.size(); i++)
+        {
+            net.runelite.api.coords.WorldPoint a = path.get(i - 1);
+            net.runelite.api.coords.WorldPoint b = path.get(i);
+            int d = a.getPlane() != b.getPlane() ? 99 : a.distanceTo2D(b);
+            if (d <= 2)
+            {
+                len += d;
+            }
+        }
+        return len;
+    }
+
+    public static boolean withinBound(int variedLength, int baseLength)
+    {
+        return variedLength <= Math.ceil(baseLength * MAX_LENGTH_FACTOR);
+    }
+
 	private PathJitter()
 	{
 	}
@@ -33,7 +184,7 @@ public final class PathJitter
 
 	public static boolean isActive()
 	{
-		return level > 0;
+		return level > 0 && !SUSPENDED.get();
 	}
 
 	/**
@@ -75,8 +226,8 @@ public final class PathJitter
 	/** Extra cost of entering {@code packedTile}, 0 when inactive. */
 	public static int penalty(int packedTile)
 	{
-		int lv = level;
-		return lv == 0 ? 0 : penalty(packedTile, seed, lv);
+		int lv = SUSPENDED.get() ? 0 : level;
+		return lv == 0 ? 0 : penalty(packedTile, seed, lv) + corridor(packedTile);
 	}
 
 	/** Pure form for tests. Low: 1/16 tiles +1; medium: 1/10 tiles +1..2; high: 1/6 tiles +1..3. */
@@ -94,6 +245,18 @@ public final class PathJitter
 			return 0;
 		}
 		return 1 + Integer.remainderUnsigned(h >>> 8, max);
+	}
+
+	private static int corridor(int packedTile)
+	{
+		if (!detourOn)
+		{
+			return 0;
+		}
+		int x = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldX(packedTile);
+		int y = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldY(packedTile);
+		int p = net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil.unpackWorldPlane(packedTile);
+		return p == detourPlane && Math.abs(x - detourX) <= DETOUR_RADIUS && Math.abs(y - detourY) <= DETOUR_RADIUS ? DETOUR_PENALTY : 0;
 	}
 
 	private static int mix(int x)

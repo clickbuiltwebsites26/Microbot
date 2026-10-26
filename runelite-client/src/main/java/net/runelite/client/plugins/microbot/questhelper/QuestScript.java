@@ -180,7 +180,7 @@ public class QuestScript extends Script {
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
-                        config.pathVariation(), config.pathVariationStrength().getLevel());
+                        config.pathVariation() && !escortActive, config.pathVariationStrength().getLevel());
                 if (!config.startStopQuestHelper()) {
                     net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
