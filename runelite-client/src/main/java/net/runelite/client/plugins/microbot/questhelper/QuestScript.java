@@ -200,6 +200,15 @@ public class QuestScript extends Script {
                 // Dialogue is answered first and at ~100 ms, regardless of combat or animation state.
                 answerDialogueFast(questStep);
 
+                // Quest-start confirmation ("Start <quest>?" / Yes. / No.): always accept while a quest is selected,
+                // whether it was opened via NPC, object or item. isInDialogue() reports it, but the step's own
+                // choices never match it, so answer it here before anything re-interacts with the start NPC.
+                if (Rs2Dialogue.hasQuestStartMenu()) {
+                    Rs2Walker.clearWalkingRoute("quest-helper:quest-start-menu");
+                    Rs2Dialogue.acceptQuestStartMenu();
+                    return;
+                }
+
                 // Being hit while a non-kill step is active must not stall it: skip the settle wait and keep acting.
                 boolean attackedOnNonKillStep = isAttackedOnNonKillStep(questStep);
                 if (Rs2Player.isAnimating() && !attackedOnNonKillStep)
@@ -857,7 +866,7 @@ public class QuestScript extends Script {
 		Microbot.status = "Quest helper: checking quest items";
 
 		ItemAndLastUpdated bank = QuestContainerManager.getBankData();
-		if (bank.getLastUpdated() < 0 && bank.getItems().length == 0) {
+		if (!QuestPreflight.bankScanned(bank.getLastUpdated())) {
 			if (preflightBankAttempts >= PREFLIGHT_MAX_BANK_ATTEMPTS) {
 				Microbot.log("Quest helper preflight skipped: could not open the bank to count quest items", Level.WARN);
 				finishPreflight(QuestPreflight.FAILED_PREFIX + "could not open the bank");
@@ -896,7 +905,11 @@ public class QuestScript extends Script {
 			summary.append(shortfall.name).append(" x").append(shortfall.needed);
 			if (shortfall.missing > 0) {
 				summary.append(shortfall.owned > 0 ? " (buying " + shortfall.missing + " more)" : " (buying)");
-				toBuy.add(new ItemRequirement(shortfall.name, shortfall.ids, shortfall.missing));
+				toBuy.add(new ItemRequirement(QuestPreflight.purchaseLabel(shortfall), shortfall.ids, shortfall.missing));
+				if (shortfall.supply && !preflightSummaryLogged) {
+					Microbot.log("Quest helper: selected supply " + QuestPreflight.purchaseLabel(shortfall)
+							+ " (not enough in the bank or on you)", Level.WARN);
+				}
 			} else if (QuestPreflight.countOwned(shortfall.ids, onPlayer) >= shortfall.needed) {
 				summary.append(" (on you)");
 			} else {
@@ -913,7 +926,7 @@ public class QuestScript extends Script {
 			return false;
 		}
 		if (!purchaseApproved) {
-			boolean bankKnown = bank.getLastUpdated() >= 0 || bank.getItems().length > 0;
+			boolean bankKnown = QuestPreflight.bankScanned(bank.getLastUpdated());
 			switch (gatePurchases(quest, toBuy, onPlayer, owned, bankKnown)) {
 				case WAIT:
 				case STOPPED:
@@ -974,8 +987,9 @@ public class QuestScript extends Script {
 			for (ItemRequirement ir : toBuy) {
 				int primaryId = tradablePrimaryId(ir);
 				if (primaryId == -1) {
-					stopQuesterWithReason("Quest item is not tradable on the Grand Exchange: " + ir.getName());
-					return PurchaseGate.STOPPED;
+					Microbot.log("Quest helper: " + ir.getName() + " is not tradable on the Grand Exchange, "
+							+ "not buying it (the quest steps will obtain it in game)", Level.WARN);
+					continue;
 				}
 				int basePrice = fetchInstabuyReferencePrice(primaryId);
 				if (basePrice <= 0) {
@@ -1136,6 +1150,7 @@ public class QuestScript extends Script {
 			needs.addAll(combat.swapPreflightNeeds(steps));
 			needs.addAll(combat.boostPreflightNeeds(steps));
 		}
+		needs.addAll(combat.supplyPreflightNeeds(this::isIdTradable));
 		for (Requirement requirement : candidates) {
 			// Subclasses (keyrings, followers, composites) have their own ownership rules; leave them to the steps
 			if (requirement == null || requirement.getClass() != ItemRequirement.class) {
@@ -1620,9 +1635,9 @@ public class QuestScript extends Script {
 		for (ItemRequirement ir : toBuy) {
 			int primaryId = tradablePrimaryId(ir);
 			if (primaryId == -1) {
-				Rs2Bank.closeBank();
-				stopQuesterWithReason("Quest item is not tradable on the Grand Exchange: " + ir.getName());
-				return true;
+				Microbot.log("Quest helper: " + ir.getName() + " is not tradable on the Grand Exchange, "
+						+ "not buying it (the quest steps will obtain it in game)", Level.WARN);
+				continue;
 			}
 
 			int basePrice = fetchInstabuyReferencePrice(primaryId);
@@ -2477,12 +2492,30 @@ public class QuestScript extends Script {
 	}
 
 	private int fetchInstabuyReferencePrice(int itemId) {
-		WikiPrice priceData = Rs2GrandExchange.getRealTimePrices(itemId);
-		if (priceData != null && priceData.buyPrice > 0 && priceData.buyPrice < Integer.MAX_VALUE) {
-			return priceData.buyPrice;
+		int price = QuestPriceLookup.withRetry(() -> {
+			WikiPrice priceData = Rs2GrandExchange.getRealTimePrices(itemId);
+			if (priceData != null && priceData.buyPrice > 0 && priceData.buyPrice < Integer.MAX_VALUE) {
+				return priceData.buyPrice;
+			}
+			return Rs2GrandExchange.getPrice(itemId);
+		}, 3, 500L, ms -> sleep((int) ms), -1);
+		if (price > 0) {
+			return price;
 		}
-		int price = Rs2GrandExchange.getPrice(itemId);
-		return (price > 0 && price < Integer.MAX_VALUE) ? price : -1;
+		int store = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+			ItemComposition def = Microbot.getClient().getItemDefinition(itemId);
+			return def == null ? 0 : def.getPrice();
+		}).orElse(0);
+		int fallback = Math.max(QuestPriceLookup.FALLBACK_PRICE, store);
+		Microbot.log("Quest helper: price lookup failed for item " + itemId + ", using fallback " + fallback + " gp", Level.WARN);
+		return fallback;
+	}
+
+	private boolean isIdTradable(int id) {
+		return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+			ItemComposition def = Microbot.getClient().getItemDefinition(id);
+			return def != null && def.isTradeable();
+		}).orElse(false);
 	}
 
 	private int notedVariantId(int unnotedId) {

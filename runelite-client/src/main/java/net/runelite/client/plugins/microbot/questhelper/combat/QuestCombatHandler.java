@@ -1666,7 +1666,7 @@ public class QuestCombatHandler
 		for (Rs2ItemModel item : Rs2Inventory.items(i -> !i.isNoted() && i.getName() != null).collect(Collectors.toList()))
 		{
 			String base = item.getName().replaceAll("\\s*\\(\\d+\\)$", "").trim();
-			if (!keep.contains(item.getId()) && names.stream().anyMatch(base::equalsIgnoreCase))
+			if (!keep.contains(item.getId()) && names.stream().anyMatch(n -> QuestPotions.runPotionMatches(base, n)))
 			{
 				out.add(item);
 			}
@@ -1944,8 +1944,7 @@ public class QuestCombatHandler
 			return false;
 		}
 		String base = baseName(item);
-		return base.equalsIgnoreCase("Stamina potion") || base.equalsIgnoreCase("Energy potion")
-			|| base.equalsIgnoreCase("Super energy");
+		return QuestPotions.isRunEnergyName(base);
 	}
 
 	/** True for an item configured in the dialog's inventory tab; the bank prep never deposits these. */
@@ -2040,6 +2039,17 @@ public class QuestCombatHandler
 	 * Tradable needs for the loadout's boost potions (any dose, bought as the 4-dose) when the quest has a kill step
 	 * among {@code steps}, so the preflight buys them. Empty when there is no active loadout or no boosts chosen.
 	 */
+	public List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> supplyPreflightNeeds(
+		java.util.function.IntPredicate tradable)
+	{
+		QuestCombatLoadout current = loadout;
+		if (phase != Phase.ACTIVE || current == null)
+		{
+			return new ArrayList<>();
+		}
+		return QuestSupplyNeeds.fromLoadout(current, QuestCombatHandler::resolveItemId, tradable);
+	}
+
 	public List<net.runelite.client.plugins.microbot.questhelper.QuestPreflight.Need> boostPreflightNeeds(
 		List<DetailedQuestStep> steps)
 	{
@@ -2107,7 +2117,7 @@ public class QuestCombatHandler
 		{
 			for (Rs2ItemModel item : Rs2Bank.bankItems())
 			{
-				if (item != null && !item.isNoted() && item.getName() != null && baseName(item).equalsIgnoreCase(name))
+				if (item != null && !item.isNoted() && item.getName() != null && QuestPotions.runPotionMatches(baseName(item), name))
 				{
 					pick = item;
 					break;

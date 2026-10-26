@@ -97,6 +97,22 @@ public final class QuestPreflight
 	{
 	}
 
+	/** A requirement for a supply the user selected in the setup window. */
+	public static Need supplyNeed(String name, List<Integer> ids, int quantity, boolean consumed)
+	{
+		return new Need(name, ids, quantity, consumed, true);
+	}
+
+	/** Label for the purchase list: says plainly that a selected supply was not found and will be bought. */
+	public static String purchaseLabel(Shortfall s)
+	{
+		if (!s.supply || s.missing <= 0)
+		{
+			return s.name;
+		}
+		return s.name + (s.owned == 0 ? " (missing - will buy)" : " (short " + s.missing + " - will buy)");
+	}
+
 	/** One requirement fed to the computation: the ids that satisfy it (alternates included) and how many. */
 	public static final class Need
 	{
@@ -105,10 +121,18 @@ public final class QuestPreflight
 		public final int quantity;
 		/** False for items the quest does not use up ({@code isNotConsumed()}). */
 		public final boolean consumed;
+		/** True for a supply the user ticked in the quest setup (stamina, food, potions, custom items). */
+		public final boolean supply;
 
 		/** A requirement satisfied by any of {@code ids}, needing {@code quantity} in total. */
 		public Need(String name, List<Integer> ids, int quantity, boolean consumed)
 		{
+			this(name, ids, quantity, consumed, false);
+		}
+
+		Need(String name, List<Integer> ids, int quantity, boolean consumed, boolean supply)
+		{
+			this.supply = supply;
 			this.name = name;
 			this.ids = ids;
 			this.quantity = quantity;
@@ -124,9 +148,11 @@ public final class QuestPreflight
 		public final int needed;
 		public final int owned;
 		public final int missing;
+		public final boolean supply;
 
-		Shortfall(String name, List<Integer> ids, int needed, int owned)
+		Shortfall(String name, List<Integer> ids, int needed, int owned, boolean supply)
 		{
+			this.supply = supply;
 			this.name = name;
 			this.ids = ids;
 			this.needed = needed;
@@ -151,6 +177,7 @@ public final class QuestPreflight
 		List<String> names = new ArrayList<>();
 		List<Set<Integer>> idSets = new ArrayList<>();
 		List<Integer> quantities = new ArrayList<>();
+		List<Boolean> supplies = new ArrayList<>();
 
 		for (Need need : needs)
 		{
@@ -173,6 +200,7 @@ public final class QuestPreflight
 
 			String name = need.name;
 			int quantity = need.quantity;
+			boolean supply = need.supply;
 			// Absorb every earlier group that shares an id, which also joins groups an alternate bridges
 			for (int i = idSets.size() - 1; i >= 0; i--)
 			{
@@ -180,6 +208,8 @@ public final class QuestPreflight
 				{
 					ids.addAll(idSets.get(i));
 					quantity = Math.max(quantity, quantities.get(i));
+					supply = supply || supplies.get(i);
+					supplies.remove(i);
 					name = names.get(i) != null ? names.get(i) : name;
 					idSets.remove(i);
 					quantities.remove(i);
@@ -189,13 +219,14 @@ public final class QuestPreflight
 			idSets.add(ids);
 			quantities.add(quantity);
 			names.add(name);
+			supplies.add(supply);
 		}
 
 		List<Shortfall> out = new ArrayList<>();
 		for (int i = 0; i < idSets.size(); i++)
 		{
 			out.add(new Shortfall(names.get(i), new ArrayList<>(idSets.get(i)), quantities.get(i),
-				countOwned(idSets.get(i), owned)));
+				countOwned(idSets.get(i), owned), supplies.get(i)));
 		}
 		return out;
 	}
@@ -235,6 +266,15 @@ public final class QuestPreflight
 				}
 			}
 		}
+	}
+
+	/**
+	 * Whether the bank was actually opened and read this session. The bank item list can be restored from a previous
+	 * session, so a non-empty list alone proves nothing; only a container update tick (>= 0) does.
+	 */
+	public static boolean bankScanned(int bankLastUpdatedTick)
+	{
+		return bankLastUpdatedTick >= 0;
 	}
 
 	/** Total held of the given ids (each id counted once). */

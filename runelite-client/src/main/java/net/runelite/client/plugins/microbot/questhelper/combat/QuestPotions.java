@@ -217,6 +217,35 @@ public final class QuestPotions
 		return clean(out);
 	}
 
+	/**
+	 * True when a base item name (dose stripped) is a run-energy potion: energy, super energy, stamina, and the
+	 * stamina variants ("Extended stamina potion", "Brutal stamina potion").
+	 */
+	public static boolean isRunEnergyName(String baseName)
+	{
+		if (baseName == null)
+		{
+			return false;
+		}
+		String n = baseName.trim().toLowerCase(java.util.Locale.ROOT);
+		return n.equals("energy potion") || n.equals("super energy") || n.endsWith("stamina potion");
+	}
+
+	/** True when {@code base} satisfies the wanted run-potion name, counting stamina variants as stamina. */
+	public static boolean runPotionMatches(String base, String wanted)
+	{
+		if (base == null || wanted == null)
+		{
+			return false;
+		}
+		if (base.trim().equalsIgnoreCase(wanted.trim()))
+		{
+			return true;
+		}
+		return wanted.trim().equalsIgnoreCase("Stamina potion")
+			&& base.trim().toLowerCase(java.util.Locale.ROOT).endsWith("stamina potion");
+	}
+
 	/** True when the item name (any dose) is the given kind. */
 	public static boolean matchesKind(Kind kind, String itemName)
 	{
