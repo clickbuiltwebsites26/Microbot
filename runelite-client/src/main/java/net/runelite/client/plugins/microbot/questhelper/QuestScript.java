@@ -1062,6 +1062,16 @@ public class QuestScript extends Script {
 	/** Tradable, not step-supplied item requirements of the rest of the quest; null while the Vale Totems wood is unset. */
 	private List<QuestPreflight.Need> collectPreflightNeeds(QuestHelper quest, QuestState state) {
 		List<Requirement> candidates = new ArrayList<>();
+		final boolean notStarted = state == QuestState.NOT_STARTED;
+		Set<Integer> upfrontIds = new HashSet<>();
+		if (quest.getItemRequirements() != null) {
+			for (ItemRequirement ir : quest.getItemRequirements()) {
+				if (ir != null) {
+					upfrontIds.addAll(ir.getAllIds());
+				}
+			}
+		}
+		final String questEnumName = quest.getQuest() == null ? null : quest.getQuest().name();
 		// Once the quest is underway its start items are spent or placed, so only the steps ahead count
 		if (state == QuestState.NOT_STARTED && quest.getItemRequirements() != null) {
 			for (ItemRequirement ir : quest.getItemRequirements()) {
@@ -1111,6 +1121,10 @@ public class QuestScript extends Script {
 			}
 			ItemRequirement ir = (ItemRequirement) requirement;
 			List<Integer> ids = ir.getAllIds().stream().filter(id -> id != null && id > 0).collect(Collectors.toList());
+			boolean inUpfront = ids.stream().anyMatch(upfrontIds::contains);
+			if (QuestPreflight.obtainedDuringQuest(questEnumName, ir.getName(), ir.getTooltip(), notStarted, inUpfront)) {
+				continue;
+			}
 			if (ir.getQuantity() <= 0 || ids.isEmpty() || ids.contains(ItemID.COINS_995)) {
 				continue;
 			}

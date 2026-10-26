@@ -66,11 +66,19 @@ public final class QuestCombatSetupDialog
 	{
 		public final Outcome outcome;
 		public final QuestCombatLoadout loadout;
+		/** True when the player ticked "Don't ask again" on a Save. */
+		public final boolean dontAskAgain;
 
 		Result(Outcome outcome, QuestCombatLoadout loadout)
 		{
+			this(outcome, loadout, false);
+		}
+
+		Result(Outcome outcome, QuestCombatLoadout loadout, boolean dontAskAgain)
+		{
 			this.outcome = outcome;
 			this.loadout = loadout;
+			this.dontAskAgain = dontAskAgain;
 		}
 	}
 
@@ -85,6 +93,8 @@ public final class QuestCombatSetupDialog
 		public String wornWeapon = "";
 		public List<InventoryItem> inventory = new ArrayList<>();
 		public int defaultReserve = 4;
+		/** The global last used setup to pre-fill supplies from; null when none exists. */
+		public QuestCombatLoadout defaults;
 		/** Combat skill levels (melee is the higher of Attack and Strength); drive the default second style. */
 		public int meleeLevel = 1;
 		public int rangedLevel = 1;
@@ -296,6 +306,8 @@ public final class QuestCombatSetupDialog
 		private DefaultTableModel itemModel;
 		private JTable itemTable;
 		private JLabel slots = new JLabel();
+		private final javax.swing.JCheckBox dontAsk =
+			new javax.swing.JCheckBox("Don't ask again (use these settings for future quests)");
 		private final List<FightRow> rows = new ArrayList<>();
 
 		Form(Context ctx, int epoch)
@@ -340,7 +352,10 @@ public final class QuestCombatSetupDialog
 			buttons.add(cancel);
 			JPanel south = new JPanel(new BorderLayout());
 			slots.setBorder(javax.swing.BorderFactory.createEmptyBorder(4, 8, 4, 8));
-			south.add(slots, BorderLayout.WEST);
+			JPanel west = new JPanel(new BorderLayout());
+			west.add(slots, BorderLayout.NORTH);
+			west.add(dontAsk, BorderLayout.SOUTH);
+			south.add(west, BorderLayout.WEST);
 			south.add(buttons, BorderLayout.EAST);
 
 			dialog.getContentPane().add(tabs, BorderLayout.CENTER);
@@ -361,6 +376,7 @@ public final class QuestCombatSetupDialog
 					}
 				});
 			}
+			applyDefaults();
 			refresh();
 
 			dialog.addWindowListener(new WindowAdapter()
@@ -894,6 +910,49 @@ public final class QuestCombatSetupDialog
 			return out;
 		}
 
+		/** Pre-fills the supplies from the global last used setup. */
+		private void applyDefaults()
+		{
+			QuestCombatLoadout d = ctx.defaults;
+			if (d == null)
+			{
+				return;
+			}
+			if (!d.getFood().isEmpty())
+			{
+				food.setText(d.getFood());
+			}
+			foodQty.setValue(d.getFoodQty());
+			eatAt.setValue(d.getEatAtPercent());
+			if (d.isUseStamina())
+			{
+				staminaType.setSelectedItem(d.getStaminaType());
+			}
+			staminaQty.setValue(d.getStaminaQty());
+			staminaAt.setValue(d.getDrinkStaminaAtEnergy());
+			if (d.getReserveSlots() >= 0)
+			{
+				reserve.setValue(d.getReserveSlots());
+			}
+			potionModel.setRowCount(0);
+			for (QuestPotions.Row potion : d.potionRows())
+			{
+				for (QuestPotions.Kind kind : QuestPotions.Kind.values())
+				{
+					if (kind.key().equals(potion.getType()))
+					{
+						potionModel.addRow(new Object[]{kind, potion.getQty()});
+					}
+				}
+			}
+			itemModel.setRowCount(0);
+			for (InventoryItem item : d.getInventoryItems())
+			{
+				itemModel.addRow(new Object[]{item.getId() > 0 && item.getName().isEmpty()
+					? String.valueOf(item.getId()) : item.getName(), item.getQty(), item.isStackable()});
+			}
+		}
+
 		private void finish(Outcome outcome)
 		{
 			QuestCombatLoadout loadout = build();
@@ -929,7 +988,7 @@ public final class QuestCombatSetupDialog
 				loadout.setFights(new java.util.LinkedHashMap<>());
 			}
 			saveObtainMissing();
-			answer = new Result(outcome, loadout.normalised());
+			answer = new Result(outcome, loadout.normalised(), outcome == Outcome.SAVE && dontAsk.isSelected());
 			dialog.dispose();
 		}
 

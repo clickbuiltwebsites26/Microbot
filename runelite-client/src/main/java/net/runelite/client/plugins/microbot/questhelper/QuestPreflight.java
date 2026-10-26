@@ -48,6 +48,37 @@ public final class QuestPreflight
 			: FAILED_PREFIX + questDisplayName + " needs another player to " + task + " - can't be done solo";
 	}
 
+	/** Items a quest hands over itself, by quest enum name; never bought up front. */
+	private static final Map<String, Set<String>> QUEST_GIVEN = new java.util.HashMap<>();
+
+	static
+	{
+		QUEST_GIVEN.put("RUNE_MYSTERIES", new LinkedHashSet<>(java.util.Arrays.asList(
+			"air talisman", "research package", "research notes")));
+	}
+
+	/**
+	 * Whether the quest itself supplies this item, so the preflight must not buy it: it is flagged "can be obtained
+	 * during the quest", the quest is known to hand it out, or the quest has not started and the item only appears
+	 * on later steps without being in the quest's upfront item list.
+	 */
+	public static boolean obtainedDuringQuest(String questEnumName, String itemName, String tooltip,
+		boolean notStarted, boolean inUpfrontList)
+	{
+		String lowerName = itemName == null ? "" : itemName.toLowerCase(java.util.Locale.ROOT);
+		Set<String> given = questEnumName == null ? null : QUEST_GIVEN.get(questEnumName);
+		if (given != null && given.contains(lowerName))
+		{
+			return true;
+		}
+		String lowerTip = tooltip == null ? "" : tooltip.toLowerCase(java.util.Locale.ROOT);
+		if (lowerTip.contains("obtained during the quest") || lowerTip.contains("you can get another from"))
+		{
+			return true;
+		}
+		return notStarted && !inUpfrontList;
+	}
+
 	/** Any dose of any antifire potion, for quests with a dragon fight; the caller adds it to the needs list. */
 	public static Need antifireNeed()
 	{

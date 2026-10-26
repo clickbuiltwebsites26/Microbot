@@ -327,8 +327,75 @@ public class QuestCombatHandler
 			return false;
 		}
 
+		QuestCombatLoadout global = QuestCombatStore.loadGlobal();
+		boolean swapUnanswered = false;
+		try
+		{
+			for (QuestCombatDetector.Fight fight : QuestCombatDetector.enumerateFights(quest))
+			{
+				// the global default carries no per-fight rows, so it can never answer a style swap
+				swapUnanswered |= fight.needsSwap;
+			}
+		}
+		catch (RuntimeException e)
+		{
+			swapUnanswered = true;
+		}
+		if (decidePrompt(config.get().setupPrompt(), false, global != null, questHasFights, swapUnanswered)
+			== PromptDecision.AUTO_APPLY)
+		{
+			loadout = autoLoadout(global);
+			Microbot.log("Quest helper: using the last used setup for " + quest.getQuest().getName()
+				+ (global == null ? " (no saved setup yet, bringing nothing extra)" : "")
+				+ " without asking", Level.INFO);
+			phase = Phase.ACTIVE;
+			snapshotUserItems();
+			return false;
+		}
+
 		phase = Phase.PROMPTING;
 		return awaitAnswer(quest);
+	}
+
+	/** Whether to apply a setup silently or show the dialog; pure so it can be tested. */
+	enum PromptDecision
+	{
+		AUTO_APPLY, SHOW
+	}
+
+	static PromptDecision decidePrompt(QuestHelperConfig.SetupPromptOption policy, boolean hasPerQuest,
+		boolean hasGlobal, boolean hasFights, boolean needsSwapUnanswered)
+	{
+		if (hasPerQuest || policy == QuestHelperConfig.SetupPromptOption.NEVER)
+		{
+			return PromptDecision.AUTO_APPLY;
+		}
+		if (policy == QuestHelperConfig.SetupPromptOption.ALWAYS)
+		{
+			return PromptDecision.SHOW;
+		}
+		if (!hasFights)
+		{
+			return PromptDecision.AUTO_APPLY;
+		}
+		return hasGlobal && !needsSwapUnanswered ? PromptDecision.AUTO_APPLY : PromptDecision.SHOW;
+	}
+
+	/** The global default without per-fight rows (Auto style, default swap kits), or a bare loadout. */
+	static QuestCombatLoadout autoLoadout(QuestCombatLoadout global)
+	{
+		if (global == null)
+		{
+			return QuestCombatLoadout.bare();
+		}
+		QuestCombatLoadout copy = QuestCombatLoadout.fromJson(global.toJson());
+		if (copy == null)
+		{
+			return QuestCombatLoadout.bare();
+		}
+		copy.setFights(new java.util.LinkedHashMap<>());
+		copy.setStyle(QuestCombatLoadout.Style.AUTO);
+		return copy.normalised();
 	}
 
 	private boolean awaitAnswer(QuestHelper quest)
@@ -360,6 +427,12 @@ public class QuestCombatHandler
 			case SAVE:
 			case SKIP:
 				QuestCombatStore.save(questKey, answer.loadout);
+				QuestCombatStore.saveGlobal(answer.loadout);
+				if (answer.dontAskAgain)
+				{
+					Microbot.getConfigManager().setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "setupPrompt",
+						QuestHelperConfig.SetupPromptOption.NEVER);
+				}
 				loadout = answer.loadout;
 				phase = Phase.ACTIVE;
 				snapshotUserItems();
@@ -417,6 +490,7 @@ public class QuestCombatHandler
 		QuestCombatSetupDialog.Context context = new QuestCombatSetupDialog.Context();
 		context.obtainMissingItems = config.get().obtainMissingItems().name();
 		context.questName = quest.getQuest().getName();
+		context.defaults = QuestCombatStore.loadGlobal();
 		context.hasFights = questHasFights;
 		List<String> notes = quest.getCombatRequirements();
 		if (notes != null)

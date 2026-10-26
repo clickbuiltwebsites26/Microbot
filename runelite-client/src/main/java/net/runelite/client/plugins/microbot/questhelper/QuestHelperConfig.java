@@ -306,6 +306,37 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "setupPrompt",
+			name = "Quest setup prompt",
+			description = "When to show the quest setup dialog. Only when needed asks for quests with fights the last used setup cannot answer; Never always uses the last used setup.",
+			section = microbotSection
+	)
+	default SetupPromptOption setupPrompt() {
+		return SetupPromptOption.ONLY_WHEN_NEEDED;
+	}
+
+	@Getter
+	enum SetupPromptOption
+	{
+		ONLY_WHEN_NEEDED("Only when needed"),
+		ALWAYS("Always"),
+		NEVER("Never");
+
+		private final String display;
+
+		SetupPromptOption(String display)
+		{
+			this.display = display;
+		}
+
+		@Override
+		public String toString()
+		{
+			return display;
+		}
+	}
+
+	@ConfigItem(
 			keyName = "preflightQuestItems",
 			name = "Check and buy all quest items before starting",
 			description = "Before each quest, check that the items the whole quest needs are on you or in your bank, and buy what is missing from the Grand Exchange.",
