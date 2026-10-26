@@ -847,54 +847,75 @@ public class Pathfinder implements Runnable {
         runVaried();
     }
 
-    private int variedBaseLength() {
-        int[] base = {-1};
+    /**
+     * Seeded variation, bounded by pathfinder cost against an unjittered base route measured first. A varied route
+     * is dropped when it costs more than the bound, adds a transport the base route did not use (only local ones,
+     * and only within 10 percent), or repeats a recent route; the base route is the fallback.
+     */
+    private void runVaried() {
+        long[] baseCost = {-1L};
+        Set<String> baseTransports = new HashSet<>();
         PathJitter.withoutJitter(() -> {
             runSearch();
             if (terminationReason == PathTerminationReason.TARGET_REACHED && !getPath().isEmpty()) {
-                base[0] = PathJitter.routeLength(getPath());
+                baseCost[0] = selectedPathCost;
+                for (PathEdge edge : getPathEdges()) {
+                    if (edge.isTransport()) {
+                        baseTransports.add(transportKey(edge));
+                    }
+                }
             }
         });
-        return base[0];
-    }
-
-    /** Seeded variation with a runtime length bound and a short per-key route history; falls back to the base route. */
-    private void runVaried() {
-        int baseLen = -1;
+        if (baseCost[0] < 0 || cancelled) {
+            return; // the base search is the result (failure, cutoff or cancel)
+        }
         for (int attempt = 0; attempt < 3 && !cancelled; attempt++) {
             if (attempt > 0) {
                 PathJitter.reroll(jitterKey, System.currentTimeMillis(), start, (Integer) jitterKey);
             }
             runSearch();
             if (terminationReason != PathTerminationReason.TARGET_REACHED || getPath().isEmpty()) {
-                return;
+                break;
             }
-            List<WorldPoint> route = getPath();
-            int len = PathJitter.routeLength(route);
-            boolean needsBase = !PathJitter.withinBound(len, minChebyshevStartToAnyTarget());
-            if (needsBase) {
-                if (baseLen < 0) {
-                    baseLen = variedBaseLength();
-                    if (baseLen < 0) {
-                        return;
+            List<PathEdge> edges = getPathEdges();
+            boolean newLocal = false;
+            boolean newForbidden = false;
+            long penalties = 0;
+            for (PathEdge edge : edges) {
+                int to = WorldPointUtil.packWorldPoint(edge.getTo());
+                if (edge.isTransport()) {
+                    penalties += PathJitter.transportPenalty(to);
+                    if (!baseTransports.contains(transportKey(edge))) {
+                        if (PathJitter.mayAddTransport(edge.getTransport().getType())) {
+                            newLocal = true;
+                        } else {
+                            newForbidden = true;
+                        }
                     }
-                }
-                if (!PathJitter.withinBound(len, baseLen)) {
-                    continue;
+                } else if (targets.contains(to)) {
+                    penalties += targets.size() > 1 ? PathJitter.targetPenalty(to) : 0;
+                } else {
+                    penalties += PathJitter.penalty(to);
                 }
             }
-            int hash = PathJitter.routeHash(route);
+            long variedCost = Math.max(0L, selectedPathCost - penalties);
+            if (!PathJitter.acceptVaried(variedCost, baseCost[0], newLocal, newForbidden)) {
+                continue;
+            }
+            int hash = PathJitter.routeHash(getPath());
             if (attempt == 2 || !PathJitter.seenRoute(jitterKey, hash)) {
                 PathJitter.recordRoute(jitterKey, hash);
-                if (needsBase) {
-                    runSearch(); // the base measurement overwrote the state; same seed gives the same route
-                }
                 return;
             }
         }
         if (!cancelled) {
             PathJitter.withoutJitter(this::runSearch);
         }
+    }
+
+    /** Identity of a used transport that survives config copies: its type and both ends. */
+    private static String transportKey(PathEdge edge) {
+        return edge.getTransport().getType() + ":" + edge.getFrom() + ">" + edge.getTo();
     }
 
     private void runSearch() {

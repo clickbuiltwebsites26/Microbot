@@ -168,6 +168,40 @@ public final class PathJitter
         return len;
     }
 
+    /** Cost bound: a varied route may cost at most this much more than the base route (pathfinder cost, jumps included). */
+    public static final double MAX_COST_FACTOR = 1.2;
+    /** A transport the base route did not use may only come in when the whole route stays within this factor. */
+    public static final double NEW_TRANSPORT_COST_FACTOR = 1.1;
+
+    /**
+     * Variation may only add short local transports (doors, stairs, shortcuts); never teleports, quetzals,
+     * charter ships, boats, fairy rings, gliders and the like.
+     */
+    public static boolean mayAddTransport(net.runelite.client.plugins.microbot.shortestpath.TransportType type)
+    {
+        return type == net.runelite.client.plugins.microbot.shortestpath.TransportType.TRANSPORT
+            || type == net.runelite.client.plugins.microbot.shortestpath.TransportType.AGILITY_SHORTCUT
+            || type == net.runelite.client.plugins.microbot.shortestpath.TransportType.GRAPPLE_SHORTCUT;
+    }
+
+    /**
+     * Whether a varied route is acceptable against the base route.
+     *
+     * @param variedCost    pathfinder cost of the varied route without the jitter penalties
+     * @param baseCost      pathfinder cost of the base route
+     * @param newLocal      the varied route uses a local transport the base route did not
+     * @param newForbidden  the varied route uses a transport the base route did not and variation may not add
+     */
+    public static boolean acceptVaried(long variedCost, long baseCost, boolean newLocal, boolean newForbidden)
+    {
+        if (newForbidden)
+        {
+            return false;
+        }
+        double factor = newLocal ? NEW_TRANSPORT_COST_FACTOR : MAX_COST_FACTOR;
+        return variedCost <= (long) Math.floor(baseCost * factor + 1e-6);
+    }
+
     public static boolean withinBound(int variedLength, int baseLength)
     {
         return variedLength <= Math.ceil(baseLength * MAX_LENGTH_FACTOR);
