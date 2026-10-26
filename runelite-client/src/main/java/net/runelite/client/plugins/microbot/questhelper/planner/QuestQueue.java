@@ -62,6 +62,8 @@ public final class QuestQueue
 	private Data data = new Data();
 	/** Runtime only: the combined preflight of this run finished. */
 	private volatile boolean preflightDone;
+	/** Runtime only: put a quest's unmet requirements in front of it (the Agent Server can turn this off). */
+	private volatile boolean resolveRequirements = true;
 	/** Runtime only: random mode rests until this time (epoch ms). */
 	private volatile long pauseUntilMs;
 
@@ -146,7 +148,10 @@ public final class QuestQueue
 		data.entries = new ArrayList<>(entries);
 		for (QuestProfile entry : entries)
 		{
-			data.profiles.put(entry.getQuestName(), entry.copy());
+			if (!entry.isStep())
+			{
+				data.profiles.put(entry.getQuestName(), entry.copy());
+			}
 		}
 		data.index = 0;
 		data.active = false;
@@ -385,7 +390,37 @@ public final class QuestQueue
 		{
 			return new ArrayList<>();
 		}
-		return new ArrayList<>(data.entries.subList(data.index, data.entries.size()));
+		List<QuestProfile> out = new ArrayList<>();
+		for (QuestProfile entry : data.entries.subList(data.index, data.entries.size()))
+		{
+			if (!entry.isStep())
+			{
+				out.add(entry);
+			}
+		}
+		return out;
+	}
+
+	/** Inserts entries just before the one being run (fixed mode), so they run first. False in random mode. */
+	public synchronized boolean insertBeforeCurrent(List<QuestProfile> steps)
+	{
+		if (!data.active || data.mode == Mode.RANDOM || steps.isEmpty())
+		{
+			return false;
+		}
+		data.entries.addAll(data.index, steps);
+		save();
+		return true;
+	}
+
+	public boolean resolveRequirements()
+	{
+		return resolveRequirements;
+	}
+
+	public void setResolveRequirements(boolean value)
+	{
+		resolveRequirements = value;
 	}
 
 	public boolean isPreflightDone()

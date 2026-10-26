@@ -43,6 +43,10 @@ public final class QuestQueueRequest
 	public Integer maxSpendPerQuest;
 	/** True (the default for the Agent Server) approves every purchase up front; false keeps the normal dialogs. */
 	public boolean approve = true;
+	/** Put each quest's unmet requirements (prerequisites, training, boosts) in front of it; default true. */
+	public boolean resolveRequirements = true;
+	/** Skill to Hub plugin name, when the body sets it. */
+	public java.util.Map<String, Object> skillPlugins;
 
 	private QuestQueueRequest()
 	{
@@ -68,6 +72,14 @@ public final class QuestQueueRequest
 		if (body.get("approve") instanceof Boolean)
 		{
 			request.approve = (Boolean) body.get("approve");
+		}
+		if (body.get("resolveRequirements") instanceof Boolean)
+		{
+			request.resolveRequirements = (Boolean) body.get("resolveRequirements");
+		}
+		if (body.get("skillPlugins") instanceof Map)
+		{
+			request.skillPlugins = (Map<String, Object>) body.get("skillPlugins");
 		}
 		if (body.get("fullyAutomated") instanceof Boolean)
 		{

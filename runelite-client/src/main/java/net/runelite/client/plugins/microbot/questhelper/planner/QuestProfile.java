@@ -57,6 +57,32 @@ public class QuestProfile
 	private boolean reviewed;
 	/** Show the supplies section of the purchase dialog when this quest starts; off after Do not ask again. */
 	private boolean askSupplies = true;
+	/** Requirement-plan step instead of a quest: "TRAIN" or "BOOST"; null for a quest. */
+	private String stepKind;
+	private String stepSkill = "";
+	private int stepLevel;
+	/** The quest this step was added for. */
+	private String stepFor = "";
+
+	public boolean isStep()
+	{
+		return stepKind != null && !stepKind.isEmpty();
+	}
+
+	/** A queue entry that trains or boosts a skill ahead of {@code forQuest}. */
+	public static QuestProfile step(String kind, String skill, int level, String forQuest)
+	{
+		QuestProfile profile = new QuestProfile();
+		profile.stepKind = kind;
+		profile.stepSkill = skill;
+		profile.stepLevel = level;
+		profile.stepFor = forQuest;
+		profile.questName = ("TRAIN".equals(kind) ? "Train " : "Boost ") + skill.charAt(0)
+			+ skill.substring(1).toLowerCase(java.util.Locale.ROOT) + " to " + level;
+		profile.reviewed = true;
+		profile.askSupplies = false;
+		return profile;
+	}
 
 	/** One thing a supply wants bought: {@code ids} is empty when only the name is known. */
 	public static final class SupplyLine

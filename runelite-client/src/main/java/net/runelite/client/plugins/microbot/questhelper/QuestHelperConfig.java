@@ -448,6 +448,16 @@ public interface QuestHelperConfig extends Config
 	}
 
 	@ConfigItem(
+			keyName = "skillPlugins",
+			name = "Skill training plugins",
+			description = "When a quest needs a skill level, train it with a Hub plugin: Skill=Plugin name pairs separated by semicolons, for example Fishing=Auto Fishing;Mining=Motherlode Mine. The plugin is started and stopped when the level is reached. Skills without an entry use the built-in trainers, else the quest is left out with a blocker.",
+			section = microbotSection
+	)
+	default String skillPlugins() {
+		return "";
+	}
+
+	@ConfigItem(
 			keyName = "minStaminaPotions",
 			name = "Keep at least N stamina potions (0-4)",
 			description = "Default for every quest: keep this many stamina potions in the inventory when the step allows items. A quest profile can override it. Banked for steps that forbid carrying items and fetched again at the next bank visit.",

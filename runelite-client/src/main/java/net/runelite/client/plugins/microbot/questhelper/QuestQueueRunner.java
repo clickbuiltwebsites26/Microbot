@@ -11,6 +11,8 @@ import net.runelite.client.plugins.microbot.questhelper.planner.QuestPlannerLaun
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile;
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestQueue;
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestRandomPicker;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestRequirementPlanner;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestRequirementResolver;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
 import org.slf4j.event.Level;
@@ -52,6 +54,10 @@ public final class QuestQueueRunner
 	private volatile QuestApproval windowApproval;
 
 	private final Host host;
+	private final RequirementStepRunner stepRunner = new RequirementStepRunner(this);
+	/** The quest whose requirements were already checked before it started (reset when the queue is idle). */
+	private String requirementsChecked = "";
+	private final java.util.Map<String, Integer> stepInsertions = new java.util.HashMap<>();
 	private final Random random = new Random();
 	private long lastStartAttemptMs;
 
@@ -148,7 +154,10 @@ public final class QuestQueueRunner
 		QuestQueue queue = queue();
 		if (!queue.isActive())
 		{
-			return false;
+			stepRunner.abort();
+			requirementsChecked = "";
+			stepInsertions.clear();
+			return selectedQuestGate();
 		}
 		QuestHelperPlugin plugin = host.plugin();
 		if (now < queue.pauseUntilMs())
@@ -167,6 +176,10 @@ public final class QuestQueueRunner
 				return false;
 			}
 			return pickNext(now);
+		}
+		if (current.isStep())
+		{
+			return runStep(current);
 		}
 		if (!queue.isRandom() && !queue.isPreflightDone() && plugin.getSelectedQuest() == null)
 		{
@@ -209,6 +222,10 @@ public final class QuestQueueRunner
 		{
 			return true;
 		}
+		if (requirementsGate(current))
+		{
+			return true;
+		}
 		lastStartAttemptMs = now;
 		QuestPlannerLauncher.applyProfile(current);
 		Microbot.log("Quest queue: starting " + current.getQuestName() + " (" + current.getType() + ")", Level.INFO);
@@ -217,6 +234,134 @@ public final class QuestQueueRunner
 			Microbot.log("Quest queue: could not start " + current.getQuestName() + ", skipping it", Level.WARN);
 			skipCurrent("could not start");
 		}
+		return true;
+	}
+
+	private String selectedChecked = "";
+
+	/**
+	 * A quest picked by hand (no queue running) whose requirements are not met: its plan is queued in front of it,
+	 * started straight away in Fully automated mode, else shown in the planner for the player to confirm.
+	 * Returns true when it took over the quest.
+	 */
+	private boolean selectedQuestGate()
+	{
+		QuestHelperPlugin plugin = host.plugin();
+		QuestHelper selected = plugin == null ? null : plugin.getSelectedQuest();
+		if (selected == null || selected.getQuest() == null)
+		{
+			selectedChecked = "";
+			return false;
+		}
+		String name = selected.getQuest().getName();
+		if (name.equals(selectedChecked) || !queue().resolveRequirements())
+		{
+			return false;
+		}
+		selectedChecked = name;
+		QuestRequirementResolver.Plan plan = QuestRequirementPlanner.plan(name);
+		if (plan == null || plan.targetDone || !plan.hasPrerequisites() && !plan.hasBlockers())
+		{
+			return false;
+		}
+		if (plan.hasBlockers())
+		{
+			Microbot.log("Quest helper: " + name + " has requirements that cannot be automated: "
+				+ String.join("; ", plan.blockers), Level.WARN);
+			return false;
+		}
+		List<QuestProfile> entries = QuestRequirementPlanner.entriesOf(plan, QuestPlannerLauncher.profileFor(name),
+			new java.util.HashSet<>());
+		Microbot.log("Quest helper: " + name + " needs more first: " + plan.tree(), Level.INFO);
+		shutDownSelected(plugin);
+		selectedChecked = "";
+		if (Microbot.getConfigManager() != null
+			&& "true".equals(Microbot.getConfigManager().getConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP,
+				"fullyAutomated")))
+		{
+			QuestPlannerLauncher.startRun(plugin, entries, QuestApproval.everything(), false);
+			queue().setResolveRequirements(true);
+		}
+		else
+		{
+			queue().setEntries(entries);
+			QuestPlannerLauncher.open(plugin);
+		}
+		return true;
+	}
+
+	/** Runs a training or boost entry of a requirement plan. */
+	private boolean runStep(QuestProfile step)
+	{
+		RequirementStepRunner.Result result = stepRunner.tick(step);
+		if (result == RequirementStepRunner.Result.DONE)
+		{
+			queue().advance();
+		}
+		else if (result == RequirementStepRunner.Result.FAILED)
+		{
+			String reason = step.getQuestName() + " failed: " + stepRunner.failure();
+			Microbot.log("Quest queue: " + reason, Level.WARN);
+			QuestQueue queue = queue();
+			while (queue.isActive() && queue.current() != null && queue.current().isStep()
+				&& step.getStepFor().equals(queue.current().getStepFor()))
+			{
+				queue.advance();
+			}
+			QuestProfile target = queue.isActive() ? queue.current() : null;
+			if (target != null && target.getQuestName().equals(step.getStepFor()))
+			{
+				skipCurrent(reason);
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Re-evaluates the quest's requirements right before it starts: anything the plan still wants (a prerequisite, a
+	 * skill level, quest points) is queued in front of it, a blocker skips it. Returns true while it used the tick.
+	 */
+	private boolean requirementsGate(QuestProfile current)
+	{
+		QuestQueue queue = queue();
+		if (!queue.resolveRequirements() || queue.isRandom() || current.getQuestName().equals(requirementsChecked))
+		{
+			return false;
+		}
+		requirementsChecked = current.getQuestName();
+		QuestRequirementResolver.Plan plan = QuestRequirementPlanner.plan(current.getQuestName());
+		if (plan == null || plan.targetDone || !plan.hasPrerequisites() && !plan.hasBlockers())
+		{
+			return false;
+		}
+		if (plan.hasBlockers())
+		{
+			skipCurrent("requirements cannot be automated: " + String.join("; ", plan.blockers));
+			return true;
+		}
+		List<QuestProfile> before = new ArrayList<>();
+		for (QuestProfile entry : QuestRequirementPlanner.entriesOf(plan, current, new java.util.HashSet<>()))
+		{
+			if (entry != current)
+			{
+				String key = entry.getQuestName();
+				int count = stepInsertions.merge(key, 1, Integer::sum);
+				if (count > 2)
+				{
+					skipCurrent("requirement '" + key + "' did not hold after two attempts");
+					return true;
+				}
+				before.add(entry);
+			}
+		}
+		if (before.isEmpty())
+		{
+			return false;
+		}
+		Microbot.log("Quest queue: " + current.getQuestName() + " needs " + before.size()
+			+ " more step(s) first: " + plan.tree(), Level.INFO);
+		requirementsChecked = "";
+		queue.insertBeforeCurrent(before);
 		return true;
 	}
 

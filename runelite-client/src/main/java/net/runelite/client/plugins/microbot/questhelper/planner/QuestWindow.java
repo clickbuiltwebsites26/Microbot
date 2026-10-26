@@ -148,6 +148,8 @@ public final class QuestWindow
 		private final JPanel itemsHost = new JPanel(new BorderLayout());
 		private final JPanel combatHost = new JPanel(new BorderLayout());
 		private final JPanel purchasesHost = new JPanel(new BorderLayout());
+		private final JPanel planHost = new JPanel(new BorderLayout());
+		private int planVersion;
 		private final DefaultListModel<String> queueModel = new DefaultListModel<>();
 		private final JList<String> queueList = new JList<>(queueModel);
 		private final DefaultListModel<QuestPlannerFilter.Row> questModel = new DefaultListModel<>();
@@ -222,6 +224,7 @@ public final class QuestWindow
 			tabs.addTab("Items & supplies", itemsHost);
 			tabs.addTab("Gear & combat", combatHost);
 			tabs.addTab("Purchases", purchasesHost);
+			tabs.addTab("Requirements plan", planHost);
 			for (int i = 0; i < tabs.getTabCount() && i < 9; i++)
 			{
 				tabs.setMnemonicAt(i, KeyEvent.VK_1 + i);
@@ -595,9 +598,116 @@ public final class QuestWindow
 				case "Purchases":
 					showPurchases();
 					break;
+				case "Requirements plan":
+					showPlan(profile);
+					break;
 				default:
 					break;
 			}
+		}
+
+		// ---- requirements plan ----
+
+		private void showPlan(QuestProfile profile)
+		{
+			planHost.removeAll();
+			if (profile == null)
+			{
+				planHost.add(new JLabel("  Add a quest to the queue first."), BorderLayout.NORTH);
+				planHost.revalidate();
+				planHost.repaint();
+				return;
+			}
+			final String questName = profile.isStep() ? profile.getStepFor() : profile.getQuestName();
+			planHost.add(new JLabel("  Working out what " + questName + " needs..."), BorderLayout.NORTH);
+			planHost.revalidate();
+			planHost.repaint();
+			final int mine = ++planVersion;
+			Thread thread = new Thread(() ->
+			{
+				QuestRequirementResolver.Plan plan;
+				try
+				{
+					plan = QuestRequirementPlanner.plan(questName);
+				}
+				catch (RuntimeException e)
+				{
+					plan = null;
+				}
+				final QuestRequirementResolver.Plan result = plan;
+				SwingUtilities.invokeLater(() ->
+				{
+					if (mine == planVersion)
+					{
+						buildPlan(questName, result);
+					}
+				});
+			}, "quest-window-plan");
+			thread.setDaemon(true);
+			thread.start();
+		}
+
+		private void buildPlan(String questName, QuestRequirementResolver.Plan plan)
+		{
+			planHost.removeAll();
+			JPanel panel = new JPanel();
+			panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+			panel.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+			panel.add(heading("Requirements plan: " + questName));
+			if (plan == null)
+			{
+				panel.add(label("Could not read the requirements of this quest."));
+			}
+			else if (plan.targetDone || !plan.hasPrerequisites() && !plan.hasBlockers())
+			{
+				panel.add(label("Nothing to do first: the requirements are met."));
+			}
+			else
+			{
+				panel.add(label("These run in front of the quest, in this order. Untick a step to skip it "
+					+ "(the quest may then fail its requirement)."));
+				for (QuestRequirementResolver.Step step : plan.steps)
+				{
+					StringBuilder text = new StringBuilder();
+					for (int i = 0; i < step.depth; i++)
+					{
+						text.append("    ");
+					}
+					text.append(step.label());
+					if (step.etaMinutes > 0)
+					{
+						text.append("   ~").append(step.etaMinutes).append(" min");
+					}
+					if (!step.reason.isEmpty())
+					{
+						text.append("   (").append(step.reason).append(")");
+					}
+					JCheckBox allow = new JCheckBox(text.toString(), !step.skipped);
+					allow.setAlignmentX(Component.LEFT_ALIGNMENT);
+					allow.setEnabled(step.neededBy != null);
+					final String key = step.key();
+					allow.addActionListener(e -> QuestRequirementPlanner.setSkipped(key, !allow.isSelected()));
+					panel.add(allow);
+				}
+				panel.add(label("Estimated total: about " + plan.totalEtaMinutes() + " min"));
+				panel.add(label("Training buys its supplies bank first, then at the Grand Exchange, inside the same "
+					+ "approval and the max spend per quest as the quests."));
+			}
+			if (plan != null && plan.hasBlockers())
+			{
+				panel.add(heading("Blockers (cannot be automated; this quest is left out)"));
+				for (String blocker : plan.blockers)
+				{
+					JLabel warn = label(blocker);
+					warn.setForeground(new Color(200, 30, 30));
+					panel.add(warn);
+				}
+			}
+			JScrollPane outer = new JScrollPane(panel);
+			outer.getVerticalScrollBar().setUnitIncrement(16);
+			planHost.add(outer, BorderLayout.CENTER);
+			planHost.revalidate();
+			planHost.repaint();
 		}
 
 		private void showItems(QuestProfile profile)
@@ -606,6 +716,14 @@ public final class QuestWindow
 			if (profile == null)
 			{
 				itemsHost.add(new JLabel("  Add a quest to the queue first."), BorderLayout.NORTH);
+				itemsHost.revalidate();
+				itemsHost.repaint();
+				return;
+			}
+			if (profile.isStep())
+			{
+				itemsHost.add(new JLabel("  " + profile.getQuestName() + " is a requirement step: see the "
+					+ "Requirements plan tab."), BorderLayout.NORTH);
 				itemsHost.revalidate();
 				itemsHost.repaint();
 				return;
@@ -854,6 +972,13 @@ public final class QuestWindow
 				combatHost.repaint();
 				return;
 			}
+			if (profile.isStep())
+			{
+				combatHost.add(new JLabel("  A requirement step has no gear or combat setup."), BorderLayout.NORTH);
+				combatHost.revalidate();
+				combatHost.repaint();
+				return;
+			}
 			String name = profile.getQuestName();
 			JComponent cached = panelViews.get(name);
 			if (cached != null)
@@ -928,6 +1053,10 @@ public final class QuestWindow
 			int globalMin = QuestPlannerLauncher.globalMinStamina();
 			for (QuestProfile profile : profiles)
 			{
+				if (profile.isStep())
+				{
+					continue;
+				}
 				QuestInfo info = infoFor(profile.getQuestName());
 				List<QuestInfo.ItemLine> supplies = new ArrayList<>();
 				for (QuestProfile.SupplyLine line : profile.getSupplies().buyable(profile.effectiveMinStamina(globalMin)))
@@ -1074,6 +1203,10 @@ public final class QuestWindow
 		{
 			for (QuestProfile profile : profiles)
 			{
+				if (profile.isStep())
+				{
+					continue;
+				}
 				profile.setReviewed(true);
 				queue.saveProfile(profile);
 				QuestHelper helper = QuestHelperQuest.getByName(profile.getQuestName());

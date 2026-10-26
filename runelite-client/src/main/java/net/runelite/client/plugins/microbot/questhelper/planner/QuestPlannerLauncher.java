@@ -258,7 +258,33 @@ public final class QuestPlannerLauncher
 	/** Starts a queue (fixed or random) with the given approval; null keeps the normal per-quest confirmation. */
 	public static boolean startRun(QuestHelperPlugin plugin, List<QuestProfile> entries, QuestApproval approval)
 	{
+		return startRun(plugin, entries, approval, true);
+	}
+
+	/**
+	 * As above. With {@code resolve} the unmet requirements of each quest (prerequisite quests, training, boosts) are
+	 * queued in front of it now and re-checked before each quest starts; quests that cannot be automated are dropped
+	 * and logged.
+	 */
+	public static boolean startRun(QuestHelperPlugin plugin, List<QuestProfile> wanted, QuestApproval approval,
+		boolean resolve)
+	{
 		QuestQueue queue = QuestQueue.shared();
+		List<QuestProfile> entries = wanted;
+		if (resolve && !queue.isRandom())
+		{
+			QuestRequirementPlanner.Expansion expansion = QuestRequirementPlanner.expand(wanted);
+			for (String blocker : expansion.blockers)
+			{
+				Microbot.log("Quest planner: left out, cannot be automated: " + blocker, Level.WARN);
+			}
+			entries = expansion.entries;
+			if (approval != null)
+			{
+				QuestRequirementPlanner.extendApproval(approval, entries);
+			}
+		}
+		queue.setResolveRequirements(resolve);
 		queue.setEntries(entries);
 		for (QuestProfile profile : entries)
 		{

@@ -83,6 +83,20 @@ public final class QuestApproval
 		return spent + totalGp <= (long) Math.ceil(budget * (1 + SLACK));
 	}
 
+	/** Also approves these items, adding gp to the budget (training steps added by a requirement plan). */
+	public void allow(Collection<String> names, long extraGp)
+	{
+		if (everything)
+		{
+			return;
+		}
+		for (String name : names)
+		{
+			items.add(key(name));
+		}
+		budget += Math.max(0, extraGp);
+	}
+
 	/** Counts a purchase against the budget. */
 	public void record(long totalGp)
 	{

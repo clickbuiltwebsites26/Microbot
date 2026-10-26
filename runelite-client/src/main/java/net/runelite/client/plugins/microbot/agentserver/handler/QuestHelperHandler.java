@@ -25,6 +25,8 @@ import net.runelite.client.plugins.microbot.questhelper.planner.QuestPlannerLaun
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile;
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestQueue;
 import net.runelite.client.plugins.microbot.questhelper.planner.QuestQueueRequest;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestRequirementPlanner;
+import net.runelite.client.plugins.microbot.questhelper.planner.QuestRequirementResolver;
 import net.runelite.client.plugins.microbot.questhelper.questhelpers.QuestHelper;
 import net.runelite.client.plugins.microbot.questhelper.questinfo.QuestHelperQuest;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
@@ -62,6 +64,9 @@ public class QuestHelperHandler extends AgentHandler
 				break;
 			case "/queue":
 				handleQueue(exchange);
+				break;
+			case "/requirements":
+				handleRequirements(exchange);
 				break;
 			case "/pause":
 				handlePause(exchange, true);
@@ -148,6 +153,36 @@ public class QuestHelperHandler extends AgentHandler
 		sendJson(exchange, 200, result);
 	}
 
+	/** GET /quest-helper/requirements?name=...: the plan to meet a quest's requirements (nothing is started). */
+	private void handleRequirements(HttpExchange exchange) throws IOException
+	{
+		try
+		{
+			requireGet(exchange);
+		}
+		catch (HttpMethodException e)
+		{
+			sendJson(exchange, 405, errorResponse(e.getMessage()));
+			return;
+		}
+		String name = parseQuery(exchange.getRequestURI()).get("name");
+		if (name == null || name.isEmpty())
+		{
+			sendJson(exchange, 400, errorResponse("name is required"));
+			return;
+		}
+		QuestRequirementResolver.Plan plan = QuestRequirementPlanner.plan(name);
+		if (plan == null)
+		{
+			sendJson(exchange, 404, errorResponse("Unknown quest: " + name));
+			return;
+		}
+		Map<String, Object> result = QuestRequirementPlanner.toMap(plan);
+		result.put("skillPlugins", QuestRequirementPlanner.skillPlugins().serialise());
+		result.put("builtInTrainers", net.runelite.client.plugins.microbot.questhelper.training.BuiltInTrainers.names());
+		sendJson(exchange, 200, result);
+	}
+
 	private void handleStart(HttpExchange exchange) throws IOException
 	{
 		try
@@ -180,6 +215,39 @@ public class QuestHelperHandler extends AgentHandler
 		{
 			sendJson(exchange, 409, errorResponse("Quest Helper plugin is not active"));
 			return;
+		}
+
+		Object resolveRaw = body.get("resolveRequirements");
+		boolean resolve = !(resolveRaw instanceof Boolean) || (Boolean) resolveRaw;
+		if (resolve && helperKnown(name))
+		{
+			QuestRequirementResolver.Plan plan = QuestRequirementPlanner.plan(name);
+			if (plan != null && plan.hasBlockers())
+			{
+				Map<String, Object> blocked = QuestRequirementPlanner.toMap(plan);
+				blocked.put("success", false);
+				blocked.put("error", "The requirements cannot be met automatically");
+				sendJson(exchange, 409, blocked);
+				return;
+			}
+			if (plan != null && plan.hasPrerequisites())
+			{
+				List<QuestProfile> entries = QuestRequirementPlanner.entriesOf(plan,
+					QuestPlannerLauncher.profileFor(name), new java.util.HashSet<>());
+				QuestQueue.shared().stop();
+				if (!QuestPlannerLauncher.startRun(plugin, entries, QuestApproval.everything(), false))
+				{
+					sendJson(exchange, 400, errorResponse("Nothing to run"));
+					return;
+				}
+				QuestQueue.shared().setResolveRequirements(true);
+				Map<String, Object> started = QuestRequirementPlanner.toMap(plan);
+				started.put("success", true);
+				started.put("questName", name);
+				started.put("queued", true);
+				sendJson(exchange, 200, started);
+				return;
+			}
 		}
 
 		QuestHelperConfig.ObtainMissingItemsOption obtainOption = null;
@@ -389,6 +457,14 @@ public class QuestHelperHandler extends AgentHandler
 			Microbot.getConfigManager().setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP, "maxSpendPerQuest",
 				request.maxSpendPerQuest);
 		}
+		if (request.skillPlugins != null && Microbot.getConfigManager() != null)
+		{
+			Microbot.getConfigManager().setConfiguration(QuestHelperConfig.QUEST_HELPER_GROUP,
+				net.runelite.client.plugins.microbot.questhelper.training.SkillPluginMap.CONFIG_KEY,
+				net.runelite.client.plugins.microbot.questhelper.training.SkillPluginMap.of(request.skillPlugins)
+					.serialise());
+		}
+		Map<String, Object> planOut = new LinkedHashMap<>();
 		if (request.clear)
 		{
 			queue.stop();
@@ -434,6 +510,23 @@ public class QuestHelperHandler extends AgentHandler
 					}
 				}
 			}
+			if (request.resolveRequirements && !profiles.isEmpty())
+			{
+				QuestRequirementPlanner.Expansion expansion = QuestRequirementPlanner.expand(profiles);
+				for (Map.Entry<String, QuestRequirementResolver.Plan> plan : expansion.plans.entrySet())
+				{
+					planOut.put(plan.getKey(), QuestRequirementPlanner.toMap(plan.getValue()));
+				}
+				if (!expansion.blockers.isEmpty())
+				{
+					Map<String, Object> blocked = errorResponse("The requirements cannot be met automatically");
+					blocked.put("blockers", expansion.blockers);
+					blocked.put("plans", planOut);
+					sendJson(exchange, 409, blocked);
+					return;
+				}
+				profiles = expansion.entries;
+			}
 			queue.setEntries(profiles);
 		}
 		if (request.start)
@@ -452,13 +545,24 @@ public class QuestHelperHandler extends AgentHandler
 				return;
 			}
 			if (!QuestPlannerLauncher.startRun(plugin, run,
-				request.approve ? QuestApproval.everything() : null))
+				request.approve ? QuestApproval.everything() : null, false))
 			{
 				sendJson(exchange, 400, errorResponse("Nothing to run"));
 				return;
 			}
+			queue.setResolveRequirements(request.resolveRequirements);
 		}
-		sendJson(exchange, 200, queueStatus(queue));
+		Map<String, Object> status = queueStatus(queue);
+		if (!planOut.isEmpty())
+		{
+			status.put("plans", planOut);
+		}
+		sendJson(exchange, 200, status);
+	}
+
+	private static boolean helperKnown(String name)
+	{
+		return QuestHelperQuest.getByName(name) != null;
 	}
 
 	private void handlePause(HttpExchange exchange, boolean pause) throws IOException
@@ -505,6 +609,10 @@ public class QuestHelperHandler extends AgentHandler
 		{
 			Map<String, Object> row = new LinkedHashMap<>();
 			row.put("name", profile.getQuestName());
+			if (profile.isStep())
+			{
+				row.put("step", profile.getStepKind());
+			}
 			row.put("obtain", profile.getObtain().name());
 			row.put("type", profile.getType().name());
 			row.put("minStamina", profile.getMinStamina());
