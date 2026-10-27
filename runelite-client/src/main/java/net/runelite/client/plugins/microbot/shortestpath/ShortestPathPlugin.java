@@ -1061,7 +1061,7 @@ public class ShortestPathPlugin extends Plugin {
 				}
 			}
 		}
-		if (defaultValue == TeleportationItem.NONE && "useTeleportationItems".equals(configOverrideKey)
+		if (defaultValue != TeleportationItem.INVENTORY && "useTeleportationItems".equals(configOverrideKey)
 				&& QuestWalkRule.forcesTeleportItems()) {
 			return TeleportationItem.INVENTORY;
 		}

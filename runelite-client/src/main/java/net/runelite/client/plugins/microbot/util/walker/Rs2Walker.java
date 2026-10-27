@@ -6296,6 +6296,22 @@ public class Rs2Walker {
                     clearWalledDoorClaim();
                     return WalkExit.RECENT_DOOR_EDGE_NUDGE;
                 }
+                boolean doorOnEdge = findDoorNearSegmentTimed(from, to,
+                        List.of("pay-toll", "pick-lock", "walk-through", "go-through", "open", "pass")) != null;
+                if (WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(unfulfilledDoorClaims.note(from, to), doorOnEdge)) {
+                    // The claim came from a door beside the edge; the edge itself is a plain wall. Stop waiting on it
+                    // and route around it.
+                    WebWalkLog.spInfo("walled_door_dropped | edge={}->{} — no door on the edge after repeated runs",
+                            compactWorldPoint(from), compactWorldPoint(to));
+                    if (attempted != null) {
+                        doorAttemptLedger.clearLatestAttempt();
+                    } else {
+                        clearWalledDoorClaim();
+                    }
+                    Rs2PathApi.learnBlockedEdge(from, to, "door-claim-without-door");
+                    recalculatePathForRecovery();
+                    return null;
+                }
                 routeState.doorRecoverySuppressedAtMs = now;
                 WebWalkLog.spInfo("walled_door_owned | edge={}->{} player={} state=await-door-handler",
                         compactWorldPoint(from), compactWorldPoint(to), compactWorldPoint(playerLoc));
@@ -6322,7 +6338,11 @@ public class Rs2Walker {
         }
     }
 
+    private static final WalledDoorClaimPolicy.UnfulfilledClaims unfulfilledDoorClaims =
+            new WalledDoorClaimPolicy.UnfulfilledClaims();
+
     private static void clearWalledDoorClaim() {
+        unfulfilledDoorClaims.reset();
         routeState.walledDoorEdgeFrom = null;
         routeState.walledDoorEdgeTo = null;
         routeState.walledDoorEdgeAtMs = 0L;

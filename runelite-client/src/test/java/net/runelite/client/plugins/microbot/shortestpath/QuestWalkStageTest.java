@@ -46,7 +46,8 @@ public class QuestWalkStageTest
 	@Test
 	public void stagesWidenInOrderThenGiveUp()
 	{
-		assertEquals(Stage.NAMED_ROUTES, Stage.ON_FOOT.next());
+		assertEquals(Stage.OWNED_JEWELLERY, Stage.ON_FOOT.next());
+		assertEquals(Stage.NAMED_ROUTES, Stage.OWNED_JEWELLERY.next());
 		assertEquals(Stage.CROSSINGS, Stage.NAMED_ROUTES.next());
 		assertEquals(Stage.TELEPORTS, Stage.CROSSINGS.next());
 		assertNull(Stage.TELEPORTS.next());
@@ -80,6 +81,52 @@ public class QuestWalkStageTest
 		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, item("Skills necklace: Mining Guild"), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.SHIP, "Captain Tobias", A, B), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.CHARTER_SHIP, "Trader Crewmember", A, B), ARDOUGNE));
+	}
+
+	@Test
+	public void ownedJewelleryStagePermitsOnlyTheJewelleryTeleports()
+	{
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Ring of wealth: Grand Exchange"), false));
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Amulet of glory: Edgeville"), false));
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Games necklace: Burthorpe"), false));
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Ring of dueling: Castle Wars"), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Varrock Teleport (tablet)"), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, npc(TransportType.SHIP, "Veos", A, B), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, plain(TransportType.QUETZAL), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, plain(TransportType.FAIRY_RING), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY,
+			new Transport(null, B, "Varrock Teleport", TransportType.TELEPORTATION_SPELL, true, 4), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY,
+			new Transport(null, B, "Ring of wealth: x", TransportType.TELEPORTATION_MINIGAME, true, 4), false));
+	}
+
+	@Test
+	public void skillsNecklaceJoinsTheJewelleryStageForArdougneTargetsOnly()
+	{
+		Transport necklace = item("Skills necklace: Fishing Guild");
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, necklace, true));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, necklace, false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Skills necklace: Mining Guild"), true));
+	}
+
+	@Test
+	public void jewelleryReplacesAWalkOnlyWhenTheWalkIsLongAndTheTeleportMuchCheaper()
+	{
+		assertFalse("short walk", QuestWalkRule.jewelleryWorthTrying(120));
+		assertTrue(QuestWalkRule.jewelleryWorthTrying(400));
+		assertTrue(QuestWalkRule.jewelleryBeatsWalking(400, 100));
+		assertTrue(QuestWalkRule.jewelleryBeatsWalking(400, 239));
+		assertFalse("only just cheaper", QuestWalkRule.jewelleryBeatsWalking(400, 300));
+		assertFalse("lands farther away", QuestWalkRule.jewelleryBeatsWalking(400, 500));
+		assertFalse("short walk is never replaced", QuestWalkRule.jewelleryBeatsWalking(100, 5));
+		assertFalse("no jewellery route found", QuestWalkRule.jewelleryBeatsWalking(400, -1));
+	}
+
+	@Test
+	public void jewelleryAnnouncementNamesTheItemAndDestination()
+	{
+		assertEquals("Quest walk: teleporting via [Ring of wealth: Grand Exchange] toward T",
+			QuestWalkRule.describe(Stage.OWNED_JEWELLERY, "T", Collections.singleton("Ring of wealth: Grand Exchange")));
 	}
 
 	@Test

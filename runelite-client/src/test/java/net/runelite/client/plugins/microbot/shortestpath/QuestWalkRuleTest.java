@@ -42,6 +42,13 @@ public class QuestWalkRuleTest
 
 	private Pathfinder run(WorldPoint from, WorldPoint to) throws Exception
 	{
+		return run(from, to, new Transport[0]);
+	}
+
+	/** Runs a quest walk where the player owns {@code teleports} (their item teleports are usable). */
+	@SuppressWarnings("unchecked")
+	private Pathfinder run(WorldPoint from, WorldPoint to, Transport... teleports) throws Exception
+	{
 		PathfinderConfig config = new PathfinderConfig(collisionMap, all, Collections.emptyList(), null, null);
 		Field f = PathfinderConfig.class.getDeclaredField("calculationCutoffMillis");
 		f.setAccessible(true);
@@ -53,6 +60,12 @@ public class QuestWalkRuleTest
 				config.getTransports().put(e.getKey(), e.getValue());
 				config.getTransportsPacked().put(WorldPointUtil.packWorldPoint(e.getKey()), e.getValue());
 			}
+		}
+		Field owned = PathfinderConfig.class.getDeclaredField("usableTeleports");
+		owned.setAccessible(true);
+		for (Transport teleport : teleports)
+		{
+			((Set<Transport>) owned.get(config)).add(teleport);
 		}
 		Pathfinder pf = new Pathfinder(config, from, to);
 		// a quest walk: the rule is on, crossing mode is on and the quest loop is walking
@@ -157,6 +170,87 @@ public class QuestWalkRuleTest
 			boolean inFalador = e.getFrom().getX() > 2940 && e.getFrom().getX() < 3015 && e.getFrom().getY() < 3360;
 			assertFalse("left the ground floor in Falador", inFalador && e.getTo().getPlane() > 0);
 		}
+	}
+
+	private static Transport itemTeleport(String display, WorldPoint destination)
+	{
+		return new Transport(destination, display, TransportType.TELEPORTATION_ITEM, true, 31,
+			Collections.<Set<Integer>>emptySet());
+	}
+
+	private static boolean usesTeleport(Pathfinder pf, String display)
+	{
+		for (PathEdge e : pf.getPathEdges())
+		{
+			if (e.isTransport() && display.equals(e.getTransport().getDisplayInfo()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static final WorldPoint ARDOUGNE_CASTLE = new WorldPoint(2660, 3300, 0);
+	private static final WorldPoint GRAND_EXCHANGE = new WorldPoint(3166, 3485, 0);
+
+	/** Druidic Ritual: Ardougne to the Grand Exchange is long on foot, and the Ring of wealth lands beside it. */
+	@Test
+	public void aLongTripUsesTheRingOfWealthTheTeleportOwned() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Transport ring = itemTeleport("Ring of wealth: Grand Exchange", new WorldPoint(3163, 3478, 0));
+		Pathfinder pf = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, ring);
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		assertTrue("expected the ring in " + pf.getPathEdges(), usesTeleport(pf, "Ring of wealth: Grand Exchange"));
+	}
+
+	@Test
+	public void aLongTripUsesTheAmuletOfGloryTheTeleportOwned() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Transport glory = itemTeleport("Amulet of glory: Edgeville", new WorldPoint(3087, 3496, 0));
+		Pathfinder pf = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, glory);
+		assertTrue("expected the amulet in " + pf.getPathEdges(), usesTeleport(pf, "Amulet of glory: Edgeville"));
+	}
+
+	@Test
+	public void aShortTripStaysOnFootEvenWithJewellery() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Transport ring = itemTeleport("Ring of wealth: Grand Exchange", new WorldPoint(3163, 3478, 0));
+		Pathfinder pf = run(new WorldPoint(3222, 3218, 0), new WorldPoint(3092, 3243, 0), ring);
+		assertFalse(usesTeleport(pf, "Ring of wealth: Grand Exchange"));
+	}
+
+	@Test
+	public void withoutJewelleryALongTripStaysOnFoot() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Pathfinder pf = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE);
+		for (PathEdge e : pf.getPathEdges())
+		{
+			assertFalse("used " + e.getTransport(),
+				e.isTransport() && QuestWalkRule.isRestricted(e.getTransport()));
+		}
+	}
+
+	@Test
+	public void otherItemTeleportsAreNotJewellery() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Transport tablet = itemTeleport("Varrock Teleport (tablet)", new WorldPoint(3213, 3424, 0));
+		Pathfinder pf = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, tablet);
+		assertFalse(usesTeleport(pf, "Varrock Teleport (tablet)"));
+	}
+
+	@Test
+	public void aTeleportThatLandsFartherAwayIsNotTaken() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		// Yanille is a long walk from Ardougne, but the ring lands at the Grand Exchange, far the other way
+		Transport ring = itemTeleport("Ring of wealth: Grand Exchange", new WorldPoint(3163, 3478, 0));
+		Pathfinder pf = run(ARDOUGNE_CASTLE, new WorldPoint(2606, 3093, 0), ring);
+		assertFalse(usesTeleport(pf, "Ring of wealth: Grand Exchange"));
 	}
 
 	@Test

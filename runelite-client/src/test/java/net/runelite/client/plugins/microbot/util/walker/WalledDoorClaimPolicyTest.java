@@ -12,6 +12,38 @@ public class WalledDoorClaimPolicyTest {
     private static final WorldPoint FROM = new WorldPoint(1770, 3589, 0);
     private static final WorldPoint TO = new WorldPoint(1770, 3590, 0);
 
+    /** Ardougne timber house, plane 1: a claim on a wall edge that has no door, held by a door beside it. */
+    @Test
+    public void aClaimOnAnEdgeWithoutADoorIsDroppedAfterRepeatedFruitlessRuns() {
+        WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
+        WorldPoint from = new WorldPoint(2617, 3294, 1);
+        WorldPoint to = new WorldPoint(2617, 3295, 1);
+        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
+        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
+        assertTrue(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
+    }
+
+    @Test
+    public void aRealDoorOnTheEdgeKeepsItsClaim() {
+        WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
+        int runs = 0;
+        for (int i = 0; i < 6; i++) {
+            runs = claims.note(FROM, TO);
+        }
+        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(runs, true));
+    }
+
+    @Test
+    public void anotherEdgeOrAResetRestartsTheCount() {
+        WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
+        claims.note(FROM, TO);
+        claims.note(FROM, TO);
+        assertEquals(1, claims.note(TO, new WorldPoint(1771, 3589, 0)));
+        claims.note(FROM, TO);
+        claims.reset();
+        assertEquals(1, claims.note(FROM, TO));
+    }
+
     @Test
     public void adjacentClaimDispatchesDoorHandlerInsteadOfReplan() {
         assertEquals(WalledDoorClaimPolicy.Decision.HANDLE_AT_EDGE,

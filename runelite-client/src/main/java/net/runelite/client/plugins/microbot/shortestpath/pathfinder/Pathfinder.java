@@ -856,6 +856,10 @@ public class Pathfinder implements Runnable {
                 extendedCutoffMillis = -1L;
             }
         }
+        if (crossing && !cancelled && terminationReason == PathTerminationReason.TARGET_REACHED) {
+            preferOwnedJewelleryForLongWalk();
+            return;
+        }
         boolean widen = QuestWalkRule.shouldWiden(crossing && !cancelled, terminationReason, sealedTargetMode);
         if (!widen) {
             return;
@@ -906,6 +910,25 @@ public class Pathfinder implements Runnable {
         }
     }
 
+    /**
+     * A quest walk that reaches its target on foot is still compared with the teleports of jewellery the player owns:
+     * a long walk is replaced by the teleport when that route costs well under the walk, otherwise the walk stands.
+     */
+    private void preferOwnedJewelleryForLongWalk() {
+        long onFootCost = selectedPathCost;
+        if (!QuestWalkRule.jewelleryWorthTrying(onFootCost)) {
+            return;
+        }
+        OnFootResult onFoot = new OnFootResult();
+        QuestWalkRule.runAt(QuestWalkRule.Stage.OWNED_JEWELLERY, QuestWalkRule.isArdougneArea(targets), this::runInner);
+        if (!cancelled && terminationReason == PathTerminationReason.TARGET_REACHED
+                && QuestWalkRule.jewelleryBeatsWalking(onFootCost, selectedPathCost)) {
+            announceWidenedRoute(QuestWalkRule.Stage.OWNED_JEWELLERY);
+            return;
+        }
+        onFoot.restore();
+    }
+
     private void announceWidenedRoute(QuestWalkRule.Stage stage) {
         if (!QuestWalkRule.firstAnnouncement(stage, targets)) {
             return;
@@ -914,7 +937,8 @@ public class Pathfinder implements Runnable {
         for (PathEdge edge : getPathEdges()) {
             if (edge.isTransport() && QuestWalkRule.isRestricted(edge.getTransport())) {
                 Transport transport = edge.getTransport();
-                used.add(transport.getType() + " " + transport.getDisplayInfo()
+                used.add(stage == QuestWalkRule.Stage.OWNED_JEWELLERY ? transport.getDisplayInfo()
+                        : transport.getType() + " " + transport.getDisplayInfo()
                         + " (" + edge.getFrom() + " -> " + edge.getTo() + ")");
             }
         }

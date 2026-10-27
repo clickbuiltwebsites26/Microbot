@@ -25,6 +25,9 @@ import net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil;
  * {@link Stage}s, and the first stage that reaches the target is announced:
  * <ol>
  *   <li>{@link Stage#ON_FOOT}: nothing restricted.</li>
+ *   <li>{@link Stage#OWNED_JEWELLERY}: only the teleports of jewellery the player owns (Ring of wealth, Amulet of
+ *   glory, Games necklace, Ring of dueling, and the Skills necklace for East Ardougne targets). Besides being a
+ *   fallback, this stage is also tried when a trip on foot is long: see {@link #jewelleryBeatsWalking}.</li>
  *   <li>{@link Stage#NAMED_ROUTES}: only the routes the user prefers (the Veos ferry from Port Sarim; the Skills
  *   necklace to the Fishing Guild, for targets around East Ardougne only).</li>
  *   <li>{@link Stage#CROSSINGS}: any boat, ship, charter, canoe, quetzal or long surface ride (Primio, the travel
@@ -41,6 +44,7 @@ public final class QuestWalkRule
 	public enum Stage
 	{
 		ON_FOOT,
+		OWNED_JEWELLERY,
 		NAMED_ROUTES,
 		CROSSINGS,
 		TELEPORTS;
@@ -117,6 +121,15 @@ public final class QuestWalkRule
 	private static final int ARDOUGNE_MAX_X = 2700;
 	private static final int ARDOUGNE_MIN_Y = 3200;
 	private static final int ARDOUGNE_MAX_Y = 3420;
+
+	/** A trip on foot costing more than this many ticks is worth comparing with an owned jewellery teleport. */
+	static final long LONG_WALK_COST = 150;
+	/** The jewellery route has to cost less than this share of the walk to be taken instead of it. */
+	static final double JEWELLERY_COST_SHARE = 0.6;
+
+	/** Teleport jewellery that quest walking uses once the player owns it (the planner only lists owned items). */
+	private static final String[] OWNED_JEWELLERY = {
+		"ring of wealth", "amulet of glory", "games necklace", "ring of dueling"};
 
 	private static final String VEOS = "veos";
 	private static final String CABIN_BOY_HERBERT = "cabin boy herbert";
@@ -321,9 +334,43 @@ public final class QuestWalkRule
 			String npc = transport.getName().toLowerCase(Locale.ROOT);
 			return npc.equals(VEOS) || npc.equals(CABIN_BOY_HERBERT);
 		}
-		return ardougneTarget && transport.getType() == TransportType.TELEPORTATION_ITEM
-			&& transport.getDisplayInfo() != null
+		return ardougneTarget && isSkillsNecklaceToFishingGuild(transport);
+	}
+
+	private static boolean isSkillsNecklaceToFishingGuild(Transport transport)
+	{
+		return transport.getType() == TransportType.TELEPORTATION_ITEM && transport.getDisplayInfo() != null
 			&& transport.getDisplayInfo().toLowerCase(Locale.ROOT).equals(SKILLS_NECKLACE_FISHING_GUILD);
+	}
+
+	/** A teleport of the Ring of wealth, Amulet of glory, Games necklace or Ring of dueling. */
+	static boolean isOwnedJewellery(Transport transport)
+	{
+		if (transport.getType() != TransportType.TELEPORTATION_ITEM || transport.getDisplayInfo() == null)
+		{
+			return false;
+		}
+		String info = transport.getDisplayInfo().toLowerCase(Locale.ROOT);
+		for (String jewellery : OWNED_JEWELLERY)
+		{
+			if (info.startsWith(jewellery))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Pure decision: a walk this long is compared with the owned-jewellery route. */
+	public static boolean jewelleryWorthTrying(long onFootCost)
+	{
+		return onFootCost > LONG_WALK_COST;
+	}
+
+	/** Pure decision: the jewellery route replaces the walk only when it is substantially cheaper. */
+	public static boolean jewelleryBeatsWalking(long onFootCost, long jewelleryCost)
+	{
+		return jewelleryWorthTrying(onFootCost) && jewelleryCost >= 0 && jewelleryCost < onFootCost * JEWELLERY_COST_SHARE;
 	}
 
 	/** Whether a search at {@code stage} may use {@code transport}. */
@@ -335,6 +382,8 @@ public final class QuestWalkRule
 		}
 		switch (stage)
 		{
+			case OWNED_JEWELLERY:
+				return isOwnedJewellery(transport) || (ardougneTarget && isSkillsNecklaceToFishingGuild(transport));
 			case NAMED_ROUTES:
 				return isNamedRoute(transport, ardougneTarget);
 			case CROSSINGS:
@@ -367,6 +416,10 @@ public final class QuestWalkRule
 	/** The log line for a route found at a widened stage; {@code used} lists the restricted transports it takes. */
 	public static String describe(Stage stage, String target, Set<String> used)
 	{
+		if (stage == Stage.OWNED_JEWELLERY)
+		{
+			return "Quest walk: teleporting via " + used + " toward " + target;
+		}
 		if (stage == Stage.TELEPORTS)
 		{
 			return "Quest walk: " + target + " not reachable on foot or by crossing; teleporting via " + used;

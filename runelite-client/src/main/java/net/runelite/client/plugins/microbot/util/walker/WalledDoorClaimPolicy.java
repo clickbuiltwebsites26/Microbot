@@ -60,6 +60,43 @@ final class WalledDoorClaimPolicy {
         return nearSideReachable ? Decision.APPROACH : Decision.INVALID;
     }
 
+    /** Consecutive door-handler runs on one claimed edge that found nothing to open before the claim is dropped. */
+    static final int UNFULFILLED_CLAIM_LIMIT = 3;
+
+    /**
+     * Counts consecutive door-handler runs that did nothing on the same claimed edge. A claim can come from a door
+     * beside the edge (a double-gate wing) that the exact edge does not have; the handler then finds nothing, again and
+     * again, and the walker waits on a door that does not exist.
+     */
+    static final class UnfulfilledClaims {
+        private WorldPoint from;
+        private WorldPoint to;
+        private int count;
+
+        /** Notes one fruitless run on the edge; returns how many in a row there have been. */
+        int note(WorldPoint edgeFrom, WorldPoint edgeTo) {
+            if (edgeFrom.equals(from) && edgeTo.equals(to)) {
+                count++;
+            } else {
+                from = edgeFrom;
+                to = edgeTo;
+                count = 1;
+            }
+            return count;
+        }
+
+        void reset() {
+            from = null;
+            to = null;
+            count = 0;
+        }
+    }
+
+    /** Whether the claimed edge should be given up on: repeatedly fruitless, and no door sits on the exact edge. */
+    static boolean shouldDropUnfulfilledClaim(int fruitlessRuns, boolean doorOnExactEdge) {
+        return fruitlessRuns >= UNFULFILLED_CLAIM_LIMIT && !doorOnExactEdge;
+    }
+
     static boolean ownsTraversalEdge(WorldPoint doorFrom, WorldPoint doorTo,
                                      WorldPoint routeFrom, WorldPoint routeTo) {
         if (doorFrom == null || doorTo == null || routeFrom == null || routeTo == null
