@@ -972,8 +972,8 @@ public class Pathfinder implements Runnable {
                 }
             }
         });
-        if (baseCost[0] < 0 || cancelled) {
-            return; // the base search is the result (failure, cutoff or cancel)
+        if (baseCost[0] < 0 || cancelled || !PathJitter.mayVary(getPath())) {
+            return; // the base search is the result (failure, cutoff, cancel, or a route too short or underground to vary)
         }
         for (int attempt = 0; attempt < 3 && !cancelled; attempt++) {
             if (attempt > 0) {
@@ -984,20 +984,13 @@ public class Pathfinder implements Runnable {
                 break;
             }
             List<PathEdge> edges = getPathEdges();
-            boolean newLocal = false;
-            boolean newForbidden = false;
+            Set<String> variedTransports = new HashSet<>();
             long penalties = 0;
             for (PathEdge edge : edges) {
                 int to = WorldPointUtil.packWorldPoint(edge.getTo());
                 if (edge.isTransport()) {
                     penalties += PathJitter.transportPenalty(to);
-                    if (!baseTransports.contains(transportKey(edge))) {
-                        if (PathJitter.mayAddTransport(edge.getTransport().getType())) {
-                            newLocal = true;
-                        } else {
-                            newForbidden = true;
-                        }
-                    }
+                    variedTransports.add(transportKey(edge));
                 } else if (targets.contains(to)) {
                     penalties += targets.size() > 1 ? PathJitter.targetPenalty(to) : 0;
                 } else {
@@ -1005,7 +998,7 @@ public class Pathfinder implements Runnable {
                 }
             }
             long variedCost = Math.max(0L, selectedPathCost - penalties);
-            if (!PathJitter.acceptVaried(variedCost, baseCost[0], newLocal, newForbidden)) {
+            if (!PathJitter.acceptVaried(variedCost, baseCost[0], !variedTransports.equals(baseTransports))) {
                 continue;
             }
             int hash = PathJitter.routeHash(getPath());

@@ -3677,10 +3677,10 @@ public class QuestScript extends Script {
             final Rs2NpcModel clicked = npc;
             if (itemId != -1) {
                 Rs2Inventory.use(itemId);
-                clickVerified(() -> clicked.click(""), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC");
+                clickVerified(step, () -> clicked.click(""), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC");
             } else {
                 String option = chooseCorrectNPCOption(step, npc);
-                clickVerified(() -> clicked.click(option), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC " + option);
+                clickVerified(step, () -> clicked.click(option), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC " + option);
                 lastTalkedNpcId = npc.getId();
                 if (step.isAllowMultipleHighlights()) {
                     multiNpcTarget.commit(step, npc.getIndex(), System.currentTimeMillis());
@@ -4052,10 +4052,10 @@ public class QuestScript extends Script {
             boolean interacted;
             if (itemId == -1) {
                 String option = fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object);
-                interacted = clickVerified(() -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
+                interacted = clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
             } else {
                 Rs2Inventory.use(itemId);
-                interacted = clickVerified(() -> clickedObject.click(""), () -> turnCameraTo(clickedObject), "object");
+                interacted = clickVerified(step, () -> clickedObject.click(""), () -> turnCameraTo(clickedObject), "object");
             }
 
             sleepUntil(() -> Rs2Player.isMoving() || Rs2Player.isAnimating());
@@ -4094,7 +4094,8 @@ public class QuestScript extends Script {
      * Sends a click and checks that it did something. A menu action that was sent is not an interaction that
      * happened: the server drops it when the target is out of reach, and the click still reports success.
      */
-    private boolean clickVerified(BooleanSupplier click, Runnable turnCamera, String what) {
+    private boolean clickVerified(QuestStep step, BooleanSupplier click, Runnable turnCamera, String what) {
+        preClickDelay(step);
         WorldPoint before = Rs2Player.getWorldLocation();
         boolean worked = VerifiedInteraction.run(click, () -> interactionTookEffect(before), turnCamera,
                 System::currentTimeMillis, ms -> sleep((int) ms));
@@ -4104,6 +4105,20 @@ public class QuestScript extends Script {
             Microbot.log("Quest helper: click on " + what + " had no effect after a camera turn and a retry", Level.WARN);
         }
         return worked;
+    }
+
+    private final java.util.Random delayRandom = new java.util.Random();
+
+    /** Now and then a human pause before the click on an object or NPC; never in combat, dialogue or timed steps. */
+    private void preClickDelay(QuestStep step) {
+        boolean allowed = QuestInteractionDelay.allowed(Rs2Combat.inCombat(), QuestCombatDetector.isKillStep(step),
+                Rs2Dialogue.isInDialogue(), Rs2Player.getHealthPercentage() < 60,
+                step == null ? null : String.join(" ", step.getText()));
+        long delay = QuestInteractionDelay.delayMs(humanTiming, delayRandom, allowed);
+        if (delay > 0) {
+            Microbot.status = "Quest helper: pausing (" + delay / 1000.0 + "s)";
+            sleep((int) delay);
+        }
     }
 
     private static boolean interactionTookEffect(WorldPoint before) {

@@ -115,8 +115,8 @@ public class PathJitterTest
 	@Test
 	public void boundHistoryAndSuspension()
 	{
-		assertTrue(PathJitter.withinBound(120, 100));
-		assertTrue(!PathJitter.withinBound(121, 100));
+		assertTrue(PathJitter.withinBound(110, 100));
+		assertTrue(!PathJitter.withinBound(111, 100));
 		assertEquals(0, PathJitter.routeLength(new ArrayList<>()));
 		java.util.List<net.runelite.api.coords.WorldPoint> p = new ArrayList<>();
 		p.add(new net.runelite.api.coords.WorldPoint(3200, 3200, 0));

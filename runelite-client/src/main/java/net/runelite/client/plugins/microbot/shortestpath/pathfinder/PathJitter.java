@@ -34,7 +34,7 @@ public final class PathJitter
     private static final int DETOUR_PENALTY = 6;
 
     /** Maximum real length of a varied route relative to the base route. */
-    public static final double MAX_LENGTH_FACTOR = 1.2;
+    public static final double MAX_LENGTH_FACTOR = 1.1;
 
     /** Runs {@code body} with jitter off on this thread (used to measure the base route). */
     public static void withoutJitter(Runnable body)
@@ -169,42 +169,51 @@ public final class PathJitter
     }
 
     /** Cost bound: a varied route may cost at most this much more than the base route (pathfinder cost, jumps included). */
-    public static final double MAX_COST_FACTOR = 1.2;
-    /** A transport the base route did not use may only come in when the whole route stays within this factor. */
-    public static final double NEW_TRANSPORT_COST_FACTOR = 1.1;
+    public static final double MAX_COST_FACTOR = 1.1;
 
-    /**
-     * Variation may only add short local transports (doors, stairs, shortcuts); never teleports, quetzals,
-     * charter ships, boats, fairy rings, gliders and the like.
-     */
-    public static boolean mayAddTransport(net.runelite.client.plugins.microbot.shortestpath.TransportType type)
-    {
-        return type == net.runelite.client.plugins.microbot.shortestpath.TransportType.TRANSPORT
-            || type == net.runelite.client.plugins.microbot.shortestpath.TransportType.AGILITY_SHORTCUT
-            || type == net.runelite.client.plugins.microbot.shortestpath.TransportType.GRAPPLE_SHORTCUT;
-    }
+    /** Routes shorter than this are never varied: they are tight spots (rooms, dungeons) where exact tiles matter. */
+    public static final int MIN_VARIED_ROUTE_TILES = 15;
+    /** Tiles from this y up are dungeons and instance templates, never varied. */
+    private static final int UNDERGROUND_Y = 6400;
 
-    /**
-     * Whether a varied route is acceptable against the base route.
-     *
-     * @param variedCost    pathfinder cost of the varied route without the jitter penalties
-     * @param baseCost      pathfinder cost of the base route
-     * @param newLocal      the varied route uses a local transport the base route did not
-     * @param newForbidden  the varied route uses a transport the base route did not and variation may not add
-     */
-    public static boolean acceptVaried(long variedCost, long baseCost, boolean newLocal, boolean newForbidden)
+    /** Whether a base route is eligible for variation at all: long enough and entirely above ground. */
+    public static boolean mayVary(java.util.List<net.runelite.api.coords.WorldPoint> basePath)
     {
-        if (newForbidden)
+        if (basePath == null || basePath.size() < MIN_VARIED_ROUTE_TILES)
         {
             return false;
         }
-        double factor = newLocal ? NEW_TRANSPORT_COST_FACTOR : MAX_COST_FACTOR;
-        return variedCost <= (long) Math.floor(baseCost * factor + 1e-6);
+        for (net.runelite.api.coords.WorldPoint point : basePath)
+        {
+            if (point.getY() >= UNDERGROUND_Y)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a varied route is acceptable against the base route: it must use exactly the transports of the base
+     * route (no added or dropped door, staircase, shortcut, boat or teleport) and cost at most
+     * {@link #MAX_COST_FACTOR} times as much.
+     *
+     * @param variedCost        pathfinder cost of the varied route without the jitter penalties
+     * @param baseCost          pathfinder cost of the base route
+     * @param transportsChanged the varied route's transports differ from the base route's
+     */
+    public static boolean acceptVaried(long variedCost, long baseCost, boolean transportsChanged)
+    {
+        if (transportsChanged)
+        {
+            return false;
+        }
+        return variedCost <= (long) Math.floor(baseCost * MAX_COST_FACTOR + 1e-6);
     }
 
     public static boolean withinBound(int variedLength, int baseLength)
     {
-        return variedLength <= Math.ceil(baseLength * MAX_LENGTH_FACTOR);
+        return variedLength <= (long) Math.floor(baseLength * MAX_LENGTH_FACTOR + 1e-6);
     }
 
 	private PathJitter()
