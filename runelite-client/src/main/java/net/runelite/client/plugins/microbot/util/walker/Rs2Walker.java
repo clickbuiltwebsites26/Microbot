@@ -1948,7 +1948,7 @@ public class Rs2Walker {
                     return WalkerState.EXIT;
                 }
                 if (!routeStatus.isReady()) {
-                    if (System.currentTimeMillis() - pathfinderPendingSinceMs > 10_000L) {
+                    if (System.currentTimeMillis() - pathfinderPendingSinceMs > QuestWalkRule.pathfinderTimeoutMs()) {
                         traceProcessWalkExit("pathfinder-timeout-not-done", target, processWalkTail);
                         setTarget(null, "rs2walker:processWalk:pathfinder-timeout-not-done");
                         return WalkerState.EXIT;

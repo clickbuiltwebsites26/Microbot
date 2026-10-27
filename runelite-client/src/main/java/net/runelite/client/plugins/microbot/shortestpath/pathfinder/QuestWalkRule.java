@@ -93,7 +93,22 @@ public final class QuestWalkRule
 	 * How long the on-foot search of a quest walk may go without getting closer before it counts as stuck. The usual
 	 * few seconds are not enough to flood a whole landmass on a loaded client, and a cut-off search proves nothing.
 	 */
-	public static final long EXTENDED_CUTOFF_MS = 30_000L;
+	public static final long EXTENDED_CUTOFF_MS = 15_000L;
+
+	/** How long the walker waits for any pathfinder before giving up on a walk. */
+	public static final long PATHFINDER_TIMEOUT_MS = 10_000L;
+
+	/**
+	 * How long the walker waits for a quest walk's pathfinder: the usual cutoff, the longer on-foot look and the
+	 * three widened searches must fit, or the walker gives up on the walk before the search can say anything.
+	 */
+	public static final long QUEST_PATHFINDER_TIMEOUT_MS = 60_000L;
+
+	/** The walker's patience for the pathfinder of the walk in progress. */
+	public static long pathfinderTimeoutMs()
+	{
+		return crossingEnabled() ? QUEST_PATHFINDER_TIMEOUT_MS : PATHFINDER_TIMEOUT_MS;
+	}
 	private static final int SURFACE_MAX_X = 4000;
 	private static final int SURFACE_MAX_Y = 4200;
 

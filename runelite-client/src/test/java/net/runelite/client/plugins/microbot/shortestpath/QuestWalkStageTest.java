@@ -385,6 +385,32 @@ public class QuestWalkStageTest
 	}
 
 	@Test
+	public void theWalkerWaitsForTheWidenedSearchesOfAQuestWalk()
+	{
+		// the walker gives up on a pathfinder after this long: it must outlast the usual cutoff, the longer on-foot
+		// look and the three widened searches, or the quest would retry a partial walk every few seconds forever
+		long usualCutoff = 3_000L;
+		assertTrue(QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS
+			>= usualCutoff + QuestWalkRule.EXTENDED_CUTOFF_MS + 3 * usualCutoff);
+		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean walking = QuestWalkRule.beginQuestWalk(A);
+		try
+		{
+			assertEquals(QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(walking);
+			QuestWalkRule.markQuestThread(false);
+		}
+		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+	}
+
+	@Test
 	public void aCutOffOnFootSearchIsRepeatedLongerNeverWidened()
 	{
 		assertTrue(QuestWalkRule.shouldRetryOnFootLonger(true, PathTerminationReason.CUTOFF_REACHED, false));

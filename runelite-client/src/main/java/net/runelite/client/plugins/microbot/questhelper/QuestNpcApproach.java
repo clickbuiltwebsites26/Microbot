@@ -1,24 +1,21 @@
 package net.runelite.client.plugins.microbot.questhelper;
 
 /**
- * What an NPC step does when its NPC is known but the plain "visible and reachable, so click" test fails. Walking
- * toward an NPC the player already stands next to does nothing, so a step whose NPC was merely out of the camera's view
- * (the Varrock pub in Biohazard) sat there for a minute without a single interaction.
+ * What an NPC step does with an NPC it knows about. A click the server cannot act on (the NPC is behind a closed door)
+ * repeats every tick without effect, while walking lets the walker open the door; and walking toward an NPC the player
+ * already stands next to does nothing at all. So: click when the NPC can be reached or is plainly in sight and near,
+ * walk otherwise. The click itself is verified by {@link VerifiedInteraction}, which also turns the camera.
  */
 public final class QuestNpcApproach
 {
-	/** Distance in tiles up to which a click is worth trying even when the planner doubts the route. */
-	static final int CLICK_RANGE = 4;
-	/** Distance in tiles up to which turning the camera is better than walking. */
-	static final int TURN_RANGE = 6;
+	/** Distance in tiles up to which an NPC in line of sight is clicked even when the planner doubts the route. */
+	static final int CLICK_RANGE = 8;
 
 	/** The next move toward an NPC. */
 	public enum Move
 	{
 		/** Click the NPC. */
 		INTERACT,
-		/** Rotate the camera until the NPC is on screen. */
-		TURN_CAMERA,
 		/** Walk closer. */
 		WALK
 	}
@@ -28,19 +25,15 @@ public final class QuestNpcApproach
 	}
 
 	/**
-	 * @param onScreen          the NPC's tile is inside the viewport
-	 * @param reachableAndSeen  the route planner reaches it and there is line of sight
-	 * @param distance          tiles between the player and the NPC
+	 * @param reachableAndSeen the route planner reaches it and there is line of sight
+	 * @param lineOfSight      there is line of sight to it (no closed door or wall between)
+	 * @param distance         tiles between the player and the NPC
 	 */
-	public static Move decide(boolean onScreen, boolean reachableAndSeen, int distance)
+	public static Move decide(boolean reachableAndSeen, boolean lineOfSight, int distance)
 	{
-		if (onScreen && (reachableAndSeen || distance <= CLICK_RANGE))
+		if (reachableAndSeen || (lineOfSight && distance <= CLICK_RANGE))
 		{
 			return Move.INTERACT;
-		}
-		if (!onScreen && distance <= TURN_RANGE)
-		{
-			return Move.TURN_CAMERA;
 		}
 		return Move.WALK;
 	}

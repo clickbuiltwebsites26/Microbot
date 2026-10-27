@@ -68,6 +68,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -3642,10 +3643,11 @@ public class QuestScript extends Script {
         boolean closeKillTarget = killStep && npc != null && npc.getLocalLocation() != null
                 && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
                 && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
-        if (npcOnScreen
+        boolean npcKnown = npc != null && npc.getLocalLocation() != null;
+        if (npcKnown && (QuestNpcApproach.decide(false, npc.hasLineOfSight(), npcDistance) == QuestNpcApproach.Move.INTERACT
+                || (npcOnScreen
                 && (closeKillTarget || Microbot.getClient().isInInstancedRegion()
-                || QuestNpcApproach.decide(true, false, npcDistance) == QuestNpcApproach.Move.INTERACT
-                || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))) {
+                || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))))) {
             Rs2Walker.clearWalkingRoute("quest-helper:npc-step-visible-interact");
 
             if (killStep && npcHasAction(npc, "Attack")) {
@@ -3672,11 +3674,13 @@ public class QuestScript extends Script {
             }
 
             var itemId = step.getIconItemID();
+            final Rs2NpcModel clicked = npc;
             if (itemId != -1) {
                 Rs2Inventory.use(itemId);
-                npc.click("");
+                clickVerified(() -> clicked.click(""), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC");
             } else {
-                npc.click(chooseCorrectNPCOption(step, npc));
+                String option = chooseCorrectNPCOption(step, npc);
+                clickVerified(() -> clicked.click(option), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC " + option);
                 lastTalkedNpcId = npc.getId();
                 if (step.isAllowMultipleHighlights()) {
                     multiNpcTarget.commit(step, npc.getIndex(), System.currentTimeMillis());
@@ -3688,13 +3692,7 @@ public class QuestScript extends Script {
                 sleepUntil(Rs2Dialogue::isInDialogue);
             }
         } else if (npc != null && npc.getLocalLocation() != null && !npcOnScreen) {
-            // Walking toward an NPC we already stand beside does nothing: bring it into view instead.
-            if (QuestNpcApproach.decide(false, false, npcDistance) == QuestNpcApproach.Move.TURN_CAMERA) {
-                Rs2Camera.turnTo(npc.getNpc());
-                sleep(200, 400);
-            } else {
-                Rs2Walker.walkTo(npc.getWorldLocation(), 2);
-            }
+            Rs2Walker.walkTo(npc.getWorldLocation(), 2);
         } else if (npc != null && (!npc.hasLineOfSight() || !Rs2Walker.canReach(npc.getWorldLocation()))) {
             Rs2Walker.walkTo(npc.getWorldLocation(), 2);
         } else {
@@ -4025,7 +4023,7 @@ public class QuestScript extends Script {
         if (step.getDefinedPoint().getWorldPoint() != null && Rs2Player.getWorldLocation().distanceTo2D(step.getDefinedPoint().getWorldPoint()) > 1
                 && (object == null || !isInteractableFromReachableTile(step, object))) {
             WorldPoint stepLocation = object == null ? step.getDefinedPoint().getWorldPoint() : object.getWorldLocation();
-            WorldPoint targetTile = chooseObjectApproachTile(stepLocation);
+            WorldPoint targetTile = chooseObjectApproachTile(stepLocation, objectFootprint(object, stepLocation));
             if (targetTile == null) {
                 // Nowhere to stand that the planner can reach: let the walker path as close as it can (it opens
                 // closed doors and gates on the way) rather than asking it to stand on the object's own tile.
@@ -4050,17 +4048,22 @@ public class QuestScript extends Script {
         if (hasLineOfSightToObject(object) || object != null && (Rs2Camera.isTileOnScreen(object.getLocalLocation()) || object.getCanvasLocation() != null)) {
             Rs2Walker.clearWalkingRoute("quest-helper:object-step-interact");
 
-            if (itemId == -1)
-                object.click(fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object));
-            else {
+            final Rs2TileObjectModel clickedObject = object;
+            boolean interacted;
+            if (itemId == -1) {
+                String option = fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object);
+                interacted = clickVerified(() -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
+            } else {
                 Rs2Inventory.use(itemId);
-                object.click("");
+                interacted = clickVerified(() -> clickedObject.click(""), () -> turnCameraTo(clickedObject), "object");
             }
 
             sleepUntil(() -> Rs2Player.isMoving() || Rs2Player.isAnimating());
             sleep(100);
             sleepUntil(() -> !Rs2Player.isMoving() && !Rs2Player.isAnimating());
-            objectsHandeled.add(object.getHash());
+            if (interacted) {
+                objectsHandeled.add(object.getHash());
+            }
         } else if (object != null) {
             Rs2Walker.walkTo(object.getWorldLocation(), 1);
             return false;
@@ -4069,32 +4072,73 @@ public class QuestScript extends Script {
         return true;
     }
 
-    private static final int APPROACH_MAX_RADIUS = 3;
-    private static final int APPROACH_MAX_CANDIDATES = 6;
+    private static final int APPROACH_MAX_CANDIDATES = 8;
+
+    /** Every tile the object stands on (a staircase covers several), or just its defined tile when unknown. */
+    private static List<WorldPoint> objectFootprint(Rs2TileObjectModel object, WorldPoint fallbackTile) {
+        WorldArea area = object == null ? null : object.getWorldArea();
+        return area == null ? Collections.singletonList(fallbackTile) : area.toWorldPointList();
+    }
+
+    /** Rotates the camera toward an object, for the retry of a click that did nothing. */
+    private static void turnCameraTo(Rs2TileObjectModel object) {
+        if (object.getLocalLocation() != null) {
+            Rs2Camera.turnTo(object.getLocalLocation());
+        }
+    }
+
+    private static final long NO_EFFECT_LOG_INTERVAL_MS = 15_000;
+    private long lastNoEffectLoggedAt = 0;
+
+    /**
+     * Sends a click and checks that it did something. A menu action that was sent is not an interaction that
+     * happened: the server drops it when the target is out of reach, and the click still reports success.
+     */
+    private boolean clickVerified(BooleanSupplier click, Runnable turnCamera, String what) {
+        WorldPoint before = Rs2Player.getWorldLocation();
+        boolean worked = VerifiedInteraction.run(click, () -> interactionTookEffect(before), turnCamera,
+                System::currentTimeMillis, ms -> sleep((int) ms));
+        long now = System.currentTimeMillis();
+        if (!worked && now - lastNoEffectLoggedAt > NO_EFFECT_LOG_INTERVAL_MS) {
+            lastNoEffectLoggedAt = now;
+            Microbot.log("Quest helper: click on " + what + " had no effect after a camera turn and a retry", Level.WARN);
+        }
+        return worked;
+    }
+
+    private static boolean interactionTookEffect(WorldPoint before) {
+        WorldPoint now = Rs2Player.getWorldLocation();
+        if (Rs2Player.isMoving() || Rs2Player.isAnimating() || Rs2Dialogue.isInDialogue()) {
+            return true;
+        }
+        if (before != null && now != null && now.getPlane() != before.getPlane()) {
+            return true;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Player me = Microbot.getClient().getLocalPlayer();
+            return me != null && me.getInteracting() != null;
+        }).orElse(false);
+    }
 
     /**
      * The tile to stand on to use the object at {@code objectTile}: usable from there without a wall between, and
      * reachable by the real route planner, which opens closed doors and gates (a chain of them too). Does not need
      * the object itself to be in the scene, so a closed cupboard whose id differs from the step's still works.
      */
-    private WorldPoint chooseObjectApproachTile(WorldPoint objectTile) {
+    private WorldPoint chooseObjectApproachTile(WorldPoint objectTile, List<WorldPoint> footprint) {
         WorldPoint me = Rs2Player.getWorldLocation();
-        List<WorldPoint> footprint = Collections.singletonList(objectTile);
         QuestObjectApproach.CollisionFlags flags = collisionFlags(objectTile.getPlane());
-        for (int radius = 1; radius <= APPROACH_MAX_RADIUS; radius++) {
-            // Only tiles that touch the object with no wall, fence, bars or gate edge between: line of sight alone
-            // passes through a cage, which put the player outside it next to the crate.
-            List<WorldPoint> candidates = Rs2Tile.getWalkableTilesAroundTile(objectTile, radius).stream()
-                    .filter(x -> QuestObjectApproach.touchesWithOpenEdge(x, footprint, flags))
-                    .sorted(Comparator.comparingInt((WorldPoint x) -> x.distanceTo2D(objectTile)))
-                    .limit(APPROACH_MAX_CANDIDATES)
-                    .collect(Collectors.toList());
-            WorldPoint best = QuestObjectApproach.choose(objectTile, candidates, x -> true, x -> plannedRouteLength(me, x));
-            if (best != null) {
-                return best;
-            }
-        }
-        return null;
+        // Only tiles that touch the object with no wall, fence, bars or gate edge between: line of sight alone
+        // passes through a cage, which put the player outside it next to the crate. Every tile of the footprint
+        // counts, so a staircase can be used from any of its sides.
+        List<WorldPoint> candidates = footprint.stream()
+                .flatMap(part -> Rs2Tile.getWalkableTilesAroundTile(part, 1).stream())
+                .distinct()
+                .filter(x -> QuestObjectApproach.touchesWithOpenEdge(x, footprint, flags))
+                .sorted(Comparator.comparingInt((WorldPoint x) -> x.distanceTo2D(me)))
+                .limit(APPROACH_MAX_CANDIDATES)
+                .collect(Collectors.toList());
+        return QuestObjectApproach.choose(objectTile, candidates, x -> true, x -> plannedRouteLength(me, x));
     }
 
     /** Collision flags of one floor of the loaded scene, by world tile; every edge reads as open when unavailable. */

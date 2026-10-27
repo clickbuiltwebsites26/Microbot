@@ -114,6 +114,21 @@ public class QuestObjectApproachTest
 		assertEquals(inCage, chosen);
 	}
 
+	/** Staircases cover several tiles: the north and east sides are usable even though the south-west tile is not there. */
+	@Test
+	public void aMultiTileObjectCanBeUsedFromAnyOfItsSides()
+	{
+		WorldPoint southWest = at(2543, 3325, 1);
+		List<WorldPoint> footprint = Arrays.asList(southWest, at(2544, 3325, 1), at(2543, 3326, 1), at(2544, 3326, 1));
+		QuestObjectApproach.CollisionFlags open = (x, y) -> 0;
+		WorldPoint east = at(2545, 3326, 1);
+		WorldPoint north = at(2544, 3327, 1);
+		assertTrue(QuestObjectApproach.touchesWithOpenEdge(east, footprint, open));
+		assertTrue(QuestObjectApproach.touchesWithOpenEdge(north, footprint, open));
+		assertFalse("not from the south-west tile alone",
+			QuestObjectApproach.touchesWithOpenEdge(east, Collections.singletonList(southWest), open));
+	}
+
 	@Test
 	public void onlyCardinalNeighboursOnTheSameFloorTouch()
 	{
