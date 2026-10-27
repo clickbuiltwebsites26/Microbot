@@ -841,22 +841,34 @@ public class Pathfinder implements Runnable {
     @Override
     public void run() {
         runInner();
-        if (!QuestWalkRule.isActive() || QuestWalkRule.inFallback() || cancelled
+        if (!QuestWalkRule.isActive() || QuestWalkRule.stage() != QuestWalkRule.Stage.ON_FOOT || cancelled
                 || terminationReason == PathTerminationReason.TARGET_REACHED) {
             return;
         }
-        // quest walking found no route on foot: allow ships and the like, and say which are used
-        QuestWalkRule.allowAll(this::runInner);
-        if (terminationReason == PathTerminationReason.TARGET_REACHED) {
-            Set<String> used = new LinkedHashSet<>();
-            for (PathEdge edge : getPathEdges()) {
-                if (edge.isTransport() && QuestWalkRule.isRestrictedType(edge.getTransport().getType(), edge.getTransport().getOrigin())) {
-                    used.add(edge.getTransport().getType() + " " + edge.getFrom() + " -> " + edge.getTo());
-                }
+        // quest walking found no route on foot: widen to the named routes, then crossings, then teleports
+        for (QuestWalkRule.Stage stage = QuestWalkRule.Stage.ON_FOOT.next(); stage != null && !cancelled;
+             stage = stage.next()) {
+            QuestWalkRule.runAt(stage, this::runInner);
+            if (terminationReason == PathTerminationReason.TARGET_REACHED) {
+                announceWidenedRoute(stage);
+                return;
             }
-            Microbot.log("Quest walking: no route on foot to " + WorldPointUtil.toString(targets)
-                    + "; falling back to transports: " + used);
         }
+    }
+
+    private void announceWidenedRoute(QuestWalkRule.Stage stage) {
+        if (!QuestWalkRule.firstAnnouncement(stage, targets)) {
+            return;
+        }
+        Set<String> used = new LinkedHashSet<>();
+        for (PathEdge edge : getPathEdges()) {
+            if (edge.isTransport() && QuestWalkRule.isRestricted(edge.getTransport())) {
+                Transport transport = edge.getTransport();
+                used.add(transport.getType() + " " + transport.getDisplayInfo()
+                        + " (" + edge.getFrom() + " -> " + edge.getTo() + ")");
+            }
+        }
+        Microbot.log(QuestWalkRule.describe(stage, WorldPointUtil.toString(targets), used));
     }
 
     private void runInner() {

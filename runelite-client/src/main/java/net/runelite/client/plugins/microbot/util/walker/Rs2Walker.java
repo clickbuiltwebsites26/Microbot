@@ -17,6 +17,7 @@ import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.devtools.MovementFlag;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.shortestpath.*;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
@@ -1343,6 +1344,14 @@ public class Rs2Walker {
      * @param distance
      * @return
      */
+    /** Quest walking only: no stage of the search reached the tile, so say so once and back off. */
+    private static void reportQuestWalkUnreachable(WorldPoint target) {
+        if (QuestWalkRule.isActive() && QuestWalkRule.reportUnreachable(target)) {
+            Microbot.log("Quest walk: " + target + " is not reachable on foot, by crossing or by teleport;"
+                    + " not retrying for " + QuestWalkRule.unreachableRetryInMs() / 1000 + "s");
+        }
+    }
+
     private static WalkerState walkWithStateInternal(WorldPoint target, int distance) {
         Objects.requireNonNull(target, "walk target");
         currentWalkDistance = Math.max(0, distance);
@@ -1356,6 +1365,10 @@ public class Rs2Walker {
         // sealed goal), collapsed to a 1-tile path, and the retry burned itself on it while the
         // unlearn arrived two lines later.
         withdrawPreviousWalkScopedBlocks(walkerLock.getHoldCount());
+        if (QuestWalkRule.isBackedOff(target)) {
+            // quest walking already tried every route to this tile; wait out the back-off instead of searching again
+            return WalkerState.UNREACHABLE;
+        }
         WorldPoint playerLocWalk = Rs2Player.getWorldLocation();
         if (playerLocWalk == null) {
             return WalkerState.MOVING;
@@ -1971,6 +1984,7 @@ public class Rs2Walker {
                     Telemetry.recordUnreachable("no-walkable-path", walkLoop.playerLoc,
                             target, dst, path == null ? 0 : path.size(), distance,
                             routeStatus.getMetrics().orElse(null));
+                    reportQuestWalkUnreachable(target);
                     setTarget(null, "rs2walker:processWalk:no-walkable-path");
                     return WalkerState.UNREACHABLE;
                 }

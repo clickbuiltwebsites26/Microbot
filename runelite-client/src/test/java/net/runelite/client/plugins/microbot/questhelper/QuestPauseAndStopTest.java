@@ -7,6 +7,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
+import net.runelite.api.coords.WorldPoint;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +21,16 @@ public class QuestPauseAndStopTest
 	{
 		QuestPause.resume();
 		QuestPreflight.resetToIdle();
+	}
+
+	@Test
+	public void pauseOnlyCancelsTheQuestsOwnWalk()
+	{
+		WorldPoint quest = new WorldPoint(2592, 3336, 0);
+		assertTrue(QuestPause.ownsWalk(quest, new WorldPoint(2592, 3336, 0)));
+		assertFalse(QuestPause.ownsWalk(new WorldPoint(3164, 3485, 0), quest));
+		assertFalse(QuestPause.ownsWalk(null, quest));
+		assertFalse(QuestPause.ownsWalk(quest, null));
 	}
 
 	@Test

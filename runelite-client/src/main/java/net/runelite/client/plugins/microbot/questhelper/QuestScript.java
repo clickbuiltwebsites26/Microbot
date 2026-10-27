@@ -43,6 +43,7 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.shop.Rs2Shop;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2PathApi;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -136,7 +137,10 @@ public class QuestScript extends Script {
     private volatile WorldPoint lastWalkTarget;
 
     /** Watchdog stage for GET /quest-helper/status ("NONE" when making progress). */
-    public static String getStuckStage() { return stuckStage; }
+    public static String getStuckStage()
+    {
+        return QuestWalkRule.unreachableTarget() != null ? "UNREACHABLE" : stuckStage;
+    }
 
     public static long getStuckForMs() { return stuckForMs; }
     private long nextBreakAtMs;
@@ -185,7 +189,7 @@ public class QuestScript extends Script {
             try {
                 net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
                         config.pathVariation() && !escortActive, config.pathVariationStrength().getLevel());
-                net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule.setActive(config.startStopQuestHelper());
+                QuestWalkRule.setActive(config.startStopQuestHelper() && !QuestPause.isPaused());
                 if (!config.startStopQuestHelper()) {
                     net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
@@ -513,7 +517,7 @@ public class QuestScript extends Script {
 					pausedAtMs = now;
 				}
 				// keep cancelling for a few seconds: the main loop may re-issue a walk before it sees the pause
-				if (now - pausedAtMs < 10_000L && Rs2Walker.getCurrentTarget() != null) {
+				if (now - pausedAtMs < 10_000L && QuestPause.ownsWalk(Rs2Walker.getCurrentTarget(), lastWalkTarget)) {
 					Rs2Walker.clearWalkingRoute(on ? "quest-helper:quest-deselected" : "quest-helper:paused");
 				}
 				stuckWatchdog.reset(now);
@@ -3514,7 +3518,7 @@ public class QuestScript extends Script {
 
 	@Override
 	public void shutdown() {
-		net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule.setActive(false);
+		QuestWalkRule.setActive(false);
 		DialogueChoiceProvider.clear();
 		if (combatSupportFuture != null) {
 			combatSupportFuture.cancel(true);

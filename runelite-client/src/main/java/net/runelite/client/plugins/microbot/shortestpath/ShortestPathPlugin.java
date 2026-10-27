@@ -50,6 +50,7 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.CollisionMap;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathfinderConfig;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import net.runelite.client.plugins.microbot.util.walker.WebWalkLog;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.live.LiveCollisionCapture;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.live.LiveCollisionConflicts;
@@ -1021,6 +1022,9 @@ public class ShortestPathPlugin extends Plugin {
     }
 
 	public static boolean override(String configOverrideKey, boolean defaultValue) {
+		if (QuestWalkRule.forcesToggle(configOverrideKey)) {
+			return true;
+		}
 		if (!configOverride.isEmpty()) {
 			Object value = configOverride.get(configOverrideKey);
 			if (value instanceof Boolean) {
@@ -1051,6 +1055,10 @@ public class ShortestPathPlugin extends Plugin {
 	}
 
 	public static TeleportationItem override(String configOverrideKey, TeleportationItem defaultValue) {
+		if (QuestWalkRule.forcesTeleportItems() && "useTeleportationItems".equals(configOverrideKey)
+				&& defaultValue == TeleportationItem.NONE) {
+			return TeleportationItem.INVENTORY;
+		}
 		if (!configOverride.isEmpty()) {
 			Object value = configOverride.get(configOverrideKey);
 			if (value instanceof String) {

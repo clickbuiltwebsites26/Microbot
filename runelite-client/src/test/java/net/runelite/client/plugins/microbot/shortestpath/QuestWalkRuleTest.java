@@ -89,6 +89,27 @@ public class QuestWalkRuleTest
 		assertNoRestricted(new WorldPoint(3222, 3218, 0), new WorldPoint(3092, 3243, 0));
 	}
 
+	/** Hosidius (Zeah) to Elena in East Ardougne: no route on foot, so the walk crosses and says what it used. */
+	@Test
+	public void zeahReachesArdougneByCrossingAndNeverBySurpriseTeleport() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		WorldPoint elena = new WorldPoint(2592, 3336, 0);
+		Pathfinder pf = run(new WorldPoint(1884, 3481, 0), elena);
+		assertFalse(pf.getPath().isEmpty());
+		assertTrue(pf.getPath().get(pf.getPath().size() - 1).distanceTo2D(elena) <= 3);
+		for (PathEdge e : pf.getPathEdges())
+		{
+			assertFalse("used " + e.getTransport() + " " + e.getFrom() + ">" + e.getTo(),
+				e.isTransport() && TransportType.isTeleport(e.getTransport().getType(), e.getTransport().getOrigin()));
+			if (e.isTransport() && e.getTransport().getType() == TransportType.SHIP)
+			{
+				String ferry = e.getTransport().getName();
+				assertTrue("unexpected ferry " + ferry, "Veos".equals(ferry) || "Cabin Boy Herbert".equals(ferry));
+			}
+		}
+	}
+
 	@Test
 	public void islandFallsBackToTheShip() throws Exception
 	{
