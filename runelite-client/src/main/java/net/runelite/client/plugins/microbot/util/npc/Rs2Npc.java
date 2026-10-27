@@ -1284,9 +1284,7 @@ public class Rs2Npc {
                 .filter(value -> (value.getComposition() != null
                         && value.getComposition().getActions() != null
                         && Arrays.asList(value.getComposition().getActions()).contains(action))
-                        || (value.getComposition().transform() != null
-                        && value.getComposition().transform().getActions() != null
-                        && Arrays.asList(value.getComposition().transform().getActions()).contains(action)))
+                        || value.getTransformedActions().contains(action))
                 .findFirst()
                 .orElse(null);
     }

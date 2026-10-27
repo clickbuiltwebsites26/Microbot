@@ -50,14 +50,14 @@ public class LiveCollisionFloorTest
 	}
 
 	@Test
-	public void emptyUpperFloorsStayBlockedEastOfFaladorCastle()
+	public void emptyUpperFloorsAreUnknownSoTheStaticMapDecidesEastOfFaladorCastle()
 	{
 		LiveCollisionSnapshot snapshot = LiveCollisionCapture.build(
 			BASE_X, BASE_Y, 2, allOpen(), null, groundFloorOnly());
 		for (int x : new int[] {2988, 2990, 2992, 2994})
 		{
-			assertEquals("east of the castle at " + x, Boolean.FALSE, east(snapshot, x, 3329, 1));
-			assertEquals(Boolean.FALSE, north(snapshot, x, 3329, 1));
+			assertEquals("east of the castle at " + x, null, east(snapshot, x, 3329, 1));
+			assertEquals(null, north(snapshot, x, 3329, 1));
 		}
 		assertEquals("the ground below is still open", Boolean.TRUE, east(snapshot, 2990, 3329, 0));
 	}
@@ -70,12 +70,12 @@ public class LiveCollisionFloorTest
 	}
 
 	@Test
-	public void theArdougneTimberHouseUpperFloorOutsideItsWallsStaysBlocked()
+	public void theArdougneTimberHouseUpperFloorOutsideItsWallsIsUnknown()
 	{
 		LiveCollisionSnapshot snapshot = LiveCollisionCapture.build(
 			2580, 3260, 2, allOpen(), null, groundFloorOnly());
-		assertEquals(Boolean.FALSE, north(snapshot, 2617, 3294, 1));
-		assertEquals(Boolean.FALSE, east(snapshot, 2617, 3294, 1));
+		assertEquals(null, north(snapshot, 2617, 3294, 1));
+		assertEquals(null, east(snapshot, 2617, 3294, 1));
 	}
 
 	@Test
@@ -103,5 +103,25 @@ public class LiveCollisionFloorTest
 	private static boolean CAPTURE_VERSION_BUMPED()
 	{
 		return LiveCollisionCapture.CAPTURE_VERSION >= 4;
+	}
+
+	/** A real surface with no paint or model (a ship deck, scaffolding, a Low Detail scene) must not be blocked, and open air must not be opened. */
+	@Test
+	public void aFloorlessTileNeitherOpensNorBlocksWhateverTheLiveFlagsSay()
+	{
+		int[][][] blocked = new int[2][SCENE][SCENE];
+		for (int x = 0; x < SCENE; x++)
+		{
+			for (int y = 0; y < SCENE; y++)
+			{
+				blocked[1][x][y] = net.runelite.api.CollisionDataFlag.BLOCK_MOVEMENT_FULL;
+			}
+		}
+		LiveCollisionSnapshot open = LiveCollisionCapture.build(BASE_X, BASE_Y, 2, allOpen(), null, groundFloorOnly());
+		LiveCollisionSnapshot shut = LiveCollisionCapture.build(BASE_X, BASE_Y, 2, blocked, null, groundFloorOnly());
+		assertEquals(null, east(open, 2990, 3329, 1));
+		assertEquals(null, east(shut, 2990, 3329, 1));
+		assertEquals(null, north(open, 2990, 3329, 1));
+		assertEquals(null, north(shut, 2990, 3329, 1));
 	}
 }

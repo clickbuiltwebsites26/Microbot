@@ -4356,8 +4356,10 @@ public class QuestScript extends Script {
 
     /** Whether the NPC is in a fight with a player other than us. */
     private static boolean isFightingAnotherPlayer(Rs2NpcModel npc) {
-        net.runelite.api.Actor target = npc.getInteracting();
-        return target instanceof net.runelite.api.Player && target != Microbot.getClient().getLocalPlayer();
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            net.runelite.api.Actor target = npc.getInteracting();
+            return target instanceof net.runelite.api.Player && target != Microbot.getClient().getLocalPlayer();
+        }).orElse(false);
     }
 
     /** Gertrude's Cat: the step that searches the "Mew!" crate NPCs for the kitten. */

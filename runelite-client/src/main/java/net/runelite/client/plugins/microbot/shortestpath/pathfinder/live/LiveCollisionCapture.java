@@ -51,11 +51,14 @@ public final class LiveCollisionCapture {
      * v3 = wall-door FOOTPRINT deferral — v2 stores could hold known+blocked diagonal edges around a
      * closed door (the oriented mask missed them), and two such doors sealed the Falador farm interior,
      * so every v2 store is potentially door-poisoned and must be discarded.
+     * v4 = tiles without a floor above ground recorded known+blocked; v5 = such tiles are left UNKNOWN (the static map
+     * decides): v4 could block real surfaces with no paint or model (ship decks, scaffolding, rooftops, Low Detail
+     * scenes), so every v4 store is discarded.
      * (Door edges changing from unknown to known-passable did NOT need a bump: v2 stores hold no door
      * edges at all — they were always unknown — so old data cannot disagree, it is merely less informed
      * and gets filled in by the next capture.)
      */
-    public static final int CAPTURE_VERSION = 4;
+    public static final int CAPTURE_VERSION = 5;
 
     /**
      * Actions that mark a wall object as a door the walker opens at runtime. Mirrors the door-action set
@@ -138,7 +141,7 @@ public final class LiveCollisionCapture {
      * Which scene tiles have a floor to stand on. Ground level always does. Above it a tile needs a painted or modelled
      * floor: open air beside an upper storey (Falador castle's moat, the grass round the Ardougne timber house) reads as
      * walkable in the live collision flags, and the live map overrides the static one, so the walker planned routes
-     * across thin air. Null when the scene cannot be read (every tile then counts as floored, as before).
+     * across thin air. Such a tile can never open an edge; it is not recorded as blocked either (see build). Null when the scene cannot be read (every tile then counts as floored, as before).
      */
     private static boolean[][][] findFloors(WorldView wv, int planeCount) {
         final Scene scene = wv.getScene();
@@ -287,8 +290,10 @@ public final class LiveCollisionCapture {
     }
 
     /**
-     * As above, and a tile without a floor ({@code floors[z][sx][sy]} false) is not standable whatever its flags say,
-     * so every edge touching it is known and blocked. Null {@code floors}: every tile has a floor.
+     * As above, and an edge touching a tile without a floor ({@code floors[z][sx][sy]} false) is left UNKNOWN, so the
+     * static map decides: live flags can never open what the static map blocks (open air beside the Falador castle), and
+     * a real surface that merely lacks paint or a model (a ship deck, scaffolding) is not wrongly blocked. Null
+     * {@code floors}: every tile has a floor.
      */
     public static LiveCollisionSnapshot build(int baseX, int baseY, int planeCount, int[][][] flagsByPlane,
                                               LiveCollisionDoorMask doorEdges, boolean[][][] floors) {
@@ -307,13 +312,14 @@ public final class LiveCollisionCapture {
                 for (int sy = 0; sy < SCENE_SIZE; sy++) {
                     final int index = (z * SCENE_SIZE + sy) * SCENE_SIZE + sx;
                     final int data = flags[sx][sy];
-                    final boolean walkableHere = standable(data) && floor(floors, z, sx, sy);
+                    final boolean floorHere = floor(floors, z, sx, sy);
+                    final boolean walkableHere = standable(data);
 
                     // North edge: known only when both endpoints are trusted interior tiles (away from
                     // the unreliable scene border).
-                    if (interior(sx, sy) && interior(sx, sy + 1)) {
+                    if (interior(sx, sy) && interior(sx, sy + 1) && floorHere && floor(floors, z, sx, sy + 1)) {
                         final int north = flags[sx][sy + 1];
-                        final boolean northStandable = standable(north) && floor(floors, z, sx, sy + 1);
+                        final boolean northStandable = standable(north);
                         if (doorEdges != null && doorEdges.exemptsNorth(z, sx, sy)) {
                             // An edge owned by the runtime door handler. The door's movement-block flags
                             // are TRANSIENT (closed now, open after the walker opens it on contact), so
@@ -343,9 +349,9 @@ public final class LiveCollisionCapture {
                     }
 
                     // East edge: same, for the east neighbour.
-                    if (interior(sx, sy) && interior(sx + 1, sy)) {
+                    if (interior(sx, sy) && interior(sx + 1, sy) && floorHere && floor(floors, z, sx + 1, sy)) {
                         final int east = flags[sx + 1][sy];
-                        final boolean eastStandable = standable(east) && floor(floors, z, sx + 1, sy);
+                        final boolean eastStandable = standable(east);
                         if (doorEdges != null && doorEdges.exemptsEast(z, sx, sy)) {
                             if (walkableHere && eastStandable) {
                                 eastKnown.set(index);
