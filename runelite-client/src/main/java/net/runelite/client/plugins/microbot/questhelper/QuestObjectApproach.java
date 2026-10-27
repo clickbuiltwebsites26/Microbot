@@ -1,6 +1,7 @@
 package net.runelite.client.plugins.microbot.questhelper;
 
 import java.util.Collection;
+import net.runelite.api.CollisionDataFlag;
 import java.util.Comparator;
 import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
@@ -16,8 +17,66 @@ public final class QuestObjectApproach
 	/** Route length for a tile the planner cannot reach. */
 	public static final int UNREACHABLE = -1;
 
+	/** Collision flags of the world tile at (x, y) on the object's floor. */
+	@FunctionalInterface
+	public interface CollisionFlags
+	{
+		int at(int worldX, int worldY);
+	}
+
 	private QuestObjectApproach()
 	{
+	}
+
+	/**
+	 * Whether {@code tile} touches the object's footprint along a cardinal edge that is not closed by a wall, fence,
+	 * cage bars or a gate. Line of sight is no substitute: it passes through bars, which is how a tile outside a cage
+	 * looked like a tile beside the crate inside it.
+	 */
+	public static boolean touchesWithOpenEdge(WorldPoint tile, Collection<WorldPoint> footprint, CollisionFlags flags)
+	{
+		for (WorldPoint part : footprint)
+		{
+			if (part.getPlane() != tile.getPlane())
+			{
+				continue;
+			}
+			int dx = tile.getX() - part.getX();
+			int dy = tile.getY() - part.getY();
+			if (Math.abs(dx) + Math.abs(dy) != 1)
+			{
+				continue;
+			}
+			// the edge between the two tiles must not block movement from either side
+			int tileSide;
+			int partSide;
+			if (dx == -1)
+			{
+				tileSide = CollisionDataFlag.BLOCK_MOVEMENT_EAST;
+				partSide = CollisionDataFlag.BLOCK_MOVEMENT_WEST;
+			}
+			else if (dx == 1)
+			{
+				tileSide = CollisionDataFlag.BLOCK_MOVEMENT_WEST;
+				partSide = CollisionDataFlag.BLOCK_MOVEMENT_EAST;
+			}
+			else if (dy == -1)
+			{
+				tileSide = CollisionDataFlag.BLOCK_MOVEMENT_NORTH;
+				partSide = CollisionDataFlag.BLOCK_MOVEMENT_SOUTH;
+			}
+			else
+			{
+				tileSide = CollisionDataFlag.BLOCK_MOVEMENT_SOUTH;
+				partSide = CollisionDataFlag.BLOCK_MOVEMENT_NORTH;
+			}
+			if ((flags.at(tile.getX(), tile.getY()) & tileSide) == 0
+				&& (flags.at(part.getX(), part.getY()) & partSide) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

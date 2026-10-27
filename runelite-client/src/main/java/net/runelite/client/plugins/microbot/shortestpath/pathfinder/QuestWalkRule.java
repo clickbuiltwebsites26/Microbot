@@ -1,9 +1,11 @@
 package net.runelite.client.plugins.microbot.shortestpath.pathfinder;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.shortestpath.Transport;
 import net.runelite.client.plugins.microbot.shortestpath.TransportType;
@@ -12,14 +14,15 @@ import net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil;
 /**
  * Two switches, both off by default.
  *
- * <p><b>On-foot restriction</b> ({@link #setActive}): ships, charters, quetzals, ferries, spirit trees, fairy
- * rings, gliders, carpets, balloons, minecarts, canoes, mushtrees and teleports are blocked for every search.
- * Quest automation and the DD Chopper plugin use it to keep the walker on foot.
+ * <p><b>On-foot restriction</b>: ships, charters, quetzals, ferries, spirit trees, fairy rings, gliders, carpets,
+ * balloons, minecarts, canoes, mushtrees and teleports are blocked for every search. The quest script
+ * ({@link #setActive}) and the DD Chopper plugin ({@link #setOnFootOnly}) each ask for it independently.
  *
  * <p><b>Crossing mode</b> ({@link #setCrossingMode}): only the quest script sets it, and it only takes effect
- * while a walk started by the quest script's own thread is in flight ({@link #beginQuestWalk}). A search that
- * ends with the target proven unreachable ({@link PathTerminationReason#SEARCH_EXHAUSTED}, not a cutoff, not a
- * sealed target) is repeated in widening {@link Stage}s, and the first stage that reaches the target is announced:
+ * for a pathfinder whose targets are the target of a walk the quest script's own thread has in flight
+ * ({@link #beginQuestWalk}). A search that ends with the target proven unreachable
+ * ({@link PathTerminationReason#SEARCH_EXHAUSTED}, not a cutoff, not a sealed target) is repeated in widening
+ * {@link Stage}s, and the first stage that reaches the target is announced:
  * <ol>
  *   <li>{@link Stage#ON_FOOT}: nothing restricted.</li>
  *   <li>{@link Stage#NAMED_ROUTES}: only the routes the user prefers (the Veos ferry from Port Sarim; the Skills
@@ -50,9 +53,11 @@ public final class QuestWalkRule
 		}
 	}
 
-	private static volatile boolean active;
+	private static volatile boolean questActive;
+	private static volatile boolean onFootOnly;
 	private static volatile boolean crossingMode;
-	private static final AtomicInteger QUEST_WALKS_IN_FLIGHT = new AtomicInteger();
+	private static final CopyOnWriteArrayList<WorldPoint> QUEST_WALK_TARGETS = new CopyOnWriteArrayList<>();
+	private static final ThreadLocal<Deque<WorldPoint>> OWN_WALKS = ThreadLocal.withInitial(ArrayDeque::new);
 	private static final ThreadLocal<Boolean> QUEST_THREAD = ThreadLocal.withInitial(() -> Boolean.FALSE);
 	private static volatile WorldPoint lastQuestWalkTarget;
 	private static final ThreadLocal<Stage> STAGE = ThreadLocal.withInitial(() -> Stage.ON_FOOT);
@@ -83,6 +88,12 @@ public final class QuestWalkRule
 	 * ladders are all under 200.
 	 */
 	static final int LONG_RIDE_TILES = 250;
+
+	/**
+	 * How long the on-foot search of a quest walk may go without getting closer before it counts as stuck. The usual
+	 * few seconds are not enough to flood a whole landmass on a loaded client, and a cut-off search proves nothing.
+	 */
+	public static final long EXTENDED_CUTOFF_MS = 30_000L;
 	private static final int SURFACE_MAX_X = 4000;
 	private static final int SURFACE_MAX_Y = 4200;
 
@@ -100,10 +111,10 @@ public final class QuestWalkRule
 	{
 	}
 
-	/** Switches the on-foot restriction; turning it off also ends crossing mode and forgets the unreachable target. */
+	/** Quest script only: switches its on-foot restriction; off also ends crossing mode and forgets the back-off. */
 	public static void setActive(boolean on)
 	{
-		active = on;
+		questActive = on;
 		if (!on)
 		{
 			crossingMode = false;
@@ -113,15 +124,22 @@ public final class QuestWalkRule
 		}
 	}
 
+	/** Other plugins: keep the walker on foot while they run. Never touches the quest script's state. */
+	public static void setOnFootOnly(boolean on)
+	{
+		onFootOnly = on;
+	}
+
+	/** Whether any on-foot restriction is requested. */
 	public static boolean isActive()
 	{
-		return active;
+		return questActive || onFootOnly;
 	}
 
 	/** Quest script only: whether walks of the quest thread may cross water and teleport when nothing else reaches. */
 	public static void setCrossingMode(boolean on)
 	{
-		crossingMode = on && active;
+		crossingMode = on && questActive;
 	}
 
 	/** Marks the calling thread as the quest script's loop thread. */
@@ -140,7 +158,8 @@ public final class QuestWalkRule
 		{
 			return false;
 		}
-		QUEST_WALKS_IN_FLIGHT.incrementAndGet();
+		OWN_WALKS.get().push(target);
+		QUEST_WALK_TARGETS.add(target);
 		lastQuestWalkTarget = target;
 		return true;
 	}
@@ -149,26 +168,53 @@ public final class QuestWalkRule
 	{
 		if (wasQuestWalk)
 		{
-			QUEST_WALKS_IN_FLIGHT.decrementAndGet();
+			QUEST_WALK_TARGETS.remove(OWN_WALKS.get().pop());
 		}
 	}
 
 	/** Whether a walk started by the quest script is running right now. */
 	public static boolean isQuestWalkInFlight()
 	{
-		return QUEST_WALKS_IN_FLIGHT.get() > 0;
+		return !QUEST_WALK_TARGETS.isEmpty();
 	}
 
-	/** Whether widening and the forced toggles apply right now: crossing mode, during a quest walk. */
+	/** Whether the forced toggles apply right now: crossing mode, during a quest walk. */
 	public static boolean crossingEnabled()
 	{
-		return active && crossingMode && isQuestWalkInFlight();
+		return questActive && crossingMode && isQuestWalkInFlight();
+	}
+
+	/**
+	 * Whether a pathfinder for {@code packedTargets} may widen: crossing is on and it is searching for the target of
+	 * a quest walk in flight, not for some other plugin's or the Agent Server's target.
+	 */
+	public static boolean crossingEnabledFor(Set<Integer> packedTargets)
+	{
+		if (!crossingEnabled())
+		{
+			return false;
+		}
+		for (WorldPoint walking : QUEST_WALK_TARGETS)
+		{
+			if (packedTargets.contains(WorldPointUtil.packWorldPoint(walking)))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Pure decision: widen only when the on-foot search proved the target unreachable. */
 	public static boolean shouldWiden(boolean crossingEnabled, PathTerminationReason onFootResult, boolean sealedTarget)
 	{
 		return crossingEnabled && !sealedTarget && onFootResult == PathTerminationReason.SEARCH_EXHAUSTED;
+	}
+
+	/** Pure decision: a cut-off on-foot search proves nothing, so it is repeated with {@link #EXTENDED_CUTOFF_MS}. */
+	public static boolean shouldRetryOnFootLonger(boolean crossingEnabled, PathTerminationReason onFootResult,
+		boolean sealedTarget)
+	{
+		return crossingEnabled && !sealedTarget && onFootResult == PathTerminationReason.CUTOFF_REACHED;
 	}
 
 	static Stage stage()
@@ -288,7 +334,7 @@ public final class QuestWalkRule
 	/** Whether the search must skip this transport right now. */
 	public static boolean blocks(Transport transport)
 	{
-		return active && !permits(STAGE.get(), transport, ARDOUGNE_TARGET.get());
+		return isActive() && !permits(STAGE.get(), transport, ARDOUGNE_TARGET.get());
 	}
 
 	/** True the first time this stage is announced for these targets, so a step is logged once. */
@@ -322,7 +368,7 @@ public final class QuestWalkRule
 	/** Whether a quest walk to {@code target} should be skipped for now because it just proved unreachable. */
 	public static boolean isBackedOff(WorldPoint target, WorldPoint playerAt)
 	{
-		return active && QUEST_THREAD.get() && UNREACHABLE.isBackedOff(target, playerAt, System.currentTimeMillis());
+		return questActive && QUEST_THREAD.get() && UNREACHABLE.isBackedOff(target, playerAt, System.currentTimeMillis());
 	}
 
 	/** A quest walk reached its target: forget any earlier failure for it. */
@@ -334,7 +380,7 @@ public final class QuestWalkRule
 	/** The step target currently given up on, or {@code null} (also when the quest has moved on to another step). */
 	public static WorldPoint unreachableTarget(WorldPoint playerAt)
 	{
-		if (!active)
+		if (!questActive)
 		{
 			return null;
 		}

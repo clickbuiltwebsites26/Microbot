@@ -9,18 +9,15 @@ final class WalkerOverrides
 
 	void apply()
 	{
-		if (!QuestWalkRule.isActive())
-		{
-			QuestWalkRule.setActive(true);
-			applied = true;
-		}
+		QuestWalkRule.setOnFootOnly(true);
+		applied = true;
 	}
 
 	void clear()
 	{
 		if (applied)
 		{
-			QuestWalkRule.setActive(false);
+			QuestWalkRule.setOnFootOnly(false);
 			applied = false;
 		}
 	}

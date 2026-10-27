@@ -25,6 +25,7 @@ public class QuestWalkStageTest
 	public void off()
 	{
 		QuestWalkRule.setActive(false);
+		QuestWalkRule.setOnFootOnly(false);
 	}
 
 	private static Transport npc(TransportType type, String name, WorldPoint from, WorldPoint to)
@@ -287,5 +288,109 @@ public class QuestWalkStageTest
 		assertEquals("Quest walk: T not reachable on foot; crossing via [SHIP Port Sarim]",
 			QuestWalkRule.describe(Stage.CROSSINGS, "T", used));
 		assertTrue(QuestWalkRule.describe(Stage.TELEPORTS, "T", used).contains("teleporting via"));
+	}
+
+	private static Set<Integer> packed(WorldPoint... points)
+	{
+		Set<Integer> set = new java.util.HashSet<>();
+		for (WorldPoint point : points)
+		{
+			set.add(WorldPointUtil.packWorldPoint(point));
+		}
+		return set;
+	}
+
+	@Test
+	public void crossingIsLimitedToThePathfindersOfQuestWalkTargets()
+	{
+		WorldPoint questTarget = new WorldPoint(2592, 3336, 0);
+		WorldPoint someoneElsesTarget = new WorldPoint(3222, 3218, 0);
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean walking = QuestWalkRule.beginQuestWalk(questTarget);
+		try
+		{
+			assertTrue(QuestWalkRule.crossingEnabledFor(packed(questTarget)));
+			assertTrue(QuestWalkRule.crossingEnabledFor(packed(someoneElsesTarget, questTarget)));
+			assertFalse("another plugin's pathfinder must not widen", QuestWalkRule.crossingEnabledFor(packed(someoneElsesTarget)));
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(walking);
+			QuestWalkRule.markQuestThread(false);
+		}
+		assertFalse(QuestWalkRule.crossingEnabledFor(packed(questTarget)));
+	}
+
+	@Test
+	public void nestedQuestWalksEachKeepTheirOwnTarget()
+	{
+		WorldPoint outer = new WorldPoint(2592, 3336, 0);
+		WorldPoint inner = new WorldPoint(3222, 3218, 0);
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean first = QuestWalkRule.beginQuestWalk(outer);
+		boolean second = QuestWalkRule.beginQuestWalk(inner);
+		try
+		{
+			QuestWalkRule.endQuestWalk(second);
+			assertTrue(QuestWalkRule.crossingEnabledFor(packed(outer)));
+			assertFalse(QuestWalkRule.crossingEnabledFor(packed(inner)));
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(first);
+			QuestWalkRule.markQuestThread(false);
+		}
+	}
+
+	@Test
+	public void theOnFootRestrictionOfAnotherPluginDoesNotTouchTheQuestState()
+	{
+		WorldPoint elena = new WorldPoint(2592, 3336, 0);
+		WorldPoint zeah = new WorldPoint(1884, 3481, 0);
+		Transport veos = npc(TransportType.SHIP, "Veos", A, B);
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean walking = QuestWalkRule.beginQuestWalk(elena);
+		try
+		{
+			QuestWalkRule.reportUnreachable(elena, zeah);
+			QuestWalkRule.setOnFootOnly(true);
+			QuestWalkRule.setOnFootOnly(false);
+			assertTrue(QuestWalkRule.crossingEnabled());
+			assertTrue(QuestWalkRule.isBackedOff(elena, zeah));
+			assertTrue(QuestWalkRule.blocks(veos));
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(walking);
+			QuestWalkRule.markQuestThread(false);
+		}
+	}
+
+	@Test
+	public void theOnFootRestrictionAloneBlocksButNeverWidens()
+	{
+		Transport veos = npc(TransportType.SHIP, "Veos", A, B);
+		QuestWalkRule.setOnFootOnly(true);
+		assertTrue(QuestWalkRule.isActive());
+		assertTrue(QuestWalkRule.blocks(veos));
+		assertFalse(QuestWalkRule.crossingEnabledFor(packed(A)));
+		QuestWalkRule.setOnFootOnly(false);
+		assertFalse(QuestWalkRule.isActive());
+	}
+
+	@Test
+	public void aCutOffOnFootSearchIsRepeatedLongerNeverWidened()
+	{
+		assertTrue(QuestWalkRule.shouldRetryOnFootLonger(true, PathTerminationReason.CUTOFF_REACHED, false));
+		assertFalse(QuestWalkRule.shouldRetryOnFootLonger(true, PathTerminationReason.SEARCH_EXHAUSTED, false));
+		assertFalse(QuestWalkRule.shouldRetryOnFootLonger(true, PathTerminationReason.CUTOFF_REACHED, true));
+		assertFalse(QuestWalkRule.shouldRetryOnFootLonger(false, PathTerminationReason.CUTOFF_REACHED, false));
+		assertTrue(QuestWalkRule.EXTENDED_CUTOFF_MS > 10_000L);
 	}
 }

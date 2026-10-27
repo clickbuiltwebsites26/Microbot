@@ -286,7 +286,11 @@ public abstract class Rs2Tile implements Tile {
 
     private static List<WorldPoint> getWalkableTilesAroundTileInternal(WorldPoint point, int radius) {
         int useRadius = radius;
-        final LocalPoint localPoint = LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(), point);
+        // on the player's floor: the lookup returns null for a point on any other floor, but the scene is the same
+        final WorldPoint player = Rs2Player.getWorldLocation();
+        final LocalPoint localPoint = player == null ? null
+                : LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(),
+                new WorldPoint(point.getX(), point.getY(), player.getPlane()));
         if (localPoint == null) return Collections.emptyList();
 
         // read the floor of the point itself, so tiles around an object upstairs come from its own collision map

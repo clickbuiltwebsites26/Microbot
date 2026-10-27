@@ -211,11 +211,16 @@ public final class LiveCollisionCapture {
         return hasDoorAction(comp);
     }
 
+    /** Double gates are game objects (the Mourner HQ cage gate), and close behind the player like a door. */
+    private static boolean isDoorOrGateName(String lowerCaseName) {
+        return lowerCaseName.contains("door") || lowerCaseName.contains("gate");
+    }
+
     private static boolean isOpenableGameObjectDoor(int objectId) {
         final ObjectComposition comp = resolvedComposition(objectId);
         return comp != null
                 && comp.getName() != null
-                && comp.getName().toLowerCase(Locale.ENGLISH).contains("door")
+                && isDoorOrGateName(comp.getName().toLowerCase(Locale.ENGLISH))
                 && hasDoorAction(comp);
     }
 

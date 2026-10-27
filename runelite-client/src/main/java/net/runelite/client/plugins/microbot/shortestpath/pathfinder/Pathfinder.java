@@ -342,8 +342,11 @@ public class Pathfinder implements Runnable {
     /** See {@link #getReachedSealedSubstitute()}. Volatile: written by the search thread, read by the walker. */
     private volatile int reachedSealedSubstitutePacked = -1;
 
+    /** Set by {@link #run()} for the longer on-foot look of a quest walk; replaces the configured cutoff. */
+    private long extendedCutoffMillis = -1L;
+
     private long effectiveCutoffMillis() {
-        long configured = config.getCalculationCutoffMillis();
+        long configured = extendedCutoffMillis > 0 ? extendedCutoffMillis : config.getCalculationCutoffMillis();
         return cutoffOverrideMillis > 0 ? Math.min(cutoffOverrideMillis, configured) : configured;
     }
 
@@ -841,9 +844,19 @@ public class Pathfinder implements Runnable {
     @Override
     public void run() {
         runInner();
-        boolean widen = QuestWalkRule.shouldWiden(
-                !cancelled && QuestWalkRule.stage() == QuestWalkRule.Stage.ON_FOOT && QuestWalkRule.crossingEnabled(),
-                terminationReason, sealedTargetMode);
+        boolean crossing = !cancelled && QuestWalkRule.stage() == QuestWalkRule.Stage.ON_FOOT
+                && QuestWalkRule.crossingEnabledFor(targets);
+        if (QuestWalkRule.shouldRetryOnFootLonger(crossing, terminationReason, sealedTargetMode)) {
+            // no progress for a few seconds proves nothing (a whole landmass takes a while to flood on a busy
+            // client): look on foot for longer before deciding the target needs a crossing
+            extendedCutoffMillis = QuestWalkRule.EXTENDED_CUTOFF_MS;
+            try {
+                runInner();
+            } finally {
+                extendedCutoffMillis = -1L;
+            }
+        }
+        boolean widen = QuestWalkRule.shouldWiden(crossing && !cancelled, terminationReason, sealedTargetMode);
         if (!widen) {
             return;
         }

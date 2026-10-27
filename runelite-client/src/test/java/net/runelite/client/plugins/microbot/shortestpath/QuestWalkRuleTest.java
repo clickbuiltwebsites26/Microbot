@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.shortestpath;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -11,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathEdge;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathTerminationReason;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.PathfinderConfig;
 import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
@@ -127,7 +129,9 @@ public class QuestWalkRuleTest
 	public void unreachableTargetLeavesNoRestrictedTransportInThePath() throws Exception
 	{
 		QuestWalkRule.setActive(true);
-		Pathfinder pf = run(new WorldPoint(3222, 3218, 0), new WorldPoint(100, 100, 0));
+		// deep sea south of Karamja: on the map, walkable from nowhere, and no transport lands there
+		Pathfinder pf = run(new WorldPoint(3222, 3218, 0), new WorldPoint(2900, 2800, 0));
+		assertNotEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
 		for (PathEdge e : pf.getPathEdges())
 		{
 			assertFalse("kept " + e.getTransport() + " in a failed search",

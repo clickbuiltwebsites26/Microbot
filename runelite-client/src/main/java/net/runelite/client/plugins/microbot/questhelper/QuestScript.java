@@ -60,6 +60,7 @@ import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -3145,7 +3146,6 @@ public class QuestScript extends Script {
 
 	// ---- one loop, pause, stop and the quest window ----
 
-	/** Wraps the main tick so only one tick runs at a time, even if a second loop was scheduled by mistake. */
 	private static boolean selectedIsCompleted(QuestHelper quest) {
 		return Microbot.getClientThread().runOnClientThreadOptional(quest::isCompleted).orElse(true);
 	}
@@ -3162,6 +3162,7 @@ public class QuestScript extends Script {
 		};
 	}
 
+	/** Wraps the main tick so only one tick runs at a time, even if a second loop was scheduled by mistake. */
 	private Runnable guardedTick(Runnable body) {
 		return TICK_GUARD.guard(body);
 	}
@@ -3635,11 +3636,16 @@ public class QuestScript extends Script {
         // doesn't mean a direct click will succeed. Require line-of-sight too, or we walk instead.
         // A kill target already in melee range is attacked even when pathfinding says "unreachable" (arena gates,
         // fight cages): otherwise we walk at it forever while it hits us and never click Attack.
+        boolean npcOnScreen = npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation());
+        int npcDistance = npc == null || npc.getWorldLocation() == null
+                ? Integer.MAX_VALUE : npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
         boolean closeKillTarget = killStep && npc != null && npc.getLocalLocation() != null
                 && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
                 && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
-        if (npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation())
-                && (closeKillTarget || Microbot.getClient().isInInstancedRegion() || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))) {
+        if (npcOnScreen
+                && (closeKillTarget || Microbot.getClient().isInInstancedRegion()
+                || QuestNpcApproach.decide(true, false, npcDistance) == QuestNpcApproach.Move.INTERACT
+                || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))) {
             Rs2Walker.clearWalkingRoute("quest-helper:npc-step-visible-interact");
 
             if (killStep && npcHasAction(npc, "Attack")) {
@@ -3681,8 +3687,14 @@ public class QuestScript extends Script {
                 npcsHandled.add(npc.getIndex());
                 sleepUntil(Rs2Dialogue::isInDialogue);
             }
-        } else if (npc != null && npc.getLocalLocation() != null && !Rs2Camera.isTileOnScreen(npc.getLocalLocation())) {
-            Rs2Walker.walkTo(npc.getWorldLocation(), 2);
+        } else if (npc != null && npc.getLocalLocation() != null && !npcOnScreen) {
+            // Walking toward an NPC we already stand beside does nothing: bring it into view instead.
+            if (QuestNpcApproach.decide(false, false, npcDistance) == QuestNpcApproach.Move.TURN_CAMERA) {
+                Rs2Camera.turnTo(npc.getNpc());
+                sleep(200, 400);
+            } else {
+                Rs2Walker.walkTo(npc.getWorldLocation(), 2);
+            }
         } else if (npc != null && (!npc.hasLineOfSight() || !Rs2Walker.canReach(npc.getWorldLocation()))) {
             Rs2Walker.walkTo(npc.getWorldLocation(), 2);
         } else {
@@ -4067,9 +4079,13 @@ public class QuestScript extends Script {
      */
     private WorldPoint chooseObjectApproachTile(WorldPoint objectTile) {
         WorldPoint me = Rs2Player.getWorldLocation();
+        List<WorldPoint> footprint = Collections.singletonList(objectTile);
+        QuestObjectApproach.CollisionFlags flags = collisionFlags(objectTile.getPlane());
         for (int radius = 1; radius <= APPROACH_MAX_RADIUS; radius++) {
+            // Only tiles that touch the object with no wall, fence, bars or gate edge between: line of sight alone
+            // passes through a cage, which put the player outside it next to the crate.
             List<WorldPoint> candidates = Rs2Tile.getWalkableTilesAroundTile(objectTile, radius).stream()
-                    .filter(x -> hasLineOfSightFrom(x, objectTile))
+                    .filter(x -> QuestObjectApproach.touchesWithOpenEdge(x, footprint, flags))
                     .sorted(Comparator.comparingInt((WorldPoint x) -> x.distanceTo2D(objectTile)))
                     .limit(APPROACH_MAX_CANDIDATES)
                     .collect(Collectors.toList());
@@ -4079,6 +4095,30 @@ public class QuestScript extends Script {
             }
         }
         return null;
+    }
+
+    /** Collision flags of one floor of the loaded scene, by world tile; every edge reads as open when unavailable. */
+    private static QuestObjectApproach.CollisionFlags collisionFlags(int plane) {
+        Object[] scene = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            WorldView view = Microbot.getClient().getTopLevelWorldView();
+            if (view == null || view.getCollisionMaps() == null
+                    || plane < 0 || plane >= view.getCollisionMaps().length || view.getCollisionMaps()[plane] == null) {
+                return null;
+            }
+            return new Object[] {view.getCollisionMaps()[plane].getFlags(), view.getBaseX(), view.getBaseY()};
+        }).orElse(null);
+        if (scene == null) {
+            return (x, y) -> 0;
+        }
+        int[][] flags = (int[][]) scene[0];
+        int baseX = (Integer) scene[1];
+        int baseY = (Integer) scene[2];
+        return (x, y) -> {
+            int sceneX = x - baseX;
+            int sceneY = y - baseY;
+            boolean inside = sceneX >= 0 && sceneY >= 0 && sceneX < flags.length && sceneY < flags[sceneX].length;
+            return inside ? flags[sceneX][sceneY] : 0;
+        };
     }
 
     private static int plannedRouteLength(WorldPoint from, WorldPoint to) {
@@ -4328,18 +4368,6 @@ public class QuestScript extends Script {
 
 		return Microbot.getClient().getTopLevelWorldView() != null
 				&& playerArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), objectArea);
-	}
-
-	private boolean hasLineOfSightFrom(WorldPoint point, WorldPoint target) {
-		if (point == null || target == null) {
-			return false;
-		}
-
-		WorldArea fromArea = point.toWorldArea();
-		WorldArea targetArea = target.toWorldArea();
-
-		return Microbot.getClient().getTopLevelWorldView() != null
-				&& fromArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), targetArea);
 	}
 
     // ---- escort steps (an NPC follows the player; sprinting ahead makes it stop) ----

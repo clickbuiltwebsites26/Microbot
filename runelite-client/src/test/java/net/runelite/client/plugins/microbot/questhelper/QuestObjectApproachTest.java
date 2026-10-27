@@ -1,7 +1,9 @@
 package net.runelite.client.plugins.microbot.questhelper;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -9,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import net.runelite.api.CollisionDataFlag;
 import net.runelite.api.coords.WorldPoint;
 import org.junit.Test;
 
@@ -80,6 +83,57 @@ public class QuestObjectApproachTest
 		Map<WorldPoint, Integer> routes = new HashMap<>();
 		routes.put(nextToStairs, 21); // gate 2058, door 2034, then the corridor
 		assertEquals(nextToStairs, choose(staircase, Collections.emptySet(), routes));
+	}
+
+	/**
+	 * #84 again, with the collision of the cage: bars let you see the crate but block the edge, so the tile outside the
+	 * cage touches the crate's neighbour, not the crate. A reachable tile on the wrong side must lose to the one inside.
+	 */
+	@Test
+	public void cageBarsMakeTheOutsideTileUnusableEvenThoughItIsCloserAndSeesTheCrate()
+	{
+		WorldPoint crate = at(2554, 3327, 1);
+		WorldPoint outsideCage = at(2555, 3327, 1);
+		WorldPoint inCage = at(2553, 3327, 1);
+		Map<Long, Integer> flags = new HashMap<>();
+		// bars on the east edge of the crate tile and the matching west edge of the outside tile
+		flags.put(key(crate), CollisionDataFlag.BLOCK_MOVEMENT_EAST);
+		flags.put(key(outsideCage), CollisionDataFlag.BLOCK_MOVEMENT_WEST);
+		QuestObjectApproach.CollisionFlags collision = (x, y) -> flags.getOrDefault(key(x, y), 0);
+		List<WorldPoint> footprint = Collections.singletonList(crate);
+
+		assertFalse(QuestObjectApproach.touchesWithOpenEdge(outsideCage, footprint, collision));
+		assertTrue(QuestObjectApproach.touchesWithOpenEdge(inCage, footprint, collision));
+
+		Map<WorldPoint, Integer> routes = new HashMap<>();
+		routes.put(outsideCage, 3); // reachable now, but on the wrong side of the bars
+		routes.put(inCage, 9); // through the gate
+		WorldPoint chosen = QuestObjectApproach.choose(crate, Arrays.asList(outsideCage, inCage),
+			tile -> QuestObjectApproach.touchesWithOpenEdge(tile, footprint, collision),
+			tile -> routes.getOrDefault(tile, QuestObjectApproach.UNREACHABLE));
+		assertEquals(inCage, chosen);
+	}
+
+	@Test
+	public void onlyCardinalNeighboursOnTheSameFloorTouch()
+	{
+		WorldPoint object = at(100, 100, 0);
+		QuestObjectApproach.CollisionFlags open = (x, y) -> 0;
+		List<WorldPoint> footprint = Collections.singletonList(object);
+		assertTrue(QuestObjectApproach.touchesWithOpenEdge(at(101, 100, 0), footprint, open));
+		assertFalse(QuestObjectApproach.touchesWithOpenEdge(at(101, 101, 0), footprint, open));
+		assertFalse(QuestObjectApproach.touchesWithOpenEdge(at(102, 100, 0), footprint, open));
+		assertFalse(QuestObjectApproach.touchesWithOpenEdge(at(101, 100, 1), footprint, open));
+	}
+
+	private static long key(WorldPoint point)
+	{
+		return key(point.getX(), point.getY());
+	}
+
+	private static long key(int x, int y)
+	{
+		return ((long) x << 32) | y;
 	}
 
 	@Test
