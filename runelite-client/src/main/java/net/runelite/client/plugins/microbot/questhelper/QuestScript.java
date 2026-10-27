@@ -138,6 +138,8 @@ public class QuestScript extends Script {
     private static volatile String stuckStage = "NONE";
     private static volatile long stuckForMs;
     private volatile boolean automationWasOn;
+    private QuestStep seenLinesStep;
+    private final Set<String> seenDialogueLines = new HashSet<>();
     private volatile long pausedAtMs;
     private volatile WorldPoint lastWalkTarget;
 
@@ -216,7 +218,7 @@ public class QuestScript extends Script {
                 if (handleShortBreak()) return;
                 humanizePause();
 
-                QuestStep questStep = getQuestHelperPlugin().getSelectedQuest().getCurrentStep().getActiveStep();
+                QuestStep questStep = activeStepOf(getQuestHelperPlugin().getSelectedQuest());
 
                 publishDialogueChoices(questStep);
                 // Dialogue is answered first and at ~100 ms, regardless of combat or animation state.
@@ -391,6 +393,10 @@ public class QuestScript extends Script {
 						return;
 					}
 
+					if (ensureFare(selectedQuest)) {
+						return;
+					}
+
 					if (questStep instanceof DetailedQuestStep && handleRequirements((DetailedQuestStep) questStep)) {
 						sleep(500, 1000);
 						return;
@@ -453,7 +459,7 @@ public class QuestScript extends Script {
 					}
 
 					if (questStep instanceof DetailedQuestStep && !(questStep instanceof NpcStep || questStep instanceof ObjectStep || questStep instanceof DigStep)) {
-                        boolean result = applyDetailedQuestStep((DetailedQuestStep) selectedQuest.getCurrentStep().getActiveStep());
+                        boolean result = applyDetailedQuestStep((DetailedQuestStep) questStep);
                         if (result) {
                             settleAfterAction(attackedOnNonKillStep);
                             return;
@@ -461,7 +467,7 @@ public class QuestScript extends Script {
                     }
 
                     if (selectedQuest.getCurrentStep() instanceof ConditionalStep) {
-                        QuestStep conditionalStep = conditionalCommitment.select(selectedQuest.getCurrentStep().getActiveStep());
+                        QuestStep conditionalStep = conditionalCommitment.select(questStep);
                         if (applyStep(conditionalStep)) {
                             conditionalCommitment.markTried();
                         }
@@ -541,13 +547,28 @@ public class QuestScript extends Script {
 			endEscortIfInactive(selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep());
 			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();
 			if (walkTarget != null && QuestWalkRule.isQuestWalkInFlight()) lastWalkTarget = walkTarget;
+			if (!fetchingFare && QuestWalkRule.isQuestWalkInFlight() && QuestWalkRule.pendingFare() > 0
+					&& Rs2Inventory.itemQuantity(ItemID.COINS_995) < QuestWalkRule.pendingFare()) {
+				// the planned route pays a ship fare the inventory cannot cover: stop walking toward the ship
+				Rs2Walker.clearWalkingRoute("quest-helper:fare");
+			}
 			QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
 			int var = Microbot.getClientThread().runOnClientThreadOptional(selected::getVar).orElse(-1);
 			boolean suppressed = (config.takeShortBreaks() && breakEndsAtMs > now)
 					|| QuestCombatHandler.isAwaitingSetup() || QuestPreflight.isInProgress()
 					|| Rs2Combat.inCombat() || Rs2Bank.isOpen();
+			if (step != seenLinesStep) {
+				seenLinesStep = step;
+				seenDialogueLines.clear();
+			}
+			if (Rs2Dialogue.isInDialogue() && lastDialogueLine != null && !lastDialogueLine.isEmpty()) {
+				seenDialogueLines.add(lastDialogueLine);
+			}
+			suppressed = suppressed || Microbot.getVarbitValue(4606) > 0; // a cutscene
+			// a dialogue line not seen before on this step is progress; the same menu over and over is not
 			QuestStuckWatchdog.Stage entered = stuckWatchdog.tick(now,
-					QuestStuckRecovery.signature(step, var, false, escortProgress), suppressed);
+					QuestStuckRecovery.signature(step, var, false, escortProgress * 1_000L + seenDialogueLines.size()),
+					suppressed);
 			stuckStage = stuckWatchdog.current().name();
 			stuckForMs = stuckWatchdog.stuckForMs(now);
 			if (entered == null) return;
@@ -567,7 +588,10 @@ public class QuestScript extends Script {
 					QuestStuckRecovery.escapePlane();
 					break;
 				case TELEPORT:
-					QuestStuckRecovery.teleport(stepPoint);
+					if (!QuestStuckRecovery.teleport(stepPoint)) {
+						Microbot.log("[QuestWatchdog] no owned Ring of wealth or Amulet of glory to teleport out with; "
+								+ "giving up soon", Level.WARN);
+					}
 					break;
 				case GIVE_UP:
 					stopQuesterWithReason("Stuck for " + (stuckForMs / 1000) + "s at " + at + " on step \""
@@ -852,6 +876,56 @@ public class QuestScript extends Script {
 	 *
 	 * @return true while the preflight used this tick and the quest must not act yet
 	 */
+	private volatile boolean fetchingFare;
+
+	/**
+	 * A route that crosses by a paid ship needs the fare in the inventory: the seaman refuses with "You don't have enough
+	 * money" otherwise. When coins are short the quest goes to the bank for them first.
+	 *
+	 * @return true when this tick was spent on it
+	 */
+	private boolean ensureFare(QuestHelper quest) {
+		int fare = QuestWalkRule.pendingFare();
+		if (fare <= 0) {
+			return false;
+		}
+		long coins = Rs2Inventory.itemQuantity(ItemID.COINS_995);
+		if (coins >= fare) {
+			QuestWalkRule.clearFare();
+			return false;
+		}
+		long bankCoins = bankCoinSnapshot();
+		long take = QuestCoins.toWithdraw(fare, coins, bankCoins);
+		if (take < 0) {
+			QuestWalkRule.clearFare();
+			stopQuesterWithReason("The route needs a " + fare + " coin fare, but the inventory has " + coins
+					+ " and the bank has " + Math.max(0, bankCoins));
+			return true;
+		}
+		fetchingFare = true;
+		try {
+			Microbot.status = "Quest helper: fetching " + fare + " coins for the ship fare";
+			Microbot.log("Quest walk: fetching " + take + " coins from the bank for a " + fare + " coin ship fare", Level.INFO);
+			if (!Rs2Bank.isOpen()) {
+				Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
+				if (!sleepUntil(Rs2Bank::isOpen, 15_000)) {
+					return true;
+				}
+			}
+			if (!Rs2Bank.setWithdrawAsItem()) {
+				Rs2Bank.closeBank();
+				return true;
+			}
+			Rs2Bank.withdrawX(ItemID.COINS_995, (int) Math.min(Integer.MAX_VALUE, take));
+			sleepUntil(() -> Rs2Inventory.itemQuantity(ItemID.COINS_995) >= fare, 3_000);
+			Rs2Bank.closeBank();
+			sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+		} finally {
+			fetchingFare = false;
+		}
+		return true;
+	}
+
 	private boolean runPreflight(QuestHelper quest) {
 		// another loop that is already buying keeps the quest waiting
 		return BUY_GUARD.callOrElse(() -> runPreflightLocked(quest), true);
@@ -1202,6 +1276,30 @@ public class QuestScript extends Script {
 	}
 
     private HumanizedTiming humanTiming;
+
+    private String lastUnresolvedReport = "";
+
+    /**
+     * The step the automation acts on. A conditional step that answers with itself (not started, nothing resolved) has no
+     * text and nothing to do; that is a bug in the step map, not a state to idle in. It is logged once with the quest
+     * state and resolved by re-evaluating the conditions down to a leaf.
+     */
+    private QuestStep activeStepOf(QuestHelper quest) {
+        QuestStep step = quest.getCurrentStep() == null ? null : quest.getCurrentStep().getActiveStep();
+        if (!(step instanceof ConditionalStep)) {
+            return step;
+        }
+        QuestStep resolved = ((ConditionalStep) step).resolveActiveStep();
+        String report = quest.getQuest().getName() + "|" + resolved.getClass().getSimpleName();
+        if (!report.equals(lastUnresolvedReport)) {
+            lastUnresolvedReport = report;
+            int var = Microbot.getClientThread().runOnClientThreadOptional(quest::getVar).orElse(-1);
+            Microbot.log("Quest helper: step map answered with an unresolved conditional step (quest "
+                    + quest.getQuest().getName() + ", var " + var + "); resolved to "
+                    + resolved.getClass().getSimpleName() + " \"" + String.join(" ", resolved.getText()) + "\"", Level.WARN);
+        }
+        return resolved;
+    }
 
     /** Skewed random pause before an action, with fatigue and rare hesitations; skipped when timing matters. */
     private void humanizePause() {
@@ -2302,6 +2400,69 @@ public class QuestScript extends Script {
 	}
 
 	/** After the target dies, pick up the item the kill step is waiting for. */
+	/** Whether the kill step lists an item it does not have yet: the kill is for its drop. */
+	private boolean killStepWantsDrop(NpcStep step) {
+		for (Requirement requirement : step.getRequirements()) {
+			if (requirement instanceof ItemRequirement) {
+				ItemRequirement item = (ItemRequirement) requirement;
+				if (!item.mustBeEquipped() && !hasItemRequirementOnPlayer(item)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Frees one inventory slot when it is full: eats if hurt, otherwise drops the cheapest item no step needs. Items the
+	 * quest asks for (this step's and every step ahead) and coins are never dropped.
+	 *
+	 * @return true when this tick was spent making room
+	 */
+	private boolean makeRoom() {
+		if (!Rs2Inventory.isFull()) {
+			return false;
+		}
+		Set<Integer> needed = new HashSet<>();
+		needed.add(ItemID.COINS_995);
+		QuestHelper quest = getQuestHelperPlugin().getSelectedQuest();
+		List<DetailedQuestStep> ahead = quest == null ? null : QuestCombatDetector.remainingDetailedSteps(quest);
+		if (ahead != null) {
+			for (DetailedQuestStep ahead1 : ahead) {
+				if (ahead1.getRequirements() == null) {
+					continue;
+				}
+				for (Requirement requirement : ahead1.getRequirements()) {
+					if (requirement instanceof ItemRequirement) {
+						needed.addAll(((ItemRequirement) requirement).getAllIds());
+					}
+				}
+			}
+		}
+		boolean hurt = Rs2Player.getHealthPercentage() < 100;
+		List<QuestMakeRoom.Slot> slots = new ArrayList<>();
+		Rs2Inventory.items().forEach(item -> slots.add(new QuestMakeRoom.Slot(
+				item.getId(), item.getName(), item.getPrice(), item.isFood(), needed.contains(item.getId()))));
+		QuestMakeRoom.Decision decision = QuestMakeRoom.decide(0, hurt, slots);
+		switch (decision.action) {
+			case EAT:
+				Microbot.log("Quest helper: inventory full, eating " + decision.slot.name + " to make room", Level.INFO);
+				Rs2Inventory.interact(decision.slot.id, "Eat");
+				sleep(600, 900);
+				return true;
+			case DROP:
+				Microbot.log("Quest helper: inventory full, dropping " + decision.slot.name + " to make room", Level.INFO);
+				Rs2Inventory.drop(decision.slot.id);
+				sleep(600, 900);
+				return true;
+			case STUCK:
+				Microbot.log("Quest helper: inventory full of quest items, cannot make room for a pickup", Level.WARN);
+				return false;
+			default:
+				return false;
+		}
+	}
+
 	private boolean lootKillDrop(NpcStep step) {
 		if (Rs2Combat.inCombat()) {
 			return false;
@@ -2894,6 +3055,10 @@ public class QuestScript extends Script {
 
 		if (item == null) {
 			return false;
+		}
+		// "You don't have enough inventory space to hold that item" looped three clicks and sent the kill step back
+		if (!Rs2Inventory.hasItem(itemId) && makeRoom()) {
+			return true;
 		}
 
 		return item.click("");
@@ -3611,6 +3776,9 @@ public class QuestScript extends Script {
 
     public boolean applyNpcStep(NpcStep step) {
         boolean killStep = isKillNpcStep(step);
+        if (killStep && killStepWantsDrop(step) && makeRoom()) {
+            return true; // a free slot first: the drop could not be picked up otherwise
+        }
         if (killStep && lootKillDrop(step)) {
             return true;
         }
@@ -3662,9 +3830,12 @@ public class QuestScript extends Script {
         boolean npcOnScreen = npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation());
         int npcDistance = npc == null || npc.getWorldLocation() == null
                 ? Integer.MAX_VALUE : npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
+        // A kill target in sight is attacked at once, on screen or not: walking back to the step's tile with the
+        // monkeys right there only ever took the player away from them.
         boolean closeKillTarget = killStep && npc != null && npc.getLocalLocation() != null
-                && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
-                && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
+                && npc.getWorldLocation() != null
+                && KillStepRule.attackAtOnce(npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()),
+                npc.hasLineOfSight());
         boolean npcKnown = npc != null && npc.getLocalLocation() != null;
         if (npcKnown && kittenSearch && !Microbot.getClient().isInInstancedRegion()
                 && !standsBesideWithoutWall(npc.getWorldLocation())) {
@@ -3686,7 +3857,7 @@ public class QuestScript extends Script {
                 && Rs2Walker.canReach(npc.getWorldLocation());
         if (npcKnown && (QuestNpcApproach.decide(inSight, reachable, npcDistance, clickFailedRecently)
                 == QuestNpcApproach.Move.INTERACT
-                || (npcOnScreen && (closeKillTarget || Microbot.getClient().isInInstancedRegion())))) {
+                || closeKillTarget || (npcOnScreen && Microbot.getClient().isInInstancedRegion()))) {
             Rs2Walker.clearWalkingRoute("quest-helper:npc-step-visible-interact");
 
             if (killStep && npcHasAction(npc, "Attack")) {

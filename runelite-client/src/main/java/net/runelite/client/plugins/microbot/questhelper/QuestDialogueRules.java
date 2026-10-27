@@ -135,6 +135,14 @@ public final class QuestDialogueRules {
 				}
 			}
 		}
+		String plainLine = lastLine == null ? "" : normalize(lastLine);
+		boolean lineMatchesStep = false;
+		for (String hint : hints) {
+			if (plainLine.contains(hint)) {
+				lineMatchesStep = true;
+				break;
+			}
+		}
 		Set<String> weakWords = new HashSet<>();
 		if (weakHints != null) {
 			for (String hint : weakHints) {
@@ -160,7 +168,10 @@ public final class QuestDialogueRules {
 				}
 			}
 			boolean hinted = hintScore >= 3;
-			if (!hinted && (RISKY_OPTION.matcher(plain).matches() || (goAhead && riskyContext))) {
+			// a bare go-ahead is fine after an NPC line that carries one of the step's own words (the step says
+			// Karamja and the sailor talks about Karamja)
+			boolean goAheadOk = goAhead && lineMatchesStep;
+			if (!hinted && (RISKY_OPTION.matcher(plain).matches() || (goAhead && riskyContext && !goAheadOk))) {
 				continue;
 			}
 			int score = hintScore + (goAhead ? 1 : 0);

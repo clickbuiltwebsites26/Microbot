@@ -936,6 +936,16 @@ public class Pathfinder implements Runnable {
     }
 
     private void announceWidenedRoute(QuestWalkRule.Stage stage) {
+        // the fares come first and every time: the coins must be on the player before the ship, whether or not the
+        // route was announced already
+        int fare = 0;
+        for (PathEdge edge : getPathEdges()) {
+            if (edge.isTransport() && QuestWalkRule.isRestricted(edge.getTransport())
+                    && "coins".equalsIgnoreCase(edge.getTransport().getCurrencyName())) {
+                fare += edge.getTransport().getCurrencyAmount();
+            }
+        }
+        QuestWalkRule.requireFare(fare);
         if (!QuestWalkRule.firstAnnouncement(stage, targets)) {
             return;
         }

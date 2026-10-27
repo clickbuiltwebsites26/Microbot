@@ -1374,8 +1374,9 @@ public class PathfinderConfig {
             return false;
         }
 
-        // If you don't have the required currency & amount for transport
-        if (transport.getCurrencyAmount() > 0) {
+        // If you don't have the required currency & amount for transport. A quest walk plans the fare anyway: the
+        // quest loop fetches the coins from the bank before the walk reaches the ship.
+        if (transport.getCurrencyAmount() > 0 && !QuestWalkRule.crossingEnabled()) {
             int knownCurrencyQuantity = knownCurrencyQuantity(
                     transport.getCurrencyName(), refreshAvailableItemQuantities);
             if (knownCurrencyQuantity >= 0) {
@@ -2116,6 +2117,7 @@ public class PathfinderConfig {
         boolean inHouse = usePoh && PohPresence.isInHouse();
         long houseDone = System.nanoTime();
         int hash = Objects.hash(
+                QuestWalkRule.crossingEnabled(),
                 packTransportRefreshToggleBits(),
                 useTeleportationItems,
                 ignoreTeleportAndItems,

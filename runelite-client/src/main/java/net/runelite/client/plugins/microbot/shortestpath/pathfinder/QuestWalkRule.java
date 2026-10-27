@@ -136,6 +136,8 @@ public final class QuestWalkRule
 	private static final String[] EXCLUDED_JEWELLERY_DESTINATIONS = {
 		"ring of dueling: ferox enclave", "games necklace: corporeal beast"};
 
+	private static final Set<String> PORT_SARIM_SEAMEN = Set.of("captain tobias", "seaman lorris", "seaman thresnor");
+
 	private static final String VEOS = "veos";
 	private static final String CABIN_BOY_HERBERT = "cabin boy herbert";
 	private static final String SKILLS_NECKLACE_FISHING_GUILD = "skills necklace: fishing guild";
@@ -154,7 +156,31 @@ public final class QuestWalkRule
 			UNREACHABLE.reset();
 			lastAnnounced = "";
 			lastQuestWalkTarget = null;
+			pendingFare = 0;
 		}
+	}
+
+	private static volatile int pendingFare;
+
+	/** Coins the widened route in use will have to pay in fares (Port Sarim to Karamja costs 30); 0 when none. */
+	public static int pendingFare()
+	{
+		return pendingFare;
+	}
+
+	/** Notes the fares of the route just planned; the quest loop fetches the coins before the walk gets there. */
+	static void requireFare(int coins)
+	{
+		if (coins > 0)
+		{
+			pendingFare = coins;
+		}
+	}
+
+	/** The fare is paid or no longer needed. */
+	public static void clearFare()
+	{
+		pendingFare = 0;
 	}
 
 	/** Whether the quest script is running its automation right now (on, not paused). */
@@ -300,9 +326,14 @@ public final class QuestWalkRule
 		return isRestrictedType(transport.getType(), transport.getOrigin()) || isLongRide(transport);
 	}
 
+	/**
+	 * A crossing of the CROSSINGS stage: boats, ships, canoes, quetzals and long rides. Charter ships are left to the
+	 * last resort: they cost hundreds of coins where the regular ship costs thirty.
+	 */
 	static boolean isCrossing(Transport transport)
 	{
-		return CROSSING.contains(transport.getType()) || isLongRide(transport);
+		return (CROSSING.contains(transport.getType()) && transport.getType() != TransportType.CHARTER_SHIP)
+			|| isLongRide(transport);
 	}
 
 	private static boolean isLongRide(Transport transport)
@@ -343,7 +374,13 @@ public final class QuestWalkRule
 		if (transport.getType() == TransportType.SHIP && transport.getName() != null)
 		{
 			String npc = transport.getName().toLowerCase(Locale.ROOT);
-			return npc.equals(VEOS) || npc.equals(CABIN_BOY_HERBERT);
+			if (npc.equals(VEOS) || npc.equals(CABIN_BOY_HERBERT))
+			{
+				return true;
+			}
+			// the 30 coin ship between Port Sarim and Musa Point (Karamja)
+			String where = transport.getDisplayInfo() == null ? "" : transport.getDisplayInfo().toLowerCase(Locale.ROOT);
+			return PORT_SARIM_SEAMEN.contains(npc) && (where.equals("musa point") || where.equals("port sarim"));
 		}
 		return ardougneTarget && isSkillsNecklaceToFishingGuild(transport);
 	}
@@ -472,6 +509,7 @@ public final class QuestWalkRule
 	public static void walkArrived(WorldPoint target)
 	{
 		UNREACHABLE.clear(target);
+		pendingFare = 0;
 	}
 
 	/** The step target currently given up on, or {@code null} (also when the quest has moved on to another step). */

@@ -79,6 +79,19 @@ public class QuestDialogueFallbackTest
 			Arrays.asList("Can I buy some runes?", "Teleport me to the essence mine.", "Goodbye."), stepWords, questName, 0, null));
 	}
 
+	/** The step says Karamja and the sailor's own line talks about Karamja: then "Yes please" is the answer. */
+	@Test
+	public void aGoAheadIsFineWhenTheNpcLineCarriesAWordOfTheStep()
+	{
+		List<String> stepWords = Arrays.asList("Kill a monkey on Karamja.");
+		List<String> options = Arrays.asList("Yes please.", "No thanks.");
+		assertEquals("Yes please.", QuestDialogueRules.pickFallbackOption(options, stepWords, Collections.emptyList(), 0,
+			"Do you want to sail to Karamja? It will cost 30 coins."));
+		// a line with no word of the step stays unanswered
+		assertNull(QuestDialogueRules.pickFallbackOption(options, stepWords, Collections.emptyList(), 0,
+			"Do you want to sail to Brimhaven? It will cost 30 coins."));
+	}
+
 	@Test
 	public void aRiskyOptionIsChosenWhenTheStepsOwnWordsMatchIt()
 	{

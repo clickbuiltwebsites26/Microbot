@@ -40,6 +40,26 @@ public class QuestWalkRuleTest
 		QuestWalkRule.setActive(false);
 	}
 
+	/** Transports a fresh account cannot use: skill, quest or item requirements, grapples and agility shortcuts. */
+	private java.util.function.Predicate<Transport> excluded = t -> false;
+
+	private static boolean needsSomethingAFreshAccountLacks(Transport t)
+	{
+		if (t.getType() == TransportType.GRAPPLE_SHORTCUT || t.getType() == TransportType.AGILITY_SHORTCUT
+			|| !t.getQuests().isEmpty() || !t.getItemRequirements().isEmpty())
+		{
+			return true;
+		}
+		for (int level : t.getSkillLevels())
+		{
+			if (level > 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private Pathfinder run(WorldPoint from, WorldPoint to) throws Exception
 	{
 		return run(from, to, new Transport[0]);
@@ -57,8 +77,14 @@ public class QuestWalkRuleTest
 		{
 			if (e.getKey() != null)
 			{
-				config.getTransports().put(e.getKey(), e.getValue());
-				config.getTransportsPacked().put(WorldPointUtil.packWorldPoint(e.getKey()), e.getValue());
+				Set<Transport> kept = new java.util.HashSet<>(e.getValue());
+				kept.removeIf(excluded);
+				if (kept.isEmpty())
+				{
+					continue;
+				}
+				config.getTransports().put(e.getKey(), kept);
+				config.getTransportsPacked().put(WorldPointUtil.packWorldPoint(e.getKey()), kept);
 			}
 		}
 		Field owned = PathfinderConfig.class.getDeclaredField("usableTeleports");
@@ -251,6 +277,72 @@ public class QuestWalkRuleTest
 		Transport ring = itemTeleport("Ring of wealth: Grand Exchange", new WorldPoint(3163, 3478, 0));
 		Pathfinder pf = run(ARDOUGNE_CASTLE, new WorldPoint(2606, 3093, 0), ring);
 		assertFalse(usesTeleport(pf, "Ring of wealth: Grand Exchange"));
+	}
+
+	private static final WorldPoint RIMMINGTON_COAST = new WorldPoint(2924, 3205, 0);
+	private static final WorldPoint KARAMJA_MONKEYS = new WorldPoint(2887, 3168, 0);
+
+	/** Rag and Bone Man I, "Kill a monkey on Karamja", walking from the Rimmington coast: an Amulet of glory is used. */
+	@Test
+	public void karamjaFromTheRimmingtonCoastUsesTheOwnedGlory() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.clearFare();
+		excluded = QuestWalkRuleTest::needsSomethingAFreshAccountLacks;
+		Transport glory = itemTeleport("Amulet of glory: Karamja", new WorldPoint(2918, 3176, 0));
+		Pathfinder pf = run(RIMMINGTON_COAST, KARAMJA_MONKEYS, glory);
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		assertTrue("expected the amulet in " + pf.getPathEdges(), usesTeleport(pf, "Amulet of glory: Karamja"));
+		assertEquals("no ship, no fare", 0, QuestWalkRule.pendingFare());
+	}
+
+	/** Without jewellery the Port Sarim ship is the crossing, it costs 30 coins and the quest loop is told to fetch them. */
+	@Test
+	public void karamjaWithoutJewelleryCrossesByTheSeamanAndNotesTheFare() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.clearFare();
+		excluded = QuestWalkRuleTest::needsSomethingAFreshAccountLacks;
+		Pathfinder pf = run(RIMMINGTON_COAST, KARAMJA_MONKEYS);
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		boolean paidShip = false;
+		for (PathEdge e : pf.getPathEdges())
+		{
+			if (e.isTransport() && e.getTransport().getType() == TransportType.SHIP)
+			{
+				paidShip |= "Coins".equalsIgnoreCase(e.getTransport().getCurrencyName())
+					&& e.getTransport().getCurrencyAmount() == 30;
+			}
+			assertFalse("no teleport expected: " + e.getTransport(),
+				e.isTransport() && TransportType.isTeleport(e.getTransport().getType(), e.getTransport().getOrigin()));
+		}
+		StringBuilder used = new StringBuilder();
+		for (PathEdge e : pf.getPathEdges())
+		{
+			if (e.isTransport())
+			{
+				used.append(e.getTransport().getType()).append(' ').append(e.getTransport().getName()).append(' ')
+					.append(e.getTransport().getDisplayInfo()).append(" cur=").append(e.getTransport().getCurrencyName())
+					.append(e.getTransport().getCurrencyAmount()).append("; ");
+			}
+		}
+		assertTrue("expected a 30 coin ship in " + used, paidShip);
+		assertEquals("the 30 coin fare is counted for the preflight: " + used, 30, QuestWalkRule.pendingFare());
+		QuestWalkRule.clearFare();
+	}
+
+	/** From Karamja to Draynor Village the owned Amulet of glory is the way off the island. */
+	@Test
+	public void draynorFromKaramjaUsesTheOwnedGlory() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.clearFare();
+		excluded = QuestWalkRuleTest::needsSomethingAFreshAccountLacks;
+		Transport glory = itemTeleport("Amulet of glory: Draynor Village", new WorldPoint(3105, 3251, 0));
+		Pathfinder pf = run(new WorldPoint(2880, 3160, 0), new WorldPoint(3092, 3243, 0), glory);
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		assertTrue("expected the amulet in " + pf.getPathEdges(), usesTeleport(pf, "Amulet of glory: Draynor Village"));
+		assertEquals("no ship fare when the amulet does it", 0, QuestWalkRule.pendingFare());
 	}
 
 	@Test

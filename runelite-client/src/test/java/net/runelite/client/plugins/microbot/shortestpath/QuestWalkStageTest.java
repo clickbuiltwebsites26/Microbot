@@ -79,7 +79,7 @@ public class QuestWalkStageTest
 		assertTrue(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.SHIP, "Cabin Boy Herbert", A, B), ARDOUGNE));
 		assertTrue(QuestWalkRule.permits(Stage.NAMED_ROUTES, item("Skills necklace: Fishing Guild"), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, item("Skills necklace: Mining Guild"), ARDOUGNE));
-		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.SHIP, "Captain Tobias", A, B), ARDOUGNE));
+		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.SHIP, "Captain Barnaby", A, B), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.NAMED_ROUTES, npc(TransportType.CHARTER_SHIP, "Trader Crewmember", A, B), ARDOUGNE));
 	}
 
@@ -130,10 +130,23 @@ public class QuestWalkStageTest
 	}
 
 	@Test
+	public void thePortSarimToKaramjaSeamanIsANamedRoute()
+	{
+		Transport tobias = new Transport(A, B, "Musa Point", TransportType.SHIP, false, "Musa Point", "Captain Tobias", 3644);
+		Transport lorris = new Transport(A, B, "Musa Point", TransportType.SHIP, false, "Musa Point", "Seaman Lorris", 14980);
+		Transport pandemonium = new Transport(A, B, "The Pandemonium", TransportType.SHIP, true, "The Pandemonium", "Captain Tobias", 14979);
+		assertTrue(QuestWalkRule.permits(Stage.NAMED_ROUTES, tobias, false));
+		assertTrue(QuestWalkRule.permits(Stage.NAMED_ROUTES, lorris, false));
+		assertFalse("only the Karamja crossing is named", QuestWalkRule.permits(Stage.NAMED_ROUTES, pandemonium, false));
+	}
+
+	@Test
 	public void crossingsPermitBoatsButNoTeleports()
 	{
 		assertTrue(QuestWalkRule.permits(Stage.CROSSINGS, npc(TransportType.SHIP, "Captain Tobias", A, B), ARDOUGNE));
-		assertTrue(QuestWalkRule.permits(Stage.CROSSINGS, npc(TransportType.CHARTER_SHIP, "Trader Crewmember", A, B), ARDOUGNE));
+		assertFalse("a charter costs hundreds of coins: last resort only",
+			QuestWalkRule.permits(Stage.CROSSINGS, npc(TransportType.CHARTER_SHIP, "Trader Crewmember", A, B), ARDOUGNE));
+		assertTrue(QuestWalkRule.permits(Stage.TELEPORTS, npc(TransportType.CHARTER_SHIP, "Trader Crewmember", A, B), ARDOUGNE));
 		assertTrue(QuestWalkRule.permits(Stage.CROSSINGS, plain(TransportType.BOAT), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.CROSSINGS, item("Ring of wealth: Grand Exchange"), ARDOUGNE));
 		assertFalse(QuestWalkRule.permits(Stage.CROSSINGS, plain(TransportType.FAIRY_RING), ARDOUGNE));

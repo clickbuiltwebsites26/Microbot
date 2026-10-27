@@ -5,13 +5,11 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
-import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2PathApi;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.api.EquipmentInventorySlot;
-import net.runelite.client.plugins.microbot.util.magic.Rs2Spells;
 
 import java.util.Objects;
 
@@ -84,37 +82,13 @@ final class QuestStuckRecovery
 		return false;
 	}
 
-	/** Stage 4: use any teleport the player has, preferring one near the step's region. */
+	/**
+	 * Stage 4: teleport out with worn jewellery (Amulet of glory, Ring of wealth). Never a tablet or a spell: those are
+	 * surprise teleports. Returns false when there is nothing to teleport with and the watchdog goes on to give up.
+	 */
 	static boolean teleport(WorldPoint stepRegion)
 	{
 		Rs2Walker.clearWalkingRoute("quest-watchdog:stage4-teleport");
-		// {item name, destination} - inventory teleport tabs
-		Object[][] tabs = {
-			{"Varrock teleport", new WorldPoint(3213, 3424, 0)},
-			{"Lumbridge teleport", new WorldPoint(3222, 3218, 0)},
-			{"Falador teleport", new WorldPoint(2965, 3379, 0)},
-			{"Camelot teleport", new WorldPoint(2757, 3478, 0)},
-			{"Ardougne teleport", new WorldPoint(2662, 3307, 0)},
-		};
-		Object[] best = null;
-		int bestDist = Integer.MAX_VALUE;
-		for (Object[] t : tabs)
-		{
-			if (!Rs2Inventory.hasItem((String) t[0]))
-			{
-				continue;
-			}
-			int d = stepRegion == null ? 0 : stepRegion.distanceTo2D((WorldPoint) t[1]);
-			if (d < bestDist)
-			{
-				bestDist = d;
-				best = t;
-			}
-		}
-		if (best != null)
-		{
-			return Rs2Inventory.interact((String) best[0], "Break");
-		}
 		if (Rs2Equipment.isWearing(EquipmentInventorySlot.AMULET)
 			&& Rs2Equipment.get(EquipmentInventorySlot.AMULET) != null
 			&& Rs2Equipment.get(EquipmentInventorySlot.AMULET).getName().toLowerCase().contains("glory")
@@ -129,6 +103,6 @@ final class QuestStuckRecovery
 		{
 			return true;
 		}
-		return Rs2Magic.cast(Rs2Spells.LUMBRIDGE_HOME_TELEPORT);
+		return false;
 	}
 }
