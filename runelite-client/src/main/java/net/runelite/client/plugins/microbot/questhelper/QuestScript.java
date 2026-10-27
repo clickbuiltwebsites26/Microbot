@@ -67,6 +67,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -3652,10 +3653,14 @@ public class QuestScript extends Script {
                 && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
                 && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
         boolean npcKnown = npc != null && npc.getLocalLocation() != null;
-        if (npcKnown && (QuestNpcApproach.decide(false, npc.hasLineOfSight(), npcDistance) == QuestNpcApproach.Move.INTERACT
-                || (npcOnScreen
-                && (closeKillTarget || Microbot.getClient().isInInstancedRegion()
-                || (Rs2Walker.canReach(npc.getWorldLocation()) && npc.hasLineOfSight()))))) {
+        boolean clickFailedRecently = npcKnown && npc.getIndex() == failedClickNpcIndex
+                && System.currentTimeMillis() < failedClickUntilMs;
+        boolean inSight = npcKnown && npc.hasLineOfSight();
+        boolean reachable = inSight && !clickFailedRecently && npcDistance > QuestNpcApproach.POINT_BLANK
+                && Rs2Walker.canReach(npc.getWorldLocation());
+        if (npcKnown && (QuestNpcApproach.decide(inSight, reachable, npcDistance, clickFailedRecently)
+                == QuestNpcApproach.Move.INTERACT
+                || (npcOnScreen && (closeKillTarget || Microbot.getClient().isInInstancedRegion())))) {
             Rs2Walker.clearWalkingRoute("quest-helper:npc-step-visible-interact");
 
             if (killStep && npcHasAction(npc, "Attack")) {
@@ -3683,12 +3688,22 @@ public class QuestScript extends Script {
 
             var itemId = step.getIconItemID();
             final Rs2NpcModel clicked = npc;
+            boolean worked;
             if (itemId != -1) {
-                Rs2Inventory.use(itemId);
-                clickVerified(step, () -> clicked.click(""), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC");
+                // the item is selected inside the click, so the verified retry selects it again
+                worked = clickVerified(step, () -> Rs2Inventory.use(itemId) && clicked.click(""),
+                        () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC");
             } else {
                 String option = chooseCorrectNPCOption(step, npc);
-                clickVerified(step, () -> clicked.click(option), () -> Rs2Camera.turnTo(clicked.getNpc()), "NPC " + option);
+                worked = clickVerified(step, () -> clicked.click(option), () -> Rs2Camera.turnTo(clicked.getNpc()),
+                        "NPC " + option);
+            }
+            if (!worked) {
+                // two clicks did nothing: walk to this NPC for a while instead of clicking it every tick
+                failedClickNpcIndex = clicked.getIndex();
+                failedClickUntilMs = System.currentTimeMillis() + NPC_CLICK_FAILURE_WALK_MS;
+            }
+            if (itemId == -1) {
                 lastTalkedNpcId = npc.getId();
                 if (step.isAllowMultipleHighlights()) {
                     multiNpcTarget.commit(step, npc.getIndex(), System.currentTimeMillis());
@@ -3957,6 +3972,10 @@ public class QuestScript extends Script {
     }
 
     /** Some quest NPCs (e.g. escorted guards) have no menu actions at all, so there is nothing to click. */
+    private int failedClickNpcIndex = -1;
+    private long failedClickUntilMs;
+    private static final long NPC_CLICK_FAILURE_WALK_MS = 10_000;
+
     private boolean hasNoActions(Rs2NpcModel npc) {
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
             NPCComposition composition = Microbot.getClient().getNpcDefinition(npc.getId());
@@ -4057,21 +4076,21 @@ public class QuestScript extends Script {
             Rs2Walker.clearWalkingRoute("quest-helper:object-step-interact");
 
             final Rs2TileObjectModel clickedObject = object;
-            boolean interacted;
             if (itemId == -1) {
                 String option = fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object);
-                interacted = clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
+                clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
             } else {
-                Rs2Inventory.use(itemId);
-                interacted = clickVerified(step, () -> clickedObject.click(""), () -> turnCameraTo(clickedObject), "object");
+                // the item is selected inside the click, so the verified retry selects it again
+                clickVerified(step, () -> Rs2Inventory.use(itemId) && clickedObject.click(""),
+                        () -> turnCameraTo(clickedObject), "object");
             }
 
             sleepUntil(() -> Rs2Player.isMoving() || Rs2Player.isAnimating());
             sleep(100);
             sleepUntil(() -> !Rs2Player.isMoving() && !Rs2Player.isAnimating());
-            if (interacted) {
-                objectsHandeled.add(object.getHash());
-            }
+            // Marked whatever the verification said: an effect the check cannot see (a chat message, an object or an
+            // inventory change) must not make a multi-object search step pick the same crate forever.
+            objectsHandeled.add(object.getHash());
         } else if (object != null) {
             Rs2Walker.walkTo(object.getWorldLocation(), 1);
             return false;
@@ -4115,7 +4134,7 @@ public class QuestScript extends Script {
         return worked;
     }
 
-    private final java.util.Random delayRandom = new java.util.Random();
+    private final Random delayRandom = new Random();
 
     /** Now and then a human pause before the click on an object or NPC; never in combat, dialogue or timed steps. */
     private void preClickDelay(QuestStep step) {

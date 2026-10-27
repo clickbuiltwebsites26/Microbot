@@ -54,6 +54,21 @@ public class VerifiedInteractionTest
 	}
 
 	@Test
+	public void theRetryRunsTheWholeClickAgainSoAnItemIsSelectedAgain()
+	{
+		AtomicInteger selected = new AtomicInteger();
+		AtomicInteger clicked = new AtomicInteger();
+		VerifiedInteraction.run(() ->
+			{
+				selected.incrementAndGet(); // Rs2Inventory.use(item)
+				clicked.incrementAndGet(); // npc.click("")
+				return true;
+			}, () -> false, cameraTurns::incrementAndGet, now::get, now::addAndGet);
+		assertEquals(2, selected.get());
+		assertEquals(selected.get(), clicked.get());
+	}
+
+	@Test
 	public void noEffectEverReportsFailureAfterTwoClicksAndOneTurn()
 	{
 		assertFalse(run(true, () -> false));

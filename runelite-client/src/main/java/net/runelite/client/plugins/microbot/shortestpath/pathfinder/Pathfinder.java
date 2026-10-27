@@ -841,8 +841,12 @@ public class Pathfinder implements Runnable {
                 : PathTerminationReason.SEARCH_EXHAUSTED;
     }
 
+    /** Cost of the unvaried route found by {@link #runVaried()}, or -1: the yardstick for comparing with other routes. */
+    private volatile long unjitteredBaseCost = -1L;
+
     @Override
     public void run() {
+        unjitteredBaseCost = -1L;
         runInner();
         boolean crossing = !cancelled && QuestWalkRule.stage() == QuestWalkRule.Stage.ON_FOOT
                 && QuestWalkRule.crossingEnabledFor(targets);
@@ -915,12 +919,14 @@ public class Pathfinder implements Runnable {
      * a long walk is replaced by the teleport when that route costs well under the walk, otherwise the walk stands.
      */
     private void preferOwnedJewelleryForLongWalk() {
-        long onFootCost = selectedPathCost;
-        if (!QuestWalkRule.jewelleryWorthTrying(onFootCost)) {
+        // without jitter the two costs are comparable: the walk's own cost includes the penalties of a varied route
+        long onFootCost = unjitteredBaseCost >= 0 ? unjitteredBaseCost : selectedPathCost;
+        if (!QuestWalkRule.jewelleryWorthTrying(onFootCost) || !config.hasUsableTeleport(QuestWalkRule::isJewelleryTeleport)) {
             return;
         }
         OnFootResult onFoot = new OnFootResult();
-        QuestWalkRule.runAt(QuestWalkRule.Stage.OWNED_JEWELLERY, QuestWalkRule.isArdougneArea(targets), this::runInner);
+        QuestWalkRule.runAt(QuestWalkRule.Stage.OWNED_JEWELLERY, QuestWalkRule.isArdougneArea(targets),
+                () -> PathJitter.withoutJitter(this::runInner));
         if (!cancelled && terminationReason == PathTerminationReason.TARGET_REACHED
                 && QuestWalkRule.jewelleryBeatsWalking(onFootCost, selectedPathCost)) {
             announceWidenedRoute(QuestWalkRule.Stage.OWNED_JEWELLERY);
@@ -960,11 +966,17 @@ public class Pathfinder implements Runnable {
      */
     private void runVaried() {
         long[] baseCost = {-1L};
+        int[] baseLength = {0};
         Set<String> baseTransports = new HashSet<>();
+        CollisionMap staticMap = config.newStaticMap();
+        Set<String> baseCrossings = new HashSet<>();
         PathJitter.withoutJitter(() -> {
             runSearch();
             if (terminationReason == PathTerminationReason.TARGET_REACHED && !getPath().isEmpty()) {
                 baseCost[0] = selectedPathCost;
+                unjitteredBaseCost = selectedPathCost;
+                baseLength[0] = PathJitter.routeLength(getPath());
+                baseCrossings.addAll(PathJitter.wallCrossings(getPath(), staticMap));
                 for (PathEdge edge : getPathEdges()) {
                     if (edge.isTransport()) {
                         baseTransports.add(transportKey(edge));
@@ -998,7 +1010,11 @@ public class Pathfinder implements Runnable {
                 }
             }
             long variedCost = Math.max(0L, selectedPathCost - penalties);
-            if (!PathJitter.acceptVaried(variedCost, baseCost[0], !variedTransports.equals(baseTransports))) {
+            // the same transports AND the same doors and gates as the unvaried route, within the cost and length bounds
+            boolean sameWay = variedTransports.equals(baseTransports)
+                    && PathJitter.wallCrossings(getPath(), staticMap).equals(baseCrossings);
+            if (!PathJitter.acceptVaried(variedCost, baseCost[0], !sameWay)
+                    || !PathJitter.withinBound(PathJitter.routeLength(getPath()), baseLength[0])) {
                 continue;
             }
             int hash = PathJitter.routeHash(getPath());

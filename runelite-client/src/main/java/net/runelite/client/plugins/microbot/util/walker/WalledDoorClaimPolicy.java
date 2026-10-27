@@ -72,29 +72,43 @@ final class WalledDoorClaimPolicy {
         private WorldPoint from;
         private WorldPoint to;
         private int count;
+        private long firstAtMs;
 
         /** Notes one fruitless run on the edge; returns how many in a row there have been. */
-        int note(WorldPoint edgeFrom, WorldPoint edgeTo) {
+        int note(WorldPoint edgeFrom, WorldPoint edgeTo, long nowMs) {
             if (edgeFrom.equals(from) && edgeTo.equals(to)) {
                 count++;
             } else {
                 from = edgeFrom;
                 to = edgeTo;
                 count = 1;
+                firstAtMs = nowMs;
             }
             return count;
+        }
+
+        /** How long the current edge has been fruitless. */
+        long spanMs(long nowMs) {
+            return count == 0 ? 0L : nowMs - firstAtMs;
         }
 
         void reset() {
             from = null;
             to = null;
             count = 0;
+            firstAtMs = 0L;
         }
     }
 
-    /** Whether the claimed edge should be given up on: repeatedly fruitless, and no door sits on the exact edge. */
-    static boolean shouldDropUnfulfilledClaim(int fruitlessRuns, boolean doorOnExactEdge) {
-        return fruitlessRuns >= UNFULFILLED_CLAIM_LIMIT && !doorOnExactEdge;
+    /** The claim must stay fruitless for at least this long, so a handler that is merely throttled is not mistaken for one that found nothing. */
+    static final long UNFULFILLED_CLAIM_MIN_SPAN_MS = 4_000L;
+
+    /**
+     * Whether the claimed edge should be given up on: repeatedly fruitless over a few seconds, and no door geometry sits
+     * on the exact edge, open or shut.
+     */
+    static boolean shouldDropUnfulfilledClaim(int fruitlessRuns, long spanMs, boolean doorGeometryOnEdge) {
+        return fruitlessRuns >= UNFULFILLED_CLAIM_LIMIT && spanMs >= UNFULFILLED_CLAIM_MIN_SPAN_MS && !doorGeometryOnEdge;
     }
 
     static boolean ownsTraversalEdge(WorldPoint doorFrom, WorldPoint doorTo,

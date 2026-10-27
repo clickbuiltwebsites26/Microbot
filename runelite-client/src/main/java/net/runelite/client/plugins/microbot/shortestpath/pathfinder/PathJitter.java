@@ -140,6 +140,36 @@ public final class PathJitter
         }
     }
 
+    /**
+     * The wall edges a route crosses: steps between neighbouring tiles that the shipped map does not allow. The live
+     * overlay lets a route cross a door, so these are the doors and gates a varied route must not swap for others.
+     */
+    public static java.util.Set<String> wallCrossings(java.util.List<net.runelite.api.coords.WorldPoint> path,
+        CollisionMap staticMap)
+    {
+        java.util.Set<String> crossings = new java.util.HashSet<>();
+        for (int i = 1; i < path.size(); i++)
+        {
+            net.runelite.api.coords.WorldPoint a = path.get(i - 1);
+            net.runelite.api.coords.WorldPoint b = path.get(i);
+            int dx = b.getX() - a.getX();
+            int dy = b.getY() - a.getY();
+            if (a.getPlane() != b.getPlane() || Math.abs(dx) + Math.abs(dy) != 1)
+            {
+                continue;
+            }
+            boolean open = dx == 1 ? staticMap.e(a.getX(), a.getY(), a.getPlane())
+                : dx == -1 ? staticMap.w(a.getX(), a.getY(), a.getPlane())
+                : dy == 1 ? staticMap.n(a.getX(), a.getY(), a.getPlane())
+                : staticMap.s(a.getX(), a.getY(), a.getPlane());
+            if (!open)
+            {
+                crossings.add(a.getX() < b.getX() || a.getY() < b.getY() ? a + ">" + b : b + ">" + a);
+            }
+        }
+        return crossings;
+    }
+
     /** Order-sensitive hash of a route sampled every few points. */
     public static int routeHash(java.util.List<net.runelite.api.coords.WorldPoint> path)
     {

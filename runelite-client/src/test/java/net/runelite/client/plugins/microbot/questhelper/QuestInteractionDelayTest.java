@@ -31,6 +31,18 @@ public class QuestInteractionDelayTest
 	}
 
 	@Test
+	public void timedWordsMatchWholeWordsOnly()
+	{
+		assertFalse(QuestInteractionDelay.allowed(false, false, false, false, "Keep clicking the lever."));
+		assertFalse(QuestInteractionDelay.allowed(false, false, false, false, "Click it repeatedly."));
+		assertFalse(QuestInteractionDelay.allowed(false, false, false, false, "Search the crate before leaving."));
+		assertFalse(QuestInteractionDelay.allowed(false, false, false, false, "Spam the door until it opens."));
+		assertFalse(QuestInteractionDelay.allowed(false, false, false, false, "Watch out for the trap."));
+		assertTrue(QuestInteractionDelay.allowed(false, false, false, false, "Talk to Brunhilda about the rune stones."));
+		assertTrue(QuestInteractionDelay.allowed(false, false, false, false, "Climb the ladder in the keepsake room."));
+	}
+
+	@Test
 	public void noDelayWhenNotAllowedOrWithoutATimingModel()
 	{
 		HumanizedTiming timing = new HumanizedTiming(new Random(1), true);

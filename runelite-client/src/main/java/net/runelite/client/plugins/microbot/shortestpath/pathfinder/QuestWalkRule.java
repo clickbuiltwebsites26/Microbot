@@ -106,12 +106,13 @@ public final class QuestWalkRule
 	 * How long the walker waits for a quest walk's pathfinder: the usual cutoff, the longer on-foot look and the
 	 * three widened searches must fit, or the walker gives up on the walk before the search can say anything.
 	 */
-	public static final long QUEST_PATHFINDER_TIMEOUT_MS = 60_000L;
+	public static final long QUEST_PATHFINDER_TIMEOUT_MS = 40_000L;
 
-	/** The walker's patience for the pathfinder of the walk in progress. */
-	public static long pathfinderTimeoutMs()
+	/** The walker's patience for the pathfinder of the walk to {@code target}. */
+	public static long pathfinderTimeoutMs(WorldPoint target)
 	{
-		return crossingEnabled() ? QUEST_PATHFINDER_TIMEOUT_MS : PATHFINDER_TIMEOUT_MS;
+		boolean questSearch = target != null && crossingEnabledFor(Set.of(WorldPointUtil.packWorldPoint(target)));
+		return questSearch ? QUEST_PATHFINDER_TIMEOUT_MS : PATHFINDER_TIMEOUT_MS;
 	}
 	private static final int SURFACE_MAX_X = 4000;
 	private static final int SURFACE_MAX_Y = 4200;
@@ -130,6 +131,10 @@ public final class QuestWalkRule
 	/** Teleport jewellery that quest walking uses once the player owns it (the planner only lists owned items). */
 	private static final String[] OWNED_JEWELLERY = {
 		"ring of wealth", "amulet of glory", "games necklace", "ring of dueling"};
+
+	/** Jewellery destinations quest walking never teleports to: the Wilderness and a boss lair. */
+	private static final String[] EXCLUDED_JEWELLERY_DESTINATIONS = {
+		"ring of dueling: ferox enclave", "games necklace: corporeal beast"};
 
 	private static final String VEOS = "veos";
 	private static final String CABIN_BOY_HERBERT = "cabin boy herbert";
@@ -351,6 +356,13 @@ public final class QuestWalkRule
 			return false;
 		}
 		String info = transport.getDisplayInfo().toLowerCase(Locale.ROOT);
+		for (String excluded : EXCLUDED_JEWELLERY_DESTINATIONS)
+		{
+			if (info.equals(excluded))
+			{
+				return false;
+			}
+		}
 		for (String jewellery : OWNED_JEWELLERY)
 		{
 			if (info.startsWith(jewellery))
@@ -359,6 +371,12 @@ public final class QuestWalkRule
 			}
 		}
 		return false;
+	}
+
+	/** An owned-jewellery teleport that quest walking may use: the listed jewellery, or the Skills necklace route. */
+	static boolean isJewelleryTeleport(Transport transport)
+	{
+		return isOwnedJewellery(transport) || isSkillsNecklaceToFishingGuild(transport);
 	}
 
 	/** Pure decision: a walk this long is compared with the owned-jewellery route. */
@@ -389,7 +407,9 @@ public final class QuestWalkRule
 			case CROSSINGS:
 				return isCrossing(transport);
 			case TELEPORTS:
-				return true;
+				// the last resort never newly enables tablets and scrolls: only the owned jewellery's item teleports
+				return transport.getType() != TransportType.TELEPORTATION_ITEM
+					|| isOwnedJewellery(transport) || isSkillsNecklaceToFishingGuild(transport);
 			default:
 				return false;
 		}

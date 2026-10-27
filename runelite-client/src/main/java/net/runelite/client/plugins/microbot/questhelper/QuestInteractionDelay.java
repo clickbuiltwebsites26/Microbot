@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.questhelper;
 
 import java.util.Locale;
 import java.util.Random;
+import java.util.regex.Pattern;
 import net.runelite.client.plugins.microbot.util.antiban.HumanizedTiming;
 
 /**
@@ -20,9 +21,9 @@ public final class QuestInteractionDelay
 	static final long MAX_DELAY_MS = 2_000;
 
 	/** Step texts that mean the click is timed or repeated: never pause before these. */
-	private static final String[] TIMED_STEP_WORDS = {
-		"run ", "run to", "run away", "escape", "flee", "dodge", "quickly", "avoid", "hurry",
-		"pick the lock", "pick-lock", "lockpick", "prison"};
+	private static final Pattern TIMED_STEP_WORDS = Pattern.compile(
+		"\\b(?:run|runs|escape|flee|dodge|quickly|avoid|hurry|pick the lock|pick-lock|lockpick|prison"
+			+ "|repeatedly|keep|spam|until|trap|before)\\b");
 
 	private QuestInteractionDelay()
 	{
@@ -43,15 +44,7 @@ public final class QuestInteractionDelay
 		{
 			return true;
 		}
-		String text = stepText.toLowerCase(Locale.ROOT);
-		for (String word : TIMED_STEP_WORDS)
-		{
-			if (text.contains(word))
-			{
-				return false;
-			}
-		}
-		return true;
+		return !TIMED_STEP_WORDS.matcher(stepText.toLowerCase(Locale.ROOT)).find();
 	}
 
 	/** The pause in milliseconds, or 0 for none. */

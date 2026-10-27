@@ -18,30 +18,48 @@ public class WalledDoorClaimPolicyTest {
         WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
         WorldPoint from = new WorldPoint(2617, 3294, 1);
         WorldPoint to = new WorldPoint(2617, 3295, 1);
-        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
-        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
-        assertTrue(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(claims.note(from, to), false));
+        assertFalse(drops(claims, from, to, 0, false));
+        assertFalse(drops(claims, from, to, 2_000, false));
+        assertTrue(drops(claims, from, to, 5_000, false));
+    }
+
+    @Test
+    public void aThrottledHandlerIsNotMistakenForOneThatFoundNothing() {
+        WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
+        WorldPoint from = new WorldPoint(2617, 3294, 1);
+        WorldPoint to = new WorldPoint(2617, 3295, 1);
+        // three runs within a second: too soon to tell
+        assertFalse(drops(claims, from, to, 0, false));
+        assertFalse(drops(claims, from, to, 300, false));
+        assertFalse(drops(claims, from, to, 600, false));
+    }
+
+    private static boolean drops(WalledDoorClaimPolicy.UnfulfilledClaims claims, WorldPoint from, WorldPoint to,
+                                 long nowMs, boolean doorGeometry) {
+        int runs = claims.note(from, to, nowMs);
+        return WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(runs, claims.spanMs(nowMs), doorGeometry);
     }
 
     @Test
     public void aRealDoorOnTheEdgeKeepsItsClaim() {
         WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
-        int runs = 0;
+        boolean dropped = false;
         for (int i = 0; i < 6; i++) {
-            runs = claims.note(FROM, TO);
+            dropped |= drops(claims, FROM, TO, i * 3_000L, true);
         }
-        assertFalse(WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(runs, true));
+        assertFalse("a door on the exact edge, open or shut, is never given up on", dropped);
     }
 
     @Test
     public void anotherEdgeOrAResetRestartsTheCount() {
         WalledDoorClaimPolicy.UnfulfilledClaims claims = new WalledDoorClaimPolicy.UnfulfilledClaims();
-        claims.note(FROM, TO);
-        claims.note(FROM, TO);
-        assertEquals(1, claims.note(TO, new WorldPoint(1771, 3589, 0)));
-        claims.note(FROM, TO);
+        claims.note(FROM, TO, 0);
+        claims.note(FROM, TO, 1_000);
+        assertEquals(1, claims.note(TO, new WorldPoint(1771, 3589, 0), 2_000));
+        claims.note(FROM, TO, 3_000);
         claims.reset();
-        assertEquals(1, claims.note(FROM, TO));
+        assertEquals(1, claims.note(FROM, TO, 4_000));
+        assertEquals(0, claims.spanMs(4_000));
     }
 
     @Test

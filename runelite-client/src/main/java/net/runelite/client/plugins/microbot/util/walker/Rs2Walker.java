@@ -1948,7 +1948,7 @@ public class Rs2Walker {
                     return WalkerState.EXIT;
                 }
                 if (!routeStatus.isReady()) {
-                    if (System.currentTimeMillis() - pathfinderPendingSinceMs > QuestWalkRule.pathfinderTimeoutMs()) {
+                    if (System.currentTimeMillis() - pathfinderPendingSinceMs > QuestWalkRule.pathfinderTimeoutMs(target)) {
                         traceProcessWalkExit("pathfinder-timeout-not-done", target, processWalkTail);
                         setTarget(null, "rs2walker:processWalk:pathfinder-timeout-not-done");
                         return WalkerState.EXIT;
@@ -6264,6 +6264,9 @@ public class Rs2Walker {
         WalledDoorClaimPolicy.Decision decision = WalledDoorClaimPolicy.decide(
                 from, to, claimedAtMs, now, playerLoc, Rs2Player.isMoving(),
                 from != null && Rs2Tile.isTileReachable(from), maxAgeMs);
+        if (decision != WalledDoorClaimPolicy.Decision.HANDLE_AT_EDGE) {
+            unfulfilledDoorClaims.reset();
+        }
         switch (decision) {
             case CROSSED:
                 if (attempted != null) {
@@ -6296,11 +6299,11 @@ public class Rs2Walker {
                     clearWalledDoorClaim();
                     return WalkExit.RECENT_DOOR_EDGE_NUDGE;
                 }
-                boolean doorOnEdge = findDoorNearSegmentTimed(from, to,
-                        List.of("pay-toll", "pick-lock", "walk-through", "go-through", "open", "pass")) != null;
-                if (WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(unfulfilledDoorClaims.note(from, to), doorOnEdge)) {
+                int fruitlessRuns = unfulfilledDoorClaims.note(from, to, now);
+                if (WalledDoorClaimPolicy.shouldDropUnfulfilledClaim(fruitlessRuns, unfulfilledDoorClaims.spanMs(now),
+                        net.runelite.client.plugins.microbot.util.walker.door.DoorEdgeGeometry.doorOnEdge(from, to))) {
                     // The claim came from a door beside the edge; the edge itself is a plain wall. Stop waiting on it
-                    // and route around it.
+                    // and route around it, for this walk only.
                     WebWalkLog.spInfo("walled_door_dropped | edge={}->{} — no door on the edge after repeated runs",
                             compactWorldPoint(from), compactWorldPoint(to));
                     if (attempted != null) {
@@ -6308,7 +6311,10 @@ public class Rs2Walker {
                     } else {
                         clearWalledDoorClaim();
                     }
-                    Rs2PathApi.learnBlockedEdge(from, to, "door-claim-without-door");
+                    if (Rs2PathApi.learnBlockedEdge(from, to, "door-claim-without-door")) {
+                        doorAttemptLedger.recordWalkScopedBlock(from, to);
+                        doorAttemptLedger.recordWalkScopedBlock(to, from);
+                    }
                     recalculatePathForRecovery();
                     return null;
                 }

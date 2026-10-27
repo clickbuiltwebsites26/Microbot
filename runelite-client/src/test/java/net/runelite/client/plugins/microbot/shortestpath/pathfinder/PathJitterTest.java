@@ -113,6 +113,27 @@ public class PathJitterTest
 	}
 
 	@Test
+	public void wallCrossingsAreTheStepsTheShippedMapDoesNotAllow()
+	{
+		CollisionMap map = new CollisionMap(SplitFlagMap.fromResources());
+		// Ardougne timber house, plane 1: a plain wall between these two tiles
+		assertEquals(1, PathJitter.wallCrossings(java.util.Arrays.asList(
+			new net.runelite.api.coords.WorldPoint(2617, 3294, 1),
+			new net.runelite.api.coords.WorldPoint(2617, 3295, 1)), map).size());
+		// open ground
+		assertEquals(0, PathJitter.wallCrossings(java.util.Arrays.asList(
+			new net.runelite.api.coords.WorldPoint(2617, 3290, 0),
+			new net.runelite.api.coords.WorldPoint(2618, 3290, 0)), map).size());
+		// the same edge walked the other way is the same crossing
+		assertEquals(PathJitter.wallCrossings(java.util.Arrays.asList(
+				new net.runelite.api.coords.WorldPoint(2617, 3294, 1),
+				new net.runelite.api.coords.WorldPoint(2617, 3295, 1)), map),
+			PathJitter.wallCrossings(java.util.Arrays.asList(
+				new net.runelite.api.coords.WorldPoint(2617, 3295, 1),
+				new net.runelite.api.coords.WorldPoint(2617, 3294, 1)), map));
+	}
+
+	@Test
 	public void boundHistoryAndSuspension()
 	{
 		assertTrue(PathJitter.withinBound(110, 100));

@@ -439,7 +439,10 @@ public class QuestWalkStageTest
 		long usualCutoff = 3_000L;
 		assertTrue(QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS
 			>= usualCutoff + QuestWalkRule.EXTENDED_CUTOFF_MS + 3 * usualCutoff);
-		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+		assertTrue("the position-based stuck watchdog (60 s) must not fire while the search runs",
+			QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS
+				< net.runelite.client.plugins.microbot.questhelper.QuestStuckWatchdog.DEFAULT_STAGE_INTERVAL_MS);
+		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs(A));
 
 		QuestWalkRule.setActive(true);
 		QuestWalkRule.setCrossingMode(true);
@@ -447,14 +450,34 @@ public class QuestWalkStageTest
 		boolean walking = QuestWalkRule.beginQuestWalk(A);
 		try
 		{
-			assertEquals(QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+			assertEquals(QuestWalkRule.QUEST_PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs(A));
+			assertEquals("another walk's target gets the usual patience",
+				QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs(B));
 		}
 		finally
 		{
 			QuestWalkRule.endQuestWalk(walking);
 			QuestWalkRule.markQuestThread(false);
 		}
-		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs());
+		assertEquals(QuestWalkRule.PATHFINDER_TIMEOUT_MS, QuestWalkRule.pathfinderTimeoutMs(A));
+	}
+
+	@Test
+	public void theLastResortNeverEnablesTabletsAndScrolls()
+	{
+		assertFalse(QuestWalkRule.permits(Stage.TELEPORTS, item("Varrock Teleport (tablet)"), false));
+		assertTrue(QuestWalkRule.permits(Stage.TELEPORTS, item("Ring of wealth: Grand Exchange"), false));
+		assertTrue(QuestWalkRule.permits(Stage.TELEPORTS,
+			new Transport(null, B, "Varrock Teleport", TransportType.TELEPORTATION_SPELL, true, 4), false));
+	}
+
+	@Test
+	public void wildernessAndBossJewelleryDestinationsAreExcluded()
+	{
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Ring of dueling: Ferox Enclave"), false));
+		assertFalse(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Games necklace: Corporeal Beast"), false));
+		assertFalse(QuestWalkRule.permits(Stage.TELEPORTS, item("Ring of dueling: Ferox Enclave"), false));
+		assertTrue(QuestWalkRule.permits(Stage.OWNED_JEWELLERY, item("Ring of dueling: Castle Wars"), false));
 	}
 
 	@Test

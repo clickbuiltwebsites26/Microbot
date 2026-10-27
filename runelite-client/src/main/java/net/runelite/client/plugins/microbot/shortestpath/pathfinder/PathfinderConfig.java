@@ -296,6 +296,17 @@ public class PathfinderConfig {
         return map.get();
     }
 
+    /** The shipped map alone, without the live overlay: where walls really are, doors included. */
+    public CollisionMap newStaticMap() {
+        return new CollisionMap(mapData);
+    }
+
+    /** Whether any teleport the player can use right now satisfies {@code test}. */
+    public boolean hasUsableTeleport(java.util.function.Predicate<Transport> test) {
+        Set<Transport> usable = usableTeleports;
+        return usable != null && usable.stream().anyMatch(test);
+    }
+
     /**
      * Diagnostics for the live-collision overlay at one tile, for the agent server's
      * {@code /live-collision} endpoint. Reads only immutable data (the static map and the pinned
