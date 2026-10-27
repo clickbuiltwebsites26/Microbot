@@ -105,15 +105,21 @@ public class ObjectHandler extends AgentHandler {
 
 		String name = getStringField(body, "name");
 		Integer idNum = getIntField(body, "id");
+		// x, y (and plane) pick one exact object among several with the same id or name
+		Integer wantX = getIntField(body, "x");
+		Integer wantY = getIntField(body, "y");
+		Integer wantPlane = getIntField(body, "plane");
 
 		Rs2TileObjectModel obj = null;
 		if (name != null && !name.isEmpty()) {
 			obj = Microbot.getRs2TileObjectCache().query()
 					.withName(name)
+					.where(o -> TargetFilter.matchesTile(o.getWorldLocation(), wantX, wantY, wantPlane))
 					.nearestOnClientThread();
 		} else if (idNum != null) {
 			obj = Microbot.getRs2TileObjectCache().query()
 					.withId(idNum.intValue())
+					.where(o -> TargetFilter.matchesTile(o.getWorldLocation(), wantX, wantY, wantPlane))
 					.nearestOnClientThread();
 		} else {
 			sendJson(exchange, 400, errorResponse("Provide either name or id"));

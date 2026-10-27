@@ -59,6 +59,47 @@ public class QuestSearchOrderTest
 		assertEquals("b", next(crates, new HashSet<>(Arrays.asList("a", "b"))));
 	}
 
+	private static final class Kitten
+	{
+		final String name;
+		final boolean mewing;
+		final int distance;
+
+		Kitten(String name, boolean mewing, int distance)
+		{
+			this.name = name;
+			this.mewing = mewing;
+			this.distance = distance;
+		}
+	}
+
+	private static String order(List<Kitten> crates)
+	{
+		StringBuilder out = new StringBuilder();
+		for (Kitten k : QuestObjectApproach.orderForSearch(crates, c -> c.mewing,
+			java.util.Comparator.comparingInt(c -> c.distance)))
+		{
+			out.append(k.name).append(' ');
+		}
+		return out.toString();
+	}
+
+	/** Gertrude's Cat: the crates showing "Mew!" over them are searched first, and the silent ones not while some mew. */
+	@Test
+	public void cratesShowingMewAreSearchedAloneNearestFirst()
+	{
+		List<Kitten> crates = Arrays.asList(
+			new Kitten("silent-near", false, 1), new Kitten("mew-far", true, 8), new Kitten("mew-near", true, 3));
+		assertEquals("mew-near mew-far ", order(crates));
+	}
+
+	@Test
+	public void whenNoneMewsAllAreSearchedNearestFirst()
+	{
+		List<Kitten> crates = Arrays.asList(new Kitten("b", false, 5), new Kitten("a", false, 2));
+		assertEquals("a b ", order(crates));
+	}
+
 	@Test
 	public void noCratesGivesNothing()
 	{

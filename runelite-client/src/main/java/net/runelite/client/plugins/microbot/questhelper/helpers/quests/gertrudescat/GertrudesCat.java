@@ -91,7 +91,7 @@ public class GertrudesCat extends BasicQuestHelper
 
 	ObjectStep climbDownLadderStep;
 	ObjectStep climbUpLadderStep;
-	ObjectStep searchNearbyCrates;
+	NpcStep searchNearbyCrates;
 	NpcStep giveKittenToFluffy;
 
 	NpcStep finishQuest;
@@ -161,11 +161,8 @@ public class GertrudesCat extends BasicQuestHelper
 		cGiveSardineToCat.addStep(isUpstairsLumberyard, gertrudesCat2);
 
 		//Need to find to ways to hide arrow
-		// The kitten sits in one fixed crate OBJECT; the "Mew!" NPCs are decoys that move about, so searching them only
-		// ever says "You find nothing". The crates are searched one by one, nearest first, each once.
-		searchNearbyCrates = new ObjectStep(this, ObjectID.GERTRUDEEMPTY_CRATE, new WorldPoint(3306, 3505, 0),
-			"Search different crates downstairs in the Lumberyard until you find the kitten.", true, bucketOfMilk);
-		searchNearbyCrates.addAlternateObjects(ObjectID.FAI_VARROCK_LARGE_CRATE, ObjectID.FAI_VARROCK_LARGE_CRATES);
+		searchNearbyCrates = new NpcStep(this, NpcID.KITTENS_MEW, new WorldPoint(3306, 3505, 0),
+			"Search different crates downstairs in the Lumberyard until you find the kitten.", true);
 		searchNearbyCrates.setHideWorldArrow(true);
 		climbDownLadderStep = new ObjectStep(this, ObjectID.FAI_VARROCK_LADDERTOP, new WorldPoint(3310, 3509, 1), "Climb down ladder in the Lumberyard.");
 		climbUpLadderStep = new ObjectStep(this, ObjectID.FAI_VARROCK_LADDER, new WorldPoint(3310, 3509, 0), "Climb up the ladder in the Lumberyard.", kitten);

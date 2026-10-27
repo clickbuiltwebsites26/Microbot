@@ -29,6 +29,26 @@ public final class QuestObjectApproach
 	}
 
 	/**
+	 * The candidates of a search step in the order to try them: when some show the sign the step is looking for (the
+	 * "Mew!" over a kitten crate) only those, nearest first; otherwise all of them, nearest first.
+	 */
+	public static <T> java.util.List<T> orderForSearch(Collection<T> candidates, Predicate<T> showsHint,
+		Comparator<T> nearestFirst)
+	{
+		java.util.List<T> hinted = new java.util.ArrayList<>();
+		for (T candidate : candidates)
+		{
+			if (showsHint.test(candidate))
+			{
+				hinted.add(candidate);
+			}
+		}
+		java.util.List<T> ordered = new java.util.ArrayList<>(hinted.isEmpty() ? candidates : hinted);
+		ordered.sort(nearestFirst);
+		return ordered;
+	}
+
+	/**
 	 * The next candidate of a search step that goes through many identical objects (crates, bookcases): the best by
 	 * {@code order} among those not searched yet, so each is tried once and neighbours follow each other; when every one
 	 * has been tried, the best overall, to go round again.

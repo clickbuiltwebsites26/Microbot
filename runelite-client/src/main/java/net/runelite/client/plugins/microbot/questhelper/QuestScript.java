@@ -3614,6 +3614,14 @@ public class QuestScript extends Script {
         List<Rs2NpcModel> npcs = step.getNpcs().stream()
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());
+        if (step.isAllowMultipleHighlights() && !killStep) {
+            // Many identical targets (the kitten crates): those showing their hint overhead ("Mew!") first, nearest
+            // first, and never wander to the others while some show it.
+            WorldPoint me = Rs2Player.getWorldLocation();
+            npcs = QuestObjectApproach.orderForSearch(npcs,
+                    n -> n.getOverheadText() != null && !n.getOverheadText().isEmpty(),
+                    Comparator.comparingInt(n -> me.distanceTo(n.getWorldLocation())));
+        }
         Rs2NpcModel npc = npcs.stream().findFirst().orElse(null);
         if (killStep) {
             Rs2NpcModel preferred = pickKillTarget(step, npcs);
@@ -3653,6 +3661,19 @@ public class QuestScript extends Script {
                 && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
                 && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
         boolean npcKnown = npc != null && npc.getLocalLocation() != null;
+        if (npcKnown && step.isAllowMultipleHighlights() && !killStep && !Microbot.getClient().isInInstancedRegion()
+                && !standsBesideWithoutWall(npc.getWorldLocation())) {
+            // Search each from a tile that touches it with no wall or fence between: a crate on the far side of a wall
+            // answers "I can't reach that!" however close it looks.
+            WorldPoint at = npc.getWorldLocation();
+            WorldPoint stand = chooseObjectApproachTile(at, Collections.singletonList(at));
+            if (stand == null) {
+                npcsHandled.add(npc.getIndex()); // no way to reach it: skip it
+                return false;
+            }
+            Rs2Walker.walkTo(stand, 0);
+            return false;
+        }
         boolean clickFailedRecently = npcKnown && npc.getIndex() == failedClickNpcIndex
                 && System.currentTimeMillis() < failedClickUntilMs;
         boolean inSight = npcKnown && npc.hasLineOfSight();
@@ -4099,6 +4120,13 @@ public class QuestScript extends Script {
     }
 
     private static final int APPROACH_MAX_CANDIDATES = 8;
+
+    /** Whether the player stands on a tile touching {@code target} with no wall, fence or bars on the shared edge. */
+    private boolean standsBesideWithoutWall(WorldPoint target) {
+        WorldPoint me = Rs2Player.getWorldLocation();
+        return me != null && QuestObjectApproach.touchesWithOpenEdge(me, Collections.singletonList(target),
+                collisionFlags(target.getPlane()));
+    }
 
     /** Every tile the object stands on (a staircase covers several), or just its defined tile when unknown. */
     private static List<WorldPoint> objectFootprint(Rs2TileObjectModel object, WorldPoint fallbackTile) {
