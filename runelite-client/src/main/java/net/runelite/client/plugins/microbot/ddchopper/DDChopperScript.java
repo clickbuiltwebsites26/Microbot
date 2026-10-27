@@ -2,107 +2,76 @@ package net.runelite.client.plugins.microbot.ddchopper;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Skill;
-import net.runelite.api.coords.WorldPoint;
-import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
-import net.runelite.client.plugins.microbot.api.tileitem.models.Rs2TileItemModel;
-import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
-import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerConfig;
-import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerPlugin;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
-import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
+import net.runelite.client.plugins.microbot.ddchopper.forestry.ForestryHandler;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
-import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
-import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
-import net.runelite.client.plugins.microbot.util.grandexchange.Rs2GrandExchange;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
-import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
-import net.runelite.client.plugins.microbot.util.world.Rs2WorldUtil;
 
 import javax.inject.Singleton;
-import java.time.Duration;
-import java.util.EnumMap;
-import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
  * DD Chopper main loop. One 600 ms tick: goal check, axe check (on start and every level-up), tree/spot plan, crowd
  * check, then drop/bank when full or chop. Blocking events (random events, login, break handler pauses) are handled
- * by the {@link Script#run()} gate.
+ * by the {@link Script#run()} gate. The steps themselves live in {@link AxeSupplier}, {@link CrowdHopper},
+ * {@link LogHandler}, {@link TreeChopper}, {@link BreakSync} and {@link ForestryHandler}.
  */
 @Slf4j
 @Singleton
 public class DDChopperScript extends Script
 {
-	private static final int COINS = 995;
-	private static final Integer[] AXE_IDS = new Integer[Axe.values().length];
-
-	static
-	{
-		for (Axe a : Axe.values())
-		{
-			AXE_IDS[a.ordinal()] = a.getItemId();
-		}
-	}
+	private static final int TICK_MS = 600;
+	/** Cap on the time one tick adds to the active-time clock, so a stalled client does not count as playtime. */
+	private static final long MAX_ACTIVE_STEP_MS = 5_000;
+	/** XP/hour is extrapolated over at least this long so the first minutes do not show absurd rates. */
+	private static final long MIN_XP_RATE_WINDOW_MS = 60_000;
+	private static final double MS_PER_HOUR = 3_600_000.0;
+	private static final long MS_PER_MINUTE = 60_000L;
+	private static final int FORESTRY_PAUSE_MIN_MS = 400;
+	private static final int FORESTRY_PAUSE_MAX_MS = 700;
 
 	private DDChopperConfig config;
 
-	// What the overlay shows.
+	// What the overlay and panel show.
 	private volatile int currentLevel;
 	private volatile long xpGained;
+	private volatile long currentXp;
 	private volatile long xpPerHour;
 	private volatile String status = "Idle";
 	private volatile TreeType currentTree;
 	private volatile Spot currentSpot;
-	private volatile Axe currentAxe;
+	private volatile boolean paused;
+	private volatile boolean running;
+	private volatile String blockReason = "";
+	/** A problem the script works around while it keeps running, shown next to RUNNING in the panel. */
+	private volatile String notice = "";
 
 	// Run state.
-	private long activeMillis;
+	private volatile long activeMillis;
 	private long lastTickMillis;
 	private int lastLevel = -1;
 	private int startXp = -1;
 	private boolean axeCheck = true;
 	private boolean replan = true;
-	private boolean bankChecked;
-	private boolean depositLeftover;
-	private int buyAttemptLevel = -1;
-	private final Map<Axe, Integer> axePrices = new EnumMap<>(Axe.class);
 	private ChopPlanner.Plan plan;
 	private String lastNote = "";
-	private long tickCount;
 	private boolean finished;
-	private boolean questRuleSetByUs;
 
-	// Crowd hopping and breaks.
-	private HopGate hopGate;
-	private CrowdRule.Mode crowdMode = CrowdRule.Mode.OFF;
-	private int gateThreshold = -1;
-	private BreakPlan breakPlan;
-	private SpotRotation rotation;
-	private boolean breaksSynced;
-	private int lastTotalBreaks = -1;
-
-	// Trees that refused our click recently.
-	private final Map<WorldPoint, Long> blacklist = new HashMap<>();
-	private final ClickTracker<WorldPoint> clicks = new ClickTracker<>();
-
-	// Human pacing.
+	private final WalkerOverrides walkerOverrides = new WalkerOverrides();
+	private final ForestryHandler forestry = new ForestryHandler();
 	private HumanPacing pacing;
-	private final net.runelite.client.plugins.microbot.ddchopper.forestry.ForestryHandler forestry =
-		new net.runelite.client.plugins.microbot.ddchopper.forestry.ForestryHandler();
-	private volatile boolean paused;
-	private volatile boolean running;
-	private volatile String blockReason = "";
-	private boolean wasBusy;
+	private AxeSupplier axes;
+	private CrowdHopper crowd;
+	private LogHandler logs;
+	private TreeChopper chopper;
+	private BreakSync breaks;
+	private SpotRotation rotation;
 
 	public boolean run(DDChopperConfig config)
 	{
@@ -113,22 +82,21 @@ public class DDChopperScript extends Script
 		Rs2AntibanSettings.naturalMouse = true;
 		// No surprise boats, spirit trees or teleports: spots are reached on foot or not at all.
 		Rs2Walker.disableTeleports = true;
-		if (!QuestWalkRule.isActive())
-		{
-			QuestWalkRule.setActive(true);
-			questRuleSetByUs = true;
-		}
+		walkerOverrides.apply();
 		pacing = new HumanPacing(new Random(), config.humanizedTiming(), config.humanizedFatigue(), config.idlePauseChance());
-		crowdMode = CrowdRule.Mode.OFF;
-		gateThreshold = -1;
-		refreshCrowdRule();
+		BankTrip bank = new BankTrip(() -> notice = "Bank unavailable" + (config.mode() == ChopMode.BANK ? " - dropping logs" : ""));
+		axes = new AxeSupplier(config, this::setStatus, bank);
+		crowd = new CrowdHopper(config, this::setStatus);
+		logs = new LogHandler(config, pacing, this::setStatus, this::isRunning, bank);
+		chopper = new TreeChopper(pacing, this::setStatus);
+		breaks = new BreakSync(config);
+		rotation = new SpotRotation(new Random(), config.rotateMinMinutes(), config.rotateMaxMinutes());
+		forestry.reset();
 		running = true;
 		paused = false;
 		blockReason = "";
-		forestry.reset();
-		breakPlan = new BreakPlan(config.minPlay(), config.maxPlay(), config.minBreak(), config.maxBreak(), new Random());
-		rotation = new SpotRotation(new Random(), config.rotateMinMinutes(), config.rotateMaxMinutes());
-		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(this::loop, 0, 600, TimeUnit.MILLISECONDS);
+		notice = "";
+		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(this::loop, 0, TICK_MS, TimeUnit.MILLISECONDS);
 		return true;
 	}
 
@@ -140,23 +108,13 @@ public class DDChopperScript extends Script
 		startXp = -1;
 		axeCheck = true;
 		replan = true;
-		depositLeftover = false;
-		bankChecked = false;
-		buyAttemptLevel = -1;
-		axePrices.clear();
 		plan = null;
 		lastNote = "";
-		tickCount = 0;
 		finished = false;
-		breaksSynced = false;
-		lastTotalBreaks = -1;
-		blacklist.clear();
-		clicks.reset();
-		wasBusy = false;
-		currentAxe = null;
 		currentTree = null;
 		currentSpot = null;
 		xpGained = 0;
+		currentXp = 0;
 		xpPerHour = 0;
 		status = "Starting";
 	}
@@ -167,13 +125,14 @@ public class DDChopperScript extends Script
 		super.shutdown();
 		running = false;
 		Rs2Walker.disableTeleports = false;
-		if (questRuleSetByUs)
-		{
-			QuestWalkRule.setActive(false);
-			questRuleSetByUs = false;
-		}
+		walkerOverrides.clear();
 		Rs2Antiban.resetAntibanSettings();
 		status = "Stopped";
+	}
+
+	private void setStatus(String text)
+	{
+		status = text;
 	}
 
 	private void loop()
@@ -189,37 +148,17 @@ public class DDChopperScript extends Script
 				status = "Paused";
 				return;
 			}
-			long now = System.currentTimeMillis();
-			if (lastTickMillis > 0)
-			{
-				activeMillis += Math.min(now - lastTickMillis, 5_000);
-			}
-			lastTickMillis = now;
-			if (pacing != null && pacing.isEnabled())
-			{
-				pacing.update(now, BreakHandlerScript.isBreakActive());
-				Rs2Antiban.mouseFatigue.noiseAmplitude = pacing.mouseNoiseAmplitude();
-			}
+			trackActiveTime();
 			if (Microbot.isHopping())
 			{
 				status = "Hopping worlds";
 				return;
 			}
-			tickCount++;
 
 			int level = Rs2Player.getRealSkillLevel(Skill.WOODCUTTING);
 			currentLevel = level;
-			updateXp(level);
-			if (level != lastLevel)
-			{
-				if (lastLevel > 0)
-				{
-					Microbot.log("DD Chopper: level up to " + level + ", re-checking axe and tree");
-				}
-				lastLevel = level;
-				axeCheck = true;
-				replan = true;
-			}
+			updateXp();
+			noteLevelChange(level);
 
 			String reason = GoalTracker.stopReason(config.goalType(), level, config.targetLevel(), activeMillis,
 				GoalTracker.runLimitMillis(config.runHours(), config.runMinutes()));
@@ -229,46 +168,42 @@ public class DDChopperScript extends Script
 				return;
 			}
 
-			syncBreaks();
+			breaks.sync();
 
-			if (axeCheck)
+			if (axeCheck && !secureAxe(level))
 			{
-				handleAxe(level);
-				if (axeCheck || finished)
-				{
-					return;
-				}
+				return;
 			}
-			if (replan || plan == null || false)
+			if (replan || plan == null)
 			{
 				replan(level);
 			}
-			if (plan == null || plan.spot == null)
+			if (plan.spot == null)
 			{
 				finish("no usable woodcutting spot for level " + level);
 				return;
 			}
-			refreshCrowdRule();
-			if (crowdMode != CrowdRule.Mode.OFF && checkCrowd())
+			crowd.refresh();
+			if (crowd.isActive() && crowd.checkAndHop(activeSpot()))
 			{
 				return;
 			}
 			if (Rs2Inventory.isFull())
 			{
-				handleFull();
+				logs.handleFull();
 				return;
 			}
-			if (config.pickupNests() && pickNest())
+			if (config.pickupNests() && chopper.pickUpNest())
 			{
 				return;
 			}
 			if (forestry.tick(config))
 			{
 				status = "Forestry: " + forestry.lastEvent();
-				sleep(400, 700);
+				sleep(FORESTRY_PAUSE_MIN_MS, FORESTRY_PAUSE_MAX_MS);
 				return;
 			}
-			chop();
+			chopper.chop(plan.tree, this::activeSpot);
 		}
 		catch (Exception e)
 		{
@@ -281,11 +216,38 @@ public class DDChopperScript extends Script
 		}
 	}
 
-	// ---------------------------------------------------------------------------------------------
-	// Goal, XP, breaks
-	// ---------------------------------------------------------------------------------------------
+	/** Advances the active-time clock and the human pacing model. */
+	private void trackActiveTime()
+	{
+		long now = System.currentTimeMillis();
+		if (lastTickMillis > 0)
+		{
+			activeMillis += Math.min(now - lastTickMillis, MAX_ACTIVE_STEP_MS);
+		}
+		lastTickMillis = now;
+		if (pacing != null && pacing.isEnabled())
+		{
+			pacing.update(now, BreakHandlerScript.isBreakActive());
+			Rs2Antiban.mouseFatigue.noiseAmplitude = pacing.mouseNoiseAmplitude();
+		}
+	}
 
-	private void updateXp(int level)
+	private void noteLevelChange(int level)
+	{
+		if (level == lastLevel)
+		{
+			return;
+		}
+		if (lastLevel > 0)
+		{
+			Microbot.log("DD Chopper: level up to " + level + ", re-checking axe and tree");
+		}
+		lastLevel = level;
+		axeCheck = true;
+		replan = true;
+	}
+
+	private void updateXp()
 	{
 		int xp = Microbot.getClientThread().runOnClientThreadOptional(
 			() -> Microbot.getClient().getSkillExperience(Skill.WOODCUTTING)).orElse(-1);
@@ -297,8 +259,9 @@ public class DDChopperScript extends Script
 		{
 			startXp = xp;
 		}
+		currentXp = xp;
 		xpGained = xp - startXp;
-		double hours = Math.max(activeMillis, 60_000) / 3_600_000.0;
+		double hours = Math.max(activeMillis, MIN_XP_RATE_WINDOW_MS) / MS_PER_HOUR;
 		xpPerHour = (long) (xpGained / hours);
 	}
 
@@ -312,278 +275,31 @@ public class DDChopperScript extends Script
 		stopper.start();
 	}
 
-	/** Pushes freshly picked break lengths to Microbot's Break Handler and makes sure it is running. */
-	private void syncBreaks()
+	/** Runs one axe step; true once an axe is ready and the tick can carry on. */
+	private boolean secureAxe(int level)
 	{
-		if (!config.enableBreaks())
+		switch (axes.check(level))
 		{
-			return;
-		}
-		int total = BreakHandlerScript.totalBreaks;
-		if (breaksSynced && total == lastTotalBreaks)
-		{
-			return;
-		}
-		breaksSynced = true;
-		lastTotalBreaks = total;
-		int play = breakPlan.nextPlayMinutes();
-		int rest = breakPlan.nextBreakMinutes();
-		String group = BreakHandlerConfig.configGroup;
-		Microbot.getConfigManager().setConfiguration(group, "Min Playtime", play);
-		Microbot.getConfigManager().setConfiguration(group, "Max Playtime", play);
-		Microbot.getConfigManager().setConfiguration(group, "Min BreakTime", rest);
-		Microbot.getConfigManager().setConfiguration(group, "Max BreakTime", rest);
-		Microbot.getConfigManager().setConfiguration(group, "Logout", config.logoutOnBreak());
-		Microbot.getConfigManager().setConfiguration(group, "OnlyMicroBreaks", false);
-		Plugin handler = Microbot.getPlugin(BreakHandlerPlugin.class);
-		if (handler != null && !Microbot.getPluginManager().isActive(handler))
-		{
-			Microbot.startPlugin(handler);
-		}
-		Microbot.log("DD Chopper: next break after " + play + " min, lasting " + rest + " min");
-	}
-
-	/** Overlay text for the break countdown. */
-	public String getBreakText()
-	{
-		if (!config.enableBreaks())
-		{
-			return "Off";
-		}
-		if (BreakHandlerScript.isBreakActive())
-		{
-			return BreakHandlerScript.breakDuration > 0
-				? "On break, " + BreakHandlerScript.formatDuration(Duration.ofSeconds(BreakHandlerScript.breakDuration))
-				: "On break";
-		}
-		return BreakHandlerScript.breakIn > 0
-			? "in " + BreakHandlerScript.formatDuration(Duration.ofSeconds(BreakHandlerScript.breakIn)) : "Pending";
-	}
-
-	// ---------------------------------------------------------------------------------------------
-	// Axe
-	// ---------------------------------------------------------------------------------------------
-
-	private Set<Axe> ownedAxes()
-	{
-		Set<Axe> owned = EnumSet.noneOf(Axe.class);
-		for (Axe axe : Axe.values())
-		{
-			int id = axe.getItemId();
-			if (Rs2Equipment.isWearing(id) || Rs2Inventory.hasItem(id) || (bankChecked && Rs2Bank.hasItem(id)))
-			{
-				owned.add(axe);
-			}
-		}
-		return owned;
-	}
-
-	private void handleAxe(int level)
-	{
-		if (depositLeftover)
-		{
-			status = "Banking leftover coins";
-			if (!Rs2Bank.isOpen())
-			{
-				Rs2Bank.walkToBankAndUseBank();
-			}
-			if (Rs2Bank.isOpen())
-			{
-				long coins = Rs2Inventory.count(COINS);
-				if (coins > 0)
-				{
-					Rs2Bank.depositAll(COINS);
-					sleepUntil(() -> Rs2Inventory.count(COINS) == 0, 3_000);
-				}
-				Microbot.log("DD Chopper: deposited " + coins + " leftover coins");
-				depositLeftover = false;
-				Rs2Bank.closeBank();
-			}
-			return;
-		}
-		Set<Axe> owned = ownedAxes();
-		Axe target = AxePlanner.chooseOwned(config.axe(), owned, level);
-		Axe desired = config.axe().axe() != null ? config.axe().axe() : AxePlanner.bestUnlocked(level, false);
-		boolean wantBuy = config.buyAxe() && desired != null && desired.isBuyable() && desired.canChop(level)
-			&& (target == null || target.ordinal() < desired.ordinal()) && buyAttemptLevel != level;
-
-		if (!bankChecked && (target == null || wantBuy))
-		{
-			status = "Checking bank for axes";
-			if (!Rs2Bank.isOpen())
-			{
-				Rs2Bank.walkToBankAndUseBank();
-			}
-			if (Rs2Bank.isOpen())
-			{
-				// Wait for the bank snapshot so the coin count below is not read from an empty cache.
-				sleepUntil(() -> !Rs2Bank.bankItems().isEmpty(), 3_000);
-				bankChecked = true;
-			}
-			return;
-		}
-
-		if (wantBuy)
-		{
-			long inventoryCoins = Rs2Inventory.count(COINS);
-			long bankCoins = Rs2Bank.count(COINS);
-			fillPrices(level, target);
-			AxePlanner.BuyDecision decision = AxePlanner.decideBuy(config.axe(), level, target, inventoryCoins, bankCoins,
-				bankChecked, axePrices);
-			if (decision.step == AxePlanner.BuyStep.SCAN_BANK)
-			{
-				bankChecked = false;
-				return;
-			}
-			if (decision.step == AxePlanner.BuyStep.NONE)
-			{
-				buyAttemptLevel = level;
-				Microbot.log("DD Chopper: cannot afford a better axe at level " + level + " (coins " + inventoryCoins
-					+ " inventory + " + bankCoins + " bank, prices " + axePrices + ")");
-				return;
-			}
-			Microbot.log("DD Chopper: buying " + decision.axe.getItemName() + " for " + decision.price + " gp (coins "
-				+ inventoryCoins + " inventory + " + bankCoins + " bank)");
-			buyStep(decision.axe, decision.price, level);
-			return;
-		}
-
-		if (target == null)
-		{
-			blockReason = "No axe equipped/in inventory";
-			finish("no usable axe for level " + level + (config.buyAxe() ? " and none could be bought" : ""));
-			return;
-		}
-
-		int id = target.getItemId();
-		int attack = Rs2Player.getRealSkillLevel(Skill.ATTACK);
-		if (Rs2Equipment.isWearing(id))
-		{
-			axeReady(target);
-		}
-		else if (Rs2Inventory.hasItem(id))
-		{
-			if (target.canWield(attack))
-			{
-				status = "Wielding " + target.getItemName();
-				Rs2Inventory.wield(id);
-				sleepUntil(() -> Rs2Equipment.isWearing(id), 3_000);
-			}
-			axeReady(target);
-		}
-		else if (bankChecked && Rs2Bank.hasItem(id))
-		{
-			status = "Fetching " + target.getItemName();
-			if (!Rs2Bank.isOpen())
-			{
-				Rs2Bank.walkToBankAndUseBank();
-			}
-			if (Rs2Bank.isOpen())
-			{
-				if (target.canWield(attack))
-				{
-					Rs2Bank.withdrawAndEquip(id);
-				}
-				else
-				{
-					Rs2Bank.withdrawOne(id);
-				}
-				sleepUntil(() -> Rs2Equipment.isWearing(id) || Rs2Inventory.hasItem(id), 3_000);
-				Rs2Bank.closeBank();
-			}
-		}
-		else
-		{
-			bankChecked = false;
+			case READY:
+				axeCheck = false;
+				blockReason = "";
+				replan = true;
+				return true;
+			case MISSING:
+				blockReason = "No axe equipped/in inventory";
+				finish("no usable axe for level " + level + (config.buyAxe() ? " and none could be bought" : ""));
+				return false;
+			default:
+				return false;
 		}
 	}
-
-	private void axeReady(Axe axe)
-	{
-		if (currentAxe != axe)
-		{
-			Microbot.log("DD Chopper: using " + axe.getItemName());
-		}
-		currentAxe = axe;
-		axeCheck = false;
-		blockReason = "";
-		replan = true;
-	}
-
-	private void fillPrices(int level, Axe owned)
-	{
-		for (Axe axe : Axe.values())
-		{
-			if (axe.isBuyable() && axe.canChop(level) && (owned == null || axe.ordinal() > owned.ordinal())
-				&& !axePrices.containsKey(axe))
-			{
-				int live = Rs2GrandExchange.getAdaptiveBuyPrice(axe.getItemId(), 1.15, 0);
-				if (live <= 0)
-				{
-					Microbot.log("DD Chopper: price lookup failed for " + axe.getItemName() + ", using fallback "
-						+ AxePlanner.fallbackPrice(axe));
-				}
-				axePrices.put(axe, AxePlanner.effectivePrice(axe, live));
-			}
-		}
-	}
-
-	/** One step of getting coins out of the bank and buying the axe at the GE. */
-	private void buyStep(Axe axe, int price, int level)
-	{
-		status = "Buying " + axe.getItemName();
-		long budget = AxePlanner.coinBudget(price);
-		if (Rs2Inventory.count(COINS) < budget)
-		{
-			if (!Rs2Bank.isOpen())
-			{
-				Rs2Bank.walkToBankAndUseBank();
-			}
-			if (Rs2Bank.isOpen())
-			{
-				long have = Rs2Inventory.count(COINS);
-				long take = AxePlanner.coinsToWithdraw(price, have, Rs2Bank.count(COINS));
-				Microbot.log("DD Chopper: withdrawing " + take + " coins for " + axe.getItemName() + " (price " + price
-					+ ", budget " + budget + ", had " + have + ")");
-				if (take > 0)
-				{
-					Rs2Bank.withdrawX(COINS, (int) take);
-					sleepUntil(() -> Rs2Inventory.count(COINS) >= Math.min(budget, have + take), 3_000);
-				}
-				Rs2Bank.closeBank();
-			}
-			return;
-		}
-		if (!Rs2GrandExchange.isOpen())
-		{
-			Rs2GrandExchange.walkToGrandExchange();
-			Rs2GrandExchange.openExchange();
-			return;
-		}
-		buyAttemptLevel = level;
-		if (!Rs2GrandExchange.buyItem(axe.getItemName(), price, 1))
-		{
-			Microbot.log("DD Chopper: could not place the offer for " + axe.getItemName());
-			Rs2GrandExchange.closeExchange();
-			return;
-		}
-		sleepUntilTrue(Rs2GrandExchange::hasFinishedBuyingOffers, 600, 60_000);
-		Rs2GrandExchange.collectAllToInventory();
-		Rs2GrandExchange.closeExchange();
-		bankChecked = false;
-		depositLeftover = true;
-		Microbot.log("DD Chopper: bought " + axe.getItemName() + " (offer " + price + " gp), leftover coins go back to the bank");
-	}
-
-	// ---------------------------------------------------------------------------------------------
-	// Plan
-	// ---------------------------------------------------------------------------------------------
 
 	private void replan(int level)
 	{
 		ChopPlanner.Input in = new ChopPlanner.Input();
 		in.level = level;
-		in.axe = currentAxe != null ? currentAxe : Axe.BRONZE;
+		Axe current = axes.currentAxe();
+		in.axe = current != null ? current : Axe.BRONZE;
 		in.treeChoice = config.tree();
 		in.spotChoice = config.spot();
 		in.mode = config.mode();
@@ -613,291 +329,6 @@ public class DDChopperScript extends Script
 		replan = false;
 	}
 
-	// ---------------------------------------------------------------------------------------------
-	// Crowd hopping
-	// ---------------------------------------------------------------------------------------------
-
-	/** Re-reads the crowd options so panel changes apply live; rebuilds the hop gate when the rule changes. */
-	private void refreshCrowdRule()
-	{
-		CrowdRule.Mode mode = CrowdRule.resolve(config.forestryEnabled(), config.forestryBusyWorld(), config.hopWhenCrowded());
-		int threshold = mode == CrowdRule.Mode.SEEK_BUSY ? config.forestryMinPlayers() : config.maxOthers();
-		if (mode != crowdMode || threshold != gateThreshold || hopGate == null)
-		{
-			crowdMode = mode;
-			gateThreshold = threshold;
-			hopGate = mode == CrowdRule.Mode.SEEK_BUSY
-				? HopGate.seekBusy(threshold, config.maxHopsPerHour())
-				: new HopGate(threshold, config.maxHopsPerHour());
-		}
-	}
-
-	/** Returns true when this tick was spent on a hop. */
-	private boolean checkCrowd()
-	{
-		WorldPoint me = Rs2Player.getWorldLocation();
-		Spot spot = activeSpot();
-		if (me == null || spot.center().distanceTo2D(me) > 25)
-		{
-			return false;
-		}
-		String myName = Microbot.getClientThread().runOnClientThreadOptional(
-			() -> Microbot.getClient().getLocalPlayer() != null ? Microbot.getClient().getLocalPlayer().getName() : null)
-			.orElse(null);
-		int others = (int) Microbot.getRs2PlayerCache().query().within(config.crowdRadius()).toListOnClientThread()
-			.stream().filter(p -> p != null && (myName == null || !myName.equals(p.getName()))).count();
-		long now = System.currentTimeMillis();
-		HopGate.Decision decision = hopGate.decide(others, now);
-		if (decision == HopGate.Decision.CAPPED)
-		{
-			status = "Hop limit reached (" + others + " at spot)";
-			return false;
-		}
-		if (decision != HopGate.Decision.HOP)
-		{
-			return false;
-		}
-		int world = pickWorld(spot);
-		if (world <= 0)
-		{
-			Microbot.log("DD Chopper: " + others + " others at the spot but no suitable world found");
-			hopGate.recordHop(now);
-			return false;
-		}
-		Microbot.log("DD Chopper: " + others + " other players at the spot, hopping to " + (crowdMode == CrowdRule.Mode.SEEK_BUSY ? "busier " : "") + "world " + world);
-		status = "Hopping to " + world;
-		hopGate.recordHop(now);
-		if (Microbot.hopToWorld(world))
-		{
-			sleepUntil(() -> !Microbot.isHopping() && Microbot.isLoggedIn(), 20_000);
-		}
-		return true;
-	}
-
-	/** Highest-population world that is accessible and safe (Rs2WorldUtil filters PvP, high risk, total level, deadman, seasonal), members-aware. */
-	private int pickBusyWorld(Spot spot)
-	{
-		Set<Integer> avoid = HopGate.parseWorlds(config.avoidWorlds());
-		int current = Microbot.getClient().getWorld();
-		var result = Microbot.getWorldService().getWorlds();
-		for (int id : Rs2WorldUtil.getAccessibleWorldsByPopulation(30))
-		{
-			if (id == current || avoid.contains(id))
-			{
-				continue;
-			}
-			var world = result == null ? null : result.findWorld(id);
-			if (world != null && spot.isMembers() && !world.getTypes().contains(net.runelite.http.api.worlds.WorldType.MEMBERS))
-			{
-				continue;
-			}
-			return id;
-		}
-		return -1;
-	}
-
-	private int pickWorld(Spot spot)
-	{
-		if (crowdMode == CrowdRule.Mode.SEEK_BUSY)
-		{
-			return pickBusyWorld(spot);
-		}
-		Set<Integer> avoid = HopGate.parseWorlds(config.avoidWorlds());
-		int current = Microbot.getClient().getWorld();
-		for (int i = 0; i < 8; i++)
-		{
-			// Rs2WorldUtil skips PvP, high risk, total level, deadman, seasonal and other restricted worlds, and
-			// F2P-only accounts only get F2P worlds.
-			int world = Rs2WorldUtil.getRandomAccessibleWorld(true, true, spot.isMembers());
-			if (world > 0 && world != current && !avoid.contains(world))
-			{
-				return world;
-			}
-		}
-		return -1;
-	}
-
-	// ---------------------------------------------------------------------------------------------
-	// Chopping
-	// ---------------------------------------------------------------------------------------------
-
-	private boolean pickNest()
-	{
-		Rs2TileItemModel nest = Microbot.getRs2TileItemCache().query().withName("Bird nest").nearestOnClientThread(8);
-		if (nest == null)
-		{
-			return false;
-		}
-		status = "Picking up bird nest";
-		if (nest.pickup())
-		{
-			sleepUntil(() -> !Rs2Player.isMoving(), 4_000);
-			return true;
-		}
-		return false;
-	}
-
-	/** Waits a human reaction delay (and now and then an idle pause) after a tree fell or chopping stopped. */
-	private void reactBeforeNextTree()
-	{
-		if (pacing == null || !pacing.isEnabled())
-		{
-			return;
-		}
-		long idle = pacing.idlePauseMs(System.currentTimeMillis(), !Rs2Inventory.isFull());
-		if (idle > 0)
-		{
-			status = "Idle pause";
-			Microbot.log("DD Chopper: idle pause " + idle / 1000 + " s");
-			sleep((int) idle);
-		}
-		status = "Reacting";
-		sleep((int) pacing.reactionDelayMs());
-	}
-
-	/** Lights one fire: tinderbox on a log, then waits for the lighting animation to end. */
-	private void burnLogs()
-	{
-		status = "Burning logs";
-		if (!Rs2Inventory.combine("Tinderbox", "logs"))
-		{
-			sleep(300, 600);
-			return;
-		}
-		sleepUntil(() -> Rs2Player.isAnimating(1200), 3_000);
-		sleepUntil(() -> !Rs2Player.isAnimating(1800) && !Rs2Player.isMoving(), 12_000);
-	}
-
-	/** Drops the logs one by one with a varying pace. */
-	private void dropLogs()
-	{
-		java.util.function.Predicate<net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel> logs =
-			item -> item.getName() != null && item.getName().toLowerCase().endsWith("logs");
-		if (pacing == null || !pacing.isEnabled())
-		{
-			Rs2Inventory.dropAll(logs);
-			return;
-		}
-		for (int i = 0; i < 30 && Rs2Inventory.items(logs).findAny().isPresent() && isRunning(); i++)
-		{
-			if (!Rs2Inventory.drop(logs))
-			{
-				break;
-			}
-			sleep((int) pacing.dropDelayMs());
-		}
-	}
-
-	private void handleFull()
-	{
-		Rs2ItemModel logItem = Rs2Inventory.get(item -> item.getName() != null && item.getName().toLowerCase().endsWith("logs"));
-		ResourceHandling.Action action = ResourceHandling.decide(config.mode(), Rs2Inventory.hasItem("Tinderbox"),
-			Rs2Player.getRealSkillLevel(Skill.FIREMAKING), logItem == null ? null : logItem.getName());
-		if (action == ResourceHandling.Action.BURN)
-		{
-			burnLogs();
-			return;
-		}
-		if (action == ResourceHandling.Action.DROP)
-		{
-			status = config.mode() == ChopMode.BURN ? "Dropping logs (cannot burn)" : "Dropping logs";
-			dropLogs();
-			return;
-		}
-		status = "Banking logs";
-		if (!Rs2Bank.isOpen())
-		{
-			Rs2Bank.walkToBankAndUseBank();
-		}
-		if (Rs2Bank.isOpen())
-		{
-			Rs2Bank.depositAllExcept(AXE_IDS);
-			sleepUntil(() -> !Rs2Inventory.isFull(), 3_000);
-			Rs2Bank.closeBank();
-		}
-	}
-
-	private void chop()
-	{
-		if (Rs2Player.isAnimating(1800) || Rs2Player.isMoving())
-		{
-			status = "Chopping " + plan.tree.getObjectName();
-			wasBusy = true;
-			return;
-		}
-		Spot spot = activeSpot();
-		WorldPoint me = Rs2Player.getWorldLocation();
-		long now = System.currentTimeMillis();
-		blacklist.values().removeIf(until -> until < now);
-
-		List<Rs2TileObjectModel> found = Microbot.getRs2TileObjectCache().query()
-			.withName(plan.tree.getObjectName()).toListOnClientThread();
-		Rs2TileObjectModel best = nearest(found, me, spot, false);
-		if (best == null)
-		{
-			if (me == null || !spot.contains(me) && spot.center().distanceTo2D(me) > 6)
-			{
-				status = "Walking to " + spot.getLabel();
-				Rs2Walker.walkTo(spot.center(), 4);
-				return;
-			}
-			// The rectangle may be slightly off: take any matching tree close to us.
-			best = nearest(found, me, spot, true);
-			if (best == null)
-			{
-				status = "Waiting for " + plan.tree.getObjectName() + " to respawn";
-				return;
-			}
-		}
-		status = "Chopping " + plan.tree.getObjectName();
-		WorldPoint at = best.getWorldLocation();
-		if (wasBusy)
-		{
-			reactBeforeNextTree();
-			wasBusy = false;
-		}
-		boolean started = best.click("Chop down")
-			&& sleepUntil(() -> Rs2Player.isAnimating() || Rs2Player.isMoving(), 3_000);
-		if (clicks.record(at, started))
-		{
-			blacklist.put(at, now + 60_000);
-		}
-		if (started)
-		{
-			Rs2Antiban.actionCooldown();
-			Rs2Antiban.takeMicroBreakByChance();
-		}
-	}
-
-	private Rs2TileObjectModel nearest(List<Rs2TileObjectModel> trees, WorldPoint me, Spot spot, boolean anywhereNearby)
-	{
-		Rs2TileObjectModel best = null;
-		int bestDistance = Integer.MAX_VALUE;
-		for (Rs2TileObjectModel tree : trees)
-		{
-			WorldPoint at = tree.getWorldLocation();
-			if (blacklist.containsKey(at))
-			{
-				continue;
-			}
-			if (anywhereNearby ? (me == null || at.distanceTo2D(me) > 20) : !spot.contains(at))
-			{
-				continue;
-			}
-			int distance = me == null ? 0 : at.distanceTo2D(me);
-			if (distance < bestDistance)
-			{
-				bestDistance = distance;
-				best = tree;
-			}
-		}
-		return best;
-	}
-
-	// ---------------------------------------------------------------------------------------------
-	// Overlay getters
-	// ---------------------------------------------------------------------------------------------
-
 	/** The spot to be at now: the rotation's pick when rotating, otherwise the planned spot. */
 	private Spot activeSpot()
 	{
@@ -911,17 +342,6 @@ public class DDChopperScript extends Script
 			currentSpot = spot;
 		}
 		return spot;
-	}
-
-	/** Time left at the current spot, or empty when not rotating. */
-	public String getSpotTimeLeft()
-	{
-		if (!config.rotateSpots() || plan == null || plan.pool.size() <= 1)
-		{
-			return "-";
-		}
-		long ms = rotation.remainingMillis(activeMillis);
-		return String.format("%d:%02d left", ms / 3_600_000L * 60 + ms / 60_000L % 60, ms / 1000 % 60);
 	}
 
 	// ---- Controls used by the side panel ----
@@ -953,9 +373,16 @@ public class DDChopperScript extends Script
 		paused = false;
 	}
 
+	// ---- Getters for the overlay and panel ----
+
 	public String getBlockReason()
 	{
 		return finished ? status : blockReason;
+	}
+
+	public String getNotice()
+	{
+		return notice;
 	}
 
 	public RuntimeStatus.State getRunState()
@@ -966,8 +393,64 @@ public class DDChopperScript extends Script
 	public String getRunStatusLine()
 	{
 		RuntimeStatus.State state = getRunState();
-		String reason = state == RuntimeStatus.State.STOPPED && finished ? status : (state == RuntimeStatus.State.RUNNING ? "" : blockReason);
+		String reason = state == RuntimeStatus.State.STOPPED && finished ? status : (state == RuntimeStatus.State.RUNNING ? notice : blockReason);
 		return RuntimeStatus.describe(state, reason);
+	}
+
+	/** Overlay text for the break countdown. */
+	public String getBreakText()
+	{
+		return breaks == null ? "Off" : breaks.countdownText();
+	}
+
+	/** Time left at the current spot, or "-" when not rotating. */
+	public String getSpotTimeLeft()
+	{
+		if (config == null || !config.rotateSpots() || plan == null || plan.pool.size() <= 1)
+		{
+			return "-";
+		}
+		long ms = rotation.remainingMillis(activeMillis);
+		return String.format("%d:%02d left", ms / MS_PER_MINUTE, ms / 1000 % 60);
+	}
+
+	/** Time to the next Woodcutting level at the current XP rate, formatted; a dash when unknown. */
+	public String getNextLevelEta()
+	{
+		return XpEta.format(XpEta.millisToNextLevel(currentLevel, currentXp, xpPerHour));
+	}
+
+	/** Label for {@link #getGoalEta()} (for example "Lvl 35 in"), or null when the goal has no estimate. */
+	public String getGoalEtaLabel()
+	{
+		if (config == null)
+		{
+			return null;
+		}
+		switch (config.goalType())
+		{
+			case TARGET_LEVEL:
+				return "Lvl " + config.targetLevel() + " in";
+			case RUN_TIME:
+				return "Run time left";
+			default:
+				return null;
+		}
+	}
+
+	/** Time to the goal, formatted; a dash when unknown. Only meaningful when {@link #getGoalEtaLabel()} is set. */
+	public String getGoalEta()
+	{
+		if (config == null)
+		{
+			return XpEta.UNKNOWN;
+		}
+		if (config.goalType() == GoalType.RUN_TIME)
+		{
+			long limit = GoalTracker.runLimitMillis(config.runHours(), config.runMinutes());
+			return XpEta.format(Math.max(0, limit - activeMillis));
+		}
+		return XpEta.format(XpEta.millisToLevel(config.targetLevel(), currentXp, xpPerHour));
 	}
 
 	public int getCurrentLevel()
@@ -998,6 +481,7 @@ public class DDChopperScript extends Script
 
 	public String getAxeLabel()
 	{
-		return currentAxe == null ? "-" : currentAxe.getItemName();
+		Axe axe = axes == null ? null : axes.currentAxe();
+		return axe == null ? "-" : axe.getItemName();
 	}
 }
