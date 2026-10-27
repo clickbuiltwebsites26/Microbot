@@ -35,9 +35,17 @@ public final class QuestDialogueRules {
 	private static final Pattern BUY_TEXT = Pattern.compile("(?i)(?<![a-z])(?:buy|purchase)(?![a-z])");
 	private static final Set<String> STOP_WORDS = new HashSet<>(List.of(
 		"talk", "speak", "with", "that", "this", "them", "then", "from", "into", "your", "have", "about", "there",
-		"where", "when", "what", "will", "need", "again", "after", "before", "near", "next", "back", "the", "and"));
+		"where", "when", "what", "will", "need", "again", "after", "before", "near", "next", "back", "the", "and",
+		"some", "want", "help", "give", "take", "make", "here", "would", "cost", "trip", "could", "should", "which",
+		"their", "these", "those", "going", "think", "right", "other", "thing", "things", "just", "like", "come",
+		"much", "many", "more", "know", "tell", "ask", "get", "let", "see"));
 
 	private QuestDialogueRules() {
+	}
+
+	/** Whether {@code word} appears in {@code text} as a whole word ("port" is not in "transport"). */
+	static boolean containsWord(String text, String word) {
+		return Pattern.compile("(?<![a-z])" + Pattern.quote(word) + "(?![a-z])").matcher(text).find();
 	}
 
 	/** Lower-case, tag-stripped, "[n]"-stripped, whitespace-collapsed text. */
@@ -138,7 +146,7 @@ public final class QuestDialogueRules {
 		String plainLine = lastLine == null ? "" : normalize(lastLine);
 		boolean lineMatchesStep = false;
 		for (String hint : hints) {
-			if (plainLine.contains(hint)) {
+			if (containsWord(plainLine, hint)) {
 				lineMatchesStep = true;
 				break;
 			}
@@ -163,7 +171,7 @@ public final class QuestDialogueRules {
 			boolean goAhead = AFFIRM.matcher(plain).matches();
 			int hintScore = 0;
 			for (String hint : hints) {
-				if (plain.contains(hint)) {
+				if (containsWord(plain, hint)) {
 					hintScore += 3;
 				}
 			}
@@ -176,7 +184,7 @@ public final class QuestDialogueRules {
 			}
 			int score = hintScore + (goAhead ? 1 : 0);
 			for (String weak : weakWords) {
-				if (plain.contains(weak)) {
+				if (containsWord(plain, weak)) {
 					score++;
 				}
 			}

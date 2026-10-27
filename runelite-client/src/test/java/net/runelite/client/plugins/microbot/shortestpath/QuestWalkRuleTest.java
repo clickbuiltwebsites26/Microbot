@@ -361,4 +361,19 @@ public class QuestWalkRuleTest
 		assertTrue("expected a ship to Fossil Island: " + sb + " end=" + pf.getPath().get(pf.getPath().size() - 1) + " reason=" + pf.getTerminationReason(), ship);
 		assertEquals(true, pf.getPath().get(pf.getPath().size() - 1).distanceTo2D(new WorldPoint(3724, 3808, 0)) <= 3);
 	}
+
+	/** Varrock to the Clock Tower: the route never climbs Falador castle (its upper floors border open air and a moat). */
+	@Test
+	public void varrockToClockTowerNeverEntersFaladorCastleUpstairs() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		excluded = QuestWalkRuleTest::needsSomethingAFreshAccountLacks;
+		Pathfinder pf = run(new WorldPoint(3213, 3428, 0), new WorldPoint(2568, 3249, 0));
+		assertFalse(pf.getPath().isEmpty());
+		for (WorldPoint p : pf.getPath())
+		{
+			boolean inCastle = p.getX() >= 2955 && p.getX() <= 3000 && p.getY() >= 3318 && p.getY() <= 3350;
+			assertFalse("upstairs in Falador castle at " + p, inCastle && p.getPlane() > 0);
+		}
+	}
 }

@@ -564,7 +564,7 @@ public class QuestScript extends Script {
 			if (Rs2Dialogue.isInDialogue() && lastDialogueLine != null && !lastDialogueLine.isEmpty()) {
 				seenDialogueLines.add(lastDialogueLine);
 			}
-			suppressed = suppressed || Microbot.getVarbitValue(4606) > 0; // a cutscene
+			suppressed = suppressed || Microbot.getVarbitValue(net.runelite.api.gameval.VarbitID.CUTSCENE_STATUS) == 1;
 			// a dialogue line not seen before on this step is progress; the same menu over and over is not
 			QuestStuckWatchdog.Stage entered = stuckWatchdog.tick(now,
 					QuestStuckRecovery.signature(step, var, false, escortProgress * 1_000L + seenDialogueLines.size()),
@@ -877,6 +877,8 @@ public class QuestScript extends Script {
 	 * @return true while the preflight used this tick and the quest must not act yet
 	 */
 	private volatile boolean fetchingFare;
+	private int fareAttempts;
+	private static final int MAX_FARE_ATTEMPTS = 3;
 
 	/**
 	 * A route that crosses by a paid ship needs the fare in the inventory: the seaman refuses with "You don't have enough
@@ -892,6 +894,7 @@ public class QuestScript extends Script {
 		long coins = Rs2Inventory.itemQuantity(ItemID.COINS_995);
 		if (coins >= fare) {
 			QuestWalkRule.clearFare();
+			fareAttempts = 0;
 			return false;
 		}
 		long bankCoins = bankCoinSnapshot();
@@ -900,6 +903,13 @@ public class QuestScript extends Script {
 			QuestWalkRule.clearFare();
 			stopQuesterWithReason("The route needs a " + fare + " coin fare, but the inventory has " + coins
 					+ " and the bank has " + Math.max(0, bankCoins));
+			return true;
+		}
+		if (++fareAttempts > MAX_FARE_ATTEMPTS) {
+			fareAttempts = 0;
+			QuestWalkRule.clearFare();
+			stopQuesterWithReason("Could not get " + fare + " coins for the route's fare (" + MAX_FARE_ATTEMPTS
+					+ " bank trips failed)");
 			return true;
 		}
 		fetchingFare = true;
@@ -1289,7 +1299,9 @@ public class QuestScript extends Script {
         if (!(step instanceof ConditionalStep)) {
             return step;
         }
-        QuestStep resolved = ((ConditionalStep) step).resolveActiveStep();
+        // the conditions are re-evaluated and steps registered with the event bus: client thread only
+        QuestStep resolved = Microbot.getClientThread()
+                .runOnClientThreadOptional(((ConditionalStep) step)::resolveActiveStep).orElse(step);
         String report = quest.getQuest().getName() + "|" + resolved.getClass().getSimpleName();
         if (!report.equals(lastUnresolvedReport)) {
             lastUnresolvedReport = report;
@@ -2405,7 +2417,8 @@ public class QuestScript extends Script {
 		for (Requirement requirement : step.getRequirements()) {
 			if (requirement instanceof ItemRequirement) {
 				ItemRequirement item = (ItemRequirement) requirement;
-				if (!item.mustBeEquipped() && !hasItemRequirementOnPlayer(item)) {
+				// the kill is for this item: a drop (not tradable) the player does not have yet
+				if (!item.mustBeEquipped() && !hasItemRequirementOnPlayer(item) && !isItemRequirementTradable(item)) {
 					return true;
 				}
 			}
@@ -2413,9 +2426,12 @@ public class QuestScript extends Script {
 		return false;
 	}
 
+	private final Set<Integer> failedRoomItems = new HashSet<>();
+
 	/**
-	 * Frees one inventory slot when it is full: eats if hurt, otherwise drops the cheapest item no step needs. Items the
-	 * quest asks for (this step's and every step ahead) and coins are never dropped.
+	 * Frees one inventory slot when it is full: eats if hurt, otherwise drops junk (bones, vials, jugs...) or, at full
+	 * health, food. Never a quest item, an untradeable or unpriced item, a noted item or a stack. A drop that did not
+	 * free a slot is remembered and not tried again.
 	 *
 	 * @return true when this tick was spent making room
 	 */
@@ -2439,28 +2455,47 @@ public class QuestScript extends Script {
 				}
 			}
 		}
+		if (quest != null && quest.getItemRequirements() != null) {
+			for (ItemRequirement requirement : quest.getItemRequirements()) {
+				if (requirement != null) {
+					needed.addAll(requirement.getAllIds());
+				}
+			}
+		}
 		boolean hurt = Rs2Player.getHealthPercentage() < 100;
 		List<QuestMakeRoom.Slot> slots = new ArrayList<>();
-		Rs2Inventory.items().forEach(item -> slots.add(new QuestMakeRoom.Slot(
-				item.getId(), item.getName(), item.getPrice(), item.isFood(), needed.contains(item.getId()))));
+		Rs2Inventory.items().forEach(item -> {
+			if (!failedRoomItems.contains(item.getId())) {
+				slots.add(new QuestMakeRoom.Slot(item.getId(), item.getName(), item.getPrice(), item.isFood(),
+						needed.contains(item.getId()), item.isTradeable(), item.isNoted(), item.isStackable()));
+			}
+		});
 		QuestMakeRoom.Decision decision = QuestMakeRoom.decide(0, hurt, slots);
 		switch (decision.action) {
 			case EAT:
 				Microbot.log("Quest helper: inventory full, eating " + decision.slot.name + " to make room", Level.INFO);
 				Rs2Inventory.interact(decision.slot.id, "Eat");
-				sleep(600, 900);
-				return true;
+				return roomMade(decision.slot.id);
 			case DROP:
 				Microbot.log("Quest helper: inventory full, dropping " + decision.slot.name + " to make room", Level.INFO);
 				Rs2Inventory.drop(decision.slot.id);
-				sleep(600, 900);
-				return true;
+				return roomMade(decision.slot.id);
 			case STUCK:
 				Microbot.log("Quest helper: inventory full of quest items, cannot make room for a pickup", Level.WARN);
 				return false;
 			default:
 				return false;
 		}
+	}
+
+	/** Waits for the slot to free up; an item that did not go is remembered so it is not retried every tick. */
+	private boolean roomMade(int itemId) {
+		boolean freed = sleepUntil(() -> !Rs2Inventory.isFull(), 2_500);
+		if (!freed) {
+			failedRoomItems.add(itemId);
+			Microbot.log("Quest helper: could not free a slot with item " + itemId + "; not trying it again", Level.WARN);
+		}
+		return freed;
 	}
 
 	private boolean lootKillDrop(NpcStep step) {
@@ -2476,7 +2511,7 @@ public class QuestScript extends Script {
 				continue;
 			}
 			for (Integer id : item.getAllIds()) {
-				if (id != null && id > 0 && lootGroundItem(id, 8)) {
+				if (id != null && id > 0 && lootGroundItem(id, 8, true)) {
 					return true;
 				}
 			}
@@ -3048,6 +3083,11 @@ public class QuestScript extends Script {
 	}
 
 	private boolean lootGroundItem(int itemId, int radius) {
+		return lootGroundItem(itemId, radius, false);
+	}
+
+	/** @param forKillDrop the item is the kill step's own drop; otherwise room is only made after the "no space" message */
+	private boolean lootGroundItem(int itemId, int radius, boolean forKillDrop) {
 		Rs2TileItemModel item = new Rs2TileItemQueryable()
 				.withId(itemId)
 				.within(radius)
@@ -3057,7 +3097,8 @@ public class QuestScript extends Script {
 			return false;
 		}
 		// "You don't have enough inventory space to hold that item" looped three clicks and sent the kill step back
-		if (!Rs2Inventory.hasItem(itemId) && makeRoom()) {
+		boolean noSpaceMessage = System.currentTimeMillis() - Microbot.inventoryFullMessageAtMs < 8_000;
+		if (!Rs2Inventory.hasItem(itemId) && (forKillDrop || noSpaceMessage) && makeRoom()) {
 			return true;
 		}
 
@@ -3795,6 +3836,13 @@ public class QuestScript extends Script {
             npcs = QuestObjectApproach.orderForSearch(npcs, QuestScript::showsMew,
                     Comparator.comparingInt(n -> me.distanceTo(n.getWorldLocation())));
         }
+        if (killStep) {
+            // a target another player is fighting answers "Someone else is fighting that"
+            List<Rs2NpcModel> free = npcs.stream().filter(n -> !isFightingAnotherPlayer(n)).collect(Collectors.toList());
+            if (!free.isEmpty()) {
+                npcs = free;
+            }
+        }
         Rs2NpcModel npc = npcs.stream().findFirst().orElse(null);
         if (killStep) {
             Rs2NpcModel preferred = pickKillTarget(step, npcs);
@@ -3832,7 +3880,9 @@ public class QuestScript extends Script {
                 ? Integer.MAX_VALUE : npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
         // A kill target in sight is attacked at once, on screen or not: walking back to the step's tile with the
         // monkeys right there only ever took the player away from them.
-        boolean closeKillTarget = killStep && npc != null && npc.getLocalLocation() != null
+        boolean killClickFailed = npc != null && npc.getIndex() == failedClickNpcIndex
+                && System.currentTimeMillis() < failedClickUntilMs;
+        boolean closeKillTarget = killStep && !killClickFailed && npc != null && npc.getLocalLocation() != null
                 && npc.getWorldLocation() != null
                 && KillStepRule.attackAtOnce(npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()),
                 npc.hasLineOfSight());
@@ -3866,7 +3916,14 @@ public class QuestScript extends Script {
                 long now = System.currentTimeMillis();
                 if (KillStepRule.shouldClickAttack(isFightingNpc(npc), now - lastKillAttackClickMs, KILL_ATTACK_MIN_INTERVAL_MS)) {
                     lastKillAttackClickMs = now;
-                    npc.click("Attack");
+                    final Rs2NpcModel attackTarget = npc;
+                    boolean attacked = clickVerified(step, () -> attackTarget.click("Attack"),
+                            () -> Rs2Camera.turnTo(attackTarget.getNpc()), "NPC Attack");
+                    if (!attacked) {
+                        // in sight across water or a fence, or taken by someone else: walk to it instead of clicking on
+                        failedClickNpcIndex = attackTarget.getIndex();
+                        failedClickUntilMs = System.currentTimeMillis() + NPC_CLICK_FAILURE_WALK_MS;
+                    }
                 }
                 return true;
             }
@@ -4296,6 +4353,12 @@ public class QuestScript extends Script {
     }
 
     private static final int APPROACH_MAX_CANDIDATES = 8;
+
+    /** Whether the NPC is in a fight with a player other than us. */
+    private static boolean isFightingAnotherPlayer(Rs2NpcModel npc) {
+        net.runelite.api.Actor target = npc.getInteracting();
+        return target instanceof net.runelite.api.Player && target != Microbot.getClient().getLocalPlayer();
+    }
 
     /** Gertrude's Cat: the step that searches the "Mew!" crate NPCs for the kitten. */
     private static boolean isKittenSearchStep(NpcStep step) {

@@ -135,6 +135,13 @@ public class ObjectHandler extends AgentHandler {
 			response.put("success", false);
 			response.put("reason", TargetFilter.namesTile(wantX, wantY)
 					? "filtered: no matching object at " + wantX + "," + wantY : "Object not found");
+		} else if (obj.getAvailableActions().stream().noneMatch(action::equalsIgnoreCase)) {
+			// the requested action must be one the object really offers: the click maps the name to its menu slot
+			Map<String, Object> bad = errorResponse("Object has no action \"" + action + "\"");
+			bad.put("availableActions", obj.getAvailableActions());
+			bad.put("object", serializeObject(obj));
+			sendJson(exchange, 400, bad);
+			return;
 		} else {
 			boolean clicked = obj.click(action);
 			response.put("success", clicked);

@@ -1374,9 +1374,11 @@ public class PathfinderConfig {
             return false;
         }
 
-        // If you don't have the required currency & amount for transport. A quest walk plans the fare anyway: the
-        // quest loop fetches the coins from the bank before the walk reaches the ship.
-        if (transport.getCurrencyAmount() > 0 && !QuestWalkRule.crossingEnabled()) {
+        // If you don't have the required currency & amount for transport. A quest walk plans the fare of a restricted
+        // transport (a ship) anyway: the quest loop fetches the coins from the bank before the walk reaches it. Toll
+        // gates and passes keep the check, so a walk never relies on coins it will not fetch.
+        if (transport.getCurrencyAmount() > 0
+                && !(QuestWalkRule.crossingEnabled() && QuestWalkRule.isRestricted(transport))) {
             int knownCurrencyQuantity = knownCurrencyQuantity(
                     transport.getCurrencyName(), refreshAvailableItemQuantities);
             if (knownCurrencyQuantity >= 0) {

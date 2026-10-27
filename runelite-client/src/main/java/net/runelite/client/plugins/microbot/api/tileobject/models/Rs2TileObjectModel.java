@@ -276,6 +276,23 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
         return matchesAction(action, true);
     }
 
+    /** The object's menu actions as the game shows them, without the empty slots. */
+    public java.util.List<String> getAvailableActions() {
+        String[] actions = Microbot.getClientThread().invoke(() -> {
+            ObjectComposition composition = getVisibleObjectComposition();
+            return composition != null ? composition.getActions() : null;
+        });
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (actions != null) {
+            for (String candidate : actions) {
+                if (candidate != null && !candidate.isEmpty()) {
+                    out.add(Rs2UiHelper.stripColTags(candidate));
+                }
+            }
+        }
+        return out;
+    }
+
     public boolean hasActionContaining(String action) {
         return matchesAction(action, false);
     }
@@ -543,16 +560,22 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
                 }
                 String[] actions = objComp.getActions();
 
+                boolean found = false;
                 for (int i = 0; i < actions.length; i++) {
                     if (actions[i] == null) continue;
                     if (action.equalsIgnoreCase(Rs2UiHelper.stripColTags(actions[i]))) {
                         index = i;
+                        found = true;
                         break;
                     }
                 }
 
-                if (index == actions.length)
-                    index = 0;
+                if (!found && !action.isEmpty()) {
+                    // never fall back to the first option: "Climb-down" on a staircase whose first option is "Climb-up"
+                    // sent the player up
+                    log.warn("Object {} has no action \"{}\" (it offers {})", getId(), action, java.util.Arrays.toString(actions));
+                    return false;
+                }
 
                 objName = objComp.getName();
 

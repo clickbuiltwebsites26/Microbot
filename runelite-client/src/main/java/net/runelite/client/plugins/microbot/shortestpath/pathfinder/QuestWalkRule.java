@@ -157,24 +157,28 @@ public final class QuestWalkRule
 			lastAnnounced = "";
 			lastQuestWalkTarget = null;
 			pendingFare = 0;
+			fareTargets = Set.of();
 		}
 	}
 
 	private static volatile int pendingFare;
+	private static volatile Set<Integer> fareTargets = Set.of();
 
-	/** Coins the widened route in use will have to pay in fares (Port Sarim to Karamja costs 30); 0 when none. */
+	/**
+	 * Coins the route of the quest walk in progress pays in fares (Port Sarim to Karamja costs 30, a toll gate 10); 0 when
+	 * none, or when the fare was worked out for another walk target.
+	 */
 	public static int pendingFare()
 	{
-		return pendingFare;
+		WorldPoint walking = lastQuestWalkTarget;
+		return walking != null && fareTargets.contains(WorldPointUtil.packWorldPoint(walking)) ? pendingFare : 0;
 	}
 
-	/** Notes the fares of the route just planned; the quest loop fetches the coins before the walk gets there. */
-	static void requireFare(int coins)
+	/** Sets the fares of the route just planned to these targets, 0 included, so an old fare never lingers. */
+	static void setFare(Set<Integer> targets, int coins)
 	{
-		if (coins > 0)
-		{
-			pendingFare = coins;
-		}
+		fareTargets = Set.copyOf(targets);
+		pendingFare = coins;
 	}
 
 	/** The fare is paid or no longer needed. */

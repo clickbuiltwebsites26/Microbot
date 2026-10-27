@@ -136,6 +136,12 @@ public class NpcHandler extends AgentHandler {
 			response.put("success", false);
 			response.put("reason", TargetFilter.isSpecific(wantIndex, wantX, wantY)
 					? "filtered: no matching NPC for the given index or tile" : "NPC not found");
+		} else if (npc.getAvailableActions().stream().noneMatch(action::equalsIgnoreCase)) {
+			Map<String, Object> bad = errorResponse("NPC has no action \"" + action + "\"");
+			bad.put("availableActions", npc.getAvailableActions());
+			bad.put("npc", serializeNpc(npc));
+			sendJson(exchange, 400, bad);
+			return;
 		} else {
 			boolean clicked = npc.click(action);
 			response.put("success", clicked);

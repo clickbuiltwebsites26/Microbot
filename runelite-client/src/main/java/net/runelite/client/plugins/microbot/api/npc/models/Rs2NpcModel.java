@@ -295,6 +295,22 @@ public class Rs2NpcModel extends Rs2ActorModel implements IEntity
         }
     }
 
+    /** The NPC's menu actions as the game shows them, without the empty slots. */
+    public java.util.List<String> getAvailableActions() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            NPCComposition composition = Microbot.getClient().getNpcDefinition(getId());
+            java.util.List<String> out = new java.util.ArrayList<>();
+            if (composition != null && composition.getActions() != null) {
+                for (String candidate : composition.getActions()) {
+                    if (candidate != null && !candidate.isEmpty()) {
+                        out.add(candidate);
+                    }
+                }
+            }
+            return out;
+        }).orElseGet(java.util.ArrayList::new);
+    }
+
     private MenuAction getMenuAction(int index) {
         if (Microbot.getClient().isWidgetSelected()) {
             return MenuAction.WIDGET_TARGET_ON_NPC;
