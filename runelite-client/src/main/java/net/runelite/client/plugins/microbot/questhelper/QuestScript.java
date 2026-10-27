@@ -4002,12 +4002,11 @@ public class QuestScript extends Script {
                 .collect(Collectors.toList());
 
         if (stepObjects.size() > 1) {
-            object = stepObjects.stream()
-                    .filter(x -> !objectsHandeled.contains(x.getHash()))
-                    .findFirst()
-                    .orElseGet(() -> stepObjects.stream()
-                            .min(Comparator.comparing(x -> Rs2Player.getWorldLocation().distanceTo(x.getWorldLocation())))
-                            .orElse(null));
+            // Each object once, reachable ones first, nearest first; then round again.
+            WorldPoint me = Rs2Player.getWorldLocation();
+            object = QuestObjectApproach.nextToSearch(stepObjects, x -> objectsHandeled.contains(x.getHash()),
+                    Comparator.comparingInt((Rs2TileObjectModel x) -> x.isReachable() ? 0 : 1)
+                            .thenComparingInt(x -> me.distanceTo(x.getWorldLocation())));
         }
 
         // Stale object id (game update): nothing tracked near the step's point, so look the object up by name.

@@ -29,6 +29,32 @@ public final class QuestObjectApproach
 	}
 
 	/**
+	 * The next candidate of a search step that goes through many identical objects (crates, bookcases): the best by
+	 * {@code order} among those not searched yet, so each is tried once and neighbours follow each other; when every one
+	 * has been tried, the best overall, to go round again.
+	 */
+	public static <T> T nextToSearch(Collection<T> candidates, Predicate<T> alreadySearched, Comparator<T> order)
+	{
+		T best = null;
+		T bestSearched = null;
+		for (T candidate : candidates)
+		{
+			if (alreadySearched.test(candidate))
+			{
+				if (bestSearched == null || order.compare(candidate, bestSearched) < 0)
+				{
+					bestSearched = candidate;
+				}
+			}
+			else if (best == null || order.compare(candidate, best) < 0)
+			{
+				best = candidate;
+			}
+		}
+		return best != null ? best : bestSearched;
+	}
+
+	/**
 	 * Whether {@code tile} touches the object's footprint along a cardinal edge that is not closed by a wall, fence,
 	 * cage bars or a gate. Line of sight is no substitute: it passes through bars, which is how a tile outside a cage
 	 * looked like a tile beside the crate inside it.
