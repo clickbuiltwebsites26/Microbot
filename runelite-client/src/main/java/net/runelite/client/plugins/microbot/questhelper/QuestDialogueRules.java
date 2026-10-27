@@ -1,6 +1,7 @@
 package net.runelite.client.plugins.microbot.questhelper;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -17,6 +18,17 @@ public final class QuestDialogueRules {
 	/** Declining or leaving lines: "No. I think you've had enough.", "I'd rather not.", "Not now." */
 	private static final Pattern DECLINE = Pattern.compile(
 		"^(?:no|nope)(?:[.,!?]|\\s|$).*|.*\\bhad enough\\b.*|^i'?d rather not.*|^not (?:now|today|yet).*|^leave me alone.*");
+	/**
+	 * Options that spend, travel, teleport, buy, sell, start something or leave: never chosen by the fallback unless the
+	 * step's own words match them.
+	 */
+	private static final Pattern RISKY_OPTION = Pattern.compile(
+		".*\\b(?:sail|travel|take me|teleport|ship|boat|charter|ferry|buy|purchase|pay|coins?|gp|sell|trade|start|quest"
+			+ "|i'?d best get going|i should (?:go|get going)|goodbye|bye|farewell|see you|that'?s all|never ?mind)\\b.*");
+	/** NPC lines that put a cost or a journey on the table: a bare "Yes" after one is not a safe answer. */
+	private static final Pattern RISKY_CONTEXT = Pattern.compile(
+		".*\\b(?:sail|travel|journey|teleport|ship|boat|charter|fare|coins?|gp|cost|price|pay|buy|sell|essence mine"
+			+ "|take you|take me)\\b.*");
 	/** Lines that move a conversation on: "Alright, here you go.", "Yes.", "I need your help ...". */
 	private static final Pattern AFFIRM = Pattern.compile(
 		"^(?:yes|yeah|yep|ok|okay|alright|all right|sure|please|accept|i need|i would|i'?d like|i want)\\b.*|.*\\bhere you go\\b.*");
@@ -71,12 +83,43 @@ public final class QuestDialogueRules {
 	 * something else. Refusals are never picked.
 	 */
 	public static String pickFallbackOption(List<String> options, List<String> hintTexts, int attempt) {
-		List<String> ranked = rankOptions(options, hintTexts);
-		return ranked.isEmpty() ? null : ranked.get(Math.floorMod(attempt, ranked.size()));
+		return pickFallbackOption(options, hintTexts, attempt, null);
 	}
 
-	/** The non-refusal options, best first: hint words weigh most, then a go-ahead wording, then the menu order. */
+	/**
+	 * As above, with the NPC's last line for context. Each option is tried at most once: {@code null} once the attempts
+	 * have gone round, and the caller closes the menu.
+	 */
+	public static String pickFallbackOption(List<String> options, List<String> hintTexts, int attempt, String lastLine) {
+		return pickFallbackOption(options, hintTexts, Collections.emptyList(), attempt, lastLine);
+	}
+
+	/**
+	 * As above; {@code weakHints} (the quest's name) only rank options and never excuse a risky one: "Rune Mysteries" must
+	 * not make "Can I buy some runes?" safe.
+	 */
+	public static String pickFallbackOption(List<String> options, List<String> hintTexts, List<String> weakHints,
+		int attempt, String lastLine) {
+		List<String> ranked = rankOptions(options, hintTexts, weakHints, lastLine);
+		return attempt < 0 || attempt >= ranked.size() ? null : ranked.get(attempt);
+	}
+
 	public static List<String> rankOptions(List<String> options, List<String> hintTexts) {
+		return rankOptions(options, hintTexts, null);
+	}
+
+	/**
+	 * The options that are safe to choose, best first: hint words weigh most, then a go-ahead wording, then the menu
+	 * order. Refusals are left out; so are risky options (see {@link #RISKY_OPTION}) unless a hint matches them, and a
+	 * bare go-ahead after an NPC line about a cost or a journey.
+	 */
+	public static List<String> rankOptions(List<String> options, List<String> hintTexts, String lastLine) {
+		return rankOptions(options, hintTexts, Collections.emptyList(), lastLine);
+	}
+
+	public static List<String> rankOptions(List<String> options, List<String> hintTexts, List<String> weakHints,
+		String lastLine) {
+		boolean riskyContext = lastLine != null && RISKY_CONTEXT.matcher(normalize(lastLine)).matches();
 		List<String> ranked = new ArrayList<>();
 		if (options == null || options.isEmpty()) {
 			return ranked;
@@ -92,16 +135,38 @@ public final class QuestDialogueRules {
 				}
 			}
 		}
+		Set<String> weakWords = new HashSet<>();
+		if (weakHints != null) {
+			for (String hint : weakHints) {
+				var matcher = WORD.matcher(normalize(hint));
+				while (matcher.find()) {
+					if (!STOP_WORDS.contains(matcher.group())) {
+						weakWords.add(matcher.group());
+					}
+				}
+			}
+		}
 		List<Integer> scores = new ArrayList<>();
 		for (String option : options) {
 			if (option == null || isRefusal(option)) {
 				continue;
 			}
 			String plain = normalize(option);
-			int score = AFFIRM.matcher(plain).matches() ? 1 : 0;
+			boolean goAhead = AFFIRM.matcher(plain).matches();
+			int hintScore = 0;
 			for (String hint : hints) {
 				if (plain.contains(hint)) {
-					score += 3;
+					hintScore += 3;
+				}
+			}
+			boolean hinted = hintScore >= 3;
+			if (!hinted && (RISKY_OPTION.matcher(plain).matches() || (goAhead && riskyContext))) {
+				continue;
+			}
+			int score = hintScore + (goAhead ? 1 : 0);
+			for (String weak : weakWords) {
+				if (plain.contains(weak)) {
+					score++;
 				}
 			}
 			int at = 0;

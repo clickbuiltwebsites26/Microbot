@@ -655,7 +655,7 @@ public class Rs2Npc {
                 // never prints can't-reach, so every trigger here genuinely needs adjacency.
                 if (CantReachTargetRecovery.retryExhausted(
                         Microbot.cantReachTargetRetries, Rs2Random.between(3, 5))) {
-                    CantReachTargetRecovery.giveUp("an NPC");
+                    CantReachTargetRecovery.onExhausted("an NPC");
                     return false;
                 }
                 final WorldPoint npcWorldPoint = npc.getWorldLocation();

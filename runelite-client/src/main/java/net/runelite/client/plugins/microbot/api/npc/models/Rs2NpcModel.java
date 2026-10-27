@@ -207,7 +207,7 @@ public class Rs2NpcModel extends Rs2ActorModel implements IEntity
                 if (!hasLineOfSight()) {
                     if (CantReachTargetRecovery.retryExhausted(
                             Microbot.cantReachTargetRetries, Rs2Random.between(3, 5))) {
-                        CantReachTargetRecovery.giveUp("an NPC");
+                        CantReachTargetRecovery.onExhausted("an NPC");
                         return false;
                     }
                     final WorldPoint npcWorldPoint = getWorldLocation();

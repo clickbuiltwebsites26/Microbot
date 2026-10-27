@@ -170,6 +170,49 @@ public final class PathJitter
         return crossings;
     }
 
+    /**
+     * The doorways a route passes: open steps through a gap in a wall line, that is, with the edges either side of the
+     * step blocked. The shipped map keeps doors passable, so they are not in {@link #wallCrossings}; a varied route
+     * must pass the same ones. A one-tile corridor counts as well, which only makes the comparison stricter.
+     */
+    public static java.util.Set<String> doorwayCrossings(java.util.List<net.runelite.api.coords.WorldPoint> path,
+        CollisionMap staticMap)
+    {
+        java.util.Set<String> crossings = new java.util.HashSet<>();
+        for (int i = 1; i < path.size(); i++)
+        {
+            net.runelite.api.coords.WorldPoint a = path.get(i - 1);
+            net.runelite.api.coords.WorldPoint b = path.get(i);
+            int dx = b.getX() - a.getX();
+            int dy = b.getY() - a.getY();
+            if (a.getPlane() != b.getPlane() || Math.abs(dx) + Math.abs(dy) != 1)
+            {
+                continue;
+            }
+            int x = a.getX();
+            int y = a.getY();
+            int z = a.getPlane();
+            boolean gap;
+            if (dy != 0)
+            {
+                // moving north or south crosses an east-west wall line: a doorway has that wall on both sides, so the
+                // neighbouring columns cannot step between the same two rows
+                int lowY = Math.min(a.getY(), b.getY());
+                gap = !staticMap.n(x - 1, lowY, z) && !staticMap.n(x + 1, lowY, z);
+            }
+            else
+            {
+                int lowX = Math.min(a.getX(), b.getX());
+                gap = !staticMap.e(lowX, y - 1, z) && !staticMap.e(lowX, y + 1, z);
+            }
+            if (gap)
+            {
+                crossings.add("D:" + (a.getX() < b.getX() || a.getY() < b.getY() ? a + ">" + b : b + ">" + a));
+            }
+        }
+        return crossings;
+    }
+
     /** Order-sensitive hash of a route sampled every few points. */
     public static int routeHash(java.util.List<net.runelite.api.coords.WorldPoint> path)
     {

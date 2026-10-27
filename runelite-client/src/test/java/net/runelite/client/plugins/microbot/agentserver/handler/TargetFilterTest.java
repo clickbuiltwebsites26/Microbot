@@ -31,9 +31,32 @@ public class TargetFilterTest
 	public void aRequestWithoutATileKeepsTheOldNearestBehaviour()
 	{
 		assertTrue(TargetFilter.matchesTile(NEAREST, null, null, null));
-		assertTrue(TargetFilter.matchesTile(null, null, null, null));
-		assertFalse(TargetFilter.isSpecific(null, null, null, null));
-		assertTrue(TargetFilter.isSpecific(null, 3311, null, null));
+		assertTrue(TargetFilter.matchesTile((WorldPoint) null, null, null, null));
+		assertFalse(TargetFilter.isSpecific(null, null, null));
+		assertTrue(TargetFilter.isSpecific(null, 3311, 3501));
+		assertTrue(TargetFilter.isSpecific(7, null, null));
+	}
+
+	@Test
+	public void xAloneOrYAloneIsAMalformedRequestNotALooseMatch()
+	{
+		assertTrue(TargetFilter.halfATile(3311, null));
+		assertTrue(TargetFilter.halfATile(null, 3501));
+		assertFalse(TargetFilter.halfATile(3311, 3501));
+		assertFalse(TargetFilter.halfATile(null, null));
+		assertFalse("a lone x does not select anything", TargetFilter.matchesTile(NEAREST, 3309, null, null));
+		assertFalse(TargetFilter.isSpecific(null, 3311, null));
+	}
+
+	@Test
+	public void aMultiTileObjectMatchesOnAnyTileItCovers()
+	{
+		java.util.List<WorldPoint> staircase = java.util.Arrays.asList(
+			new WorldPoint(2543, 3325, 1), new WorldPoint(2544, 3325, 1), new WorldPoint(2543, 3326, 1), new WorldPoint(2544, 3326, 1));
+		assertTrue(TargetFilter.matchesTile(staircase, 2544, 3326, 1));
+		assertTrue(TargetFilter.matchesTile(staircase, 2543, 3325, null));
+		assertFalse(TargetFilter.matchesTile(staircase, 2545, 3325, null));
+		assertFalse(TargetFilter.matchesTile(staircase, 2544, 3326, 0));
 	}
 
 	@Test

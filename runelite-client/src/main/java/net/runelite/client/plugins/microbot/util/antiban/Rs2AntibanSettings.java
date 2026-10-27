@@ -281,6 +281,10 @@ public class Rs2AntibanSettings {
         if (settings.moveMouseOffScreenChance != null) {
             moveMouseOffScreenChance = settings.moveMouseOffScreenChance;
         }
+        // a saved upper chance below the new default lower end (0 percent, say) is honoured as a 0 to 0 range
+        if (moveMouseRandomlyChanceMin > moveMouseRandomlyChance) {
+            moveMouseRandomlyChanceMin = moveMouseRandomlyChance;
+        }
         if (settings.humanMouseSpeed != null) {
             humanMouseSpeed = settings.humanMouseSpeed;
         }

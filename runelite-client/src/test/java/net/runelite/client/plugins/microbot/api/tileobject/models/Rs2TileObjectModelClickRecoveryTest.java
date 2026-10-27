@@ -132,17 +132,14 @@ public class Rs2TileObjectModelClickRecoveryTest {
     }
 
     @Test
-    public void skipsTheTargetWithoutPausingScriptsOnceRetriesAreExhausted() {
+    public void pausesScriptsOnceRetriesAreExhausted() {
         Microbot.cantReachTarget = true;
         Microbot.cantReachTargetRetries = 5;
         boolean savedPause = Microbot.pauseAllScripts.get();
         try {
             assertFalse(new Rs2TileObjectModel(object).click("Open"));
 
-            // hands-off: no pause and no modal, and the can't-reach latch is cleared so later clicks work
-            assertFalse(Microbot.pauseAllScripts.get());
-            assertFalse(Microbot.cantReachTarget);
-            assertEquals(0, Microbot.cantReachTargetRetries);
+            assertTrue(Microbot.pauseAllScripts.get());
             walker.verify(() -> Rs2Walker.walkTo(any(WorldPoint.class), anyInt()), never());
             microbot.verify(() -> Microbot.doInvoke(any(NewMenuEntry.class), any(Rectangle.class)), never());
         } finally {

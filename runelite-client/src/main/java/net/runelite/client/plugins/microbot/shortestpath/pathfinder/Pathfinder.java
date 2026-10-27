@@ -977,6 +977,7 @@ public class Pathfinder implements Runnable {
                 unjitteredBaseCost = selectedPathCost;
                 baseLength[0] = PathJitter.routeLength(getPath());
                 baseCrossings.addAll(PathJitter.wallCrossings(getPath(), staticMap));
+                baseCrossings.addAll(PathJitter.doorwayCrossings(getPath(), staticMap));
                 for (PathEdge edge : getPathEdges()) {
                     if (edge.isTransport()) {
                         baseTransports.add(transportKey(edge));
@@ -1011,8 +1012,9 @@ public class Pathfinder implements Runnable {
             }
             long variedCost = Math.max(0L, selectedPathCost - penalties);
             // the same transports AND the same doors and gates as the unvaried route, within the cost and length bounds
-            boolean sameWay = variedTransports.equals(baseTransports)
-                    && PathJitter.wallCrossings(getPath(), staticMap).equals(baseCrossings);
+            Set<String> variedCrossings = new HashSet<>(PathJitter.wallCrossings(getPath(), staticMap));
+            variedCrossings.addAll(PathJitter.doorwayCrossings(getPath(), staticMap));
+            boolean sameWay = variedTransports.equals(baseTransports) && variedCrossings.equals(baseCrossings);
             if (!PathJitter.acceptVaried(variedCost, baseCost[0], !sameWay)
                     || !PathJitter.withinBound(PathJitter.routeLength(getPath()), baseLength[0])) {
                 continue;

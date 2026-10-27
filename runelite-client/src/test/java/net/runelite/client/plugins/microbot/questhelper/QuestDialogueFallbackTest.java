@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.questhelper;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
@@ -44,12 +45,49 @@ public class QuestDialogueFallbackTest
 	}
 
 	@Test
-	public void aConversationThatLoopsTriesTheNextBestOptionEachAttempt()
+	public void aConversationThatLoopsTriesTheNextBestOptionOnceThenGivesUp()
 	{
 		assertEquals("So you were once a proper vampyre hunter?", QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 0));
 		assertEquals("You said no one's ever seen Count Draynor?", QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 1));
-		assertEquals("I'd best get going.", QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 2));
-		assertEquals("So you were once a proper vampyre hunter?", QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 3));
+		// "I'd best get going." is a leave line, never chosen by the fallback; the menu is then closed as before
+		assertNull(QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 2));
+		assertNull(QuestDialogueRules.pickFallbackOption(THIRD, HINTS, 3));
+	}
+
+	/** Port Sarim sailor: "Yes please, take me to Karamja." would sail the player away from the quest. */
+	@Test
+	public void aSailorTranscriptIsNeverAnsweredByTheFallback()
+	{
+		List<String> options = Arrays.asList("Yes please, take me to Karamja.", "No thanks.");
+		List<String> hints = Arrays.asList("Pirate's Treasure", "Talk to the customs officer in Port Sarim.");
+		assertNull(QuestDialogueRules.pickFallbackOption(options, hints, 0,
+			"Do you want to sail to Karamja? It will cost 30 coins."));
+		assertNull(QuestDialogueRules.pickFallbackOption(Arrays.asList("Yes please.", "No thanks."), hints, 0,
+			"Do you want to sail to Karamja? It will cost 30 coins."));
+	}
+
+	/** Aubury: a bare "Yes please" after the offer to teleport to the Rune Essence mine. */
+	@Test
+	public void anAuburyTranscriptIsNeverAnsweredByTheFallback()
+	{
+		List<String> stepWords = Arrays.asList("Talk to Aubury in Varrock.");
+		List<String> questName = Arrays.asList("Rune Mysteries");
+		assertNull(QuestDialogueRules.pickFallbackOption(Arrays.asList("Yes please.", "No thanks."), stepWords, questName, 0,
+			"Would you like me to teleport you to the Rune Essence mine?"));
+		// the quest's name is only a weak hint: "Rune Mysteries" does not make "buy some runes" safe
+		assertNull(QuestDialogueRules.pickFallbackOption(
+			Arrays.asList("Can I buy some runes?", "Teleport me to the essence mine.", "Goodbye."), stepWords, questName, 0, null));
+	}
+
+	@Test
+	public void aRiskyOptionIsChosenWhenTheStepsOwnWordsMatchIt()
+	{
+		List<String> hints = Arrays.asList("Buy a beer from the bartender");
+		assertEquals("I want to buy some beer.", QuestDialogueRules.pickFallbackOption(
+			Arrays.asList("Goodbye.", "I want to buy some beer.", "What's new?"), hints, 0));
+		// without that match the same menu picks the safe line
+		assertEquals("What's new?", QuestDialogueRules.pickFallbackOption(
+			Arrays.asList("Goodbye.", "I want to buy some beer.", "What's new?"), Collections.emptyList(), 0));
 	}
 
 	@Test

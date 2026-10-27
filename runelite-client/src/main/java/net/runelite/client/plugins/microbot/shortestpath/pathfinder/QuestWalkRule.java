@@ -84,7 +84,7 @@ public final class QuestWalkRule
 	private static final Set<String> FORCED_TOGGLES = Set.of(
 		"useBoats", "useCanoes", "useCharterShips", "useShips", "useQuetzals",
 		"useFairyRings", "useGnomeGliders", "useMinecarts", "usePoh", "useSpiritTrees", "useMagicCarpets",
-		"useHotAirBalloons", "useMagicMushtrees", "useTeleportationSpells", "useTeleportationMinigames");
+		"useHotAirBalloons", "useMagicMushtrees");
 
 	/**
 	 * NPC and travel-cart rides longer than this between two surface tiles carry the player across the map
@@ -155,6 +155,12 @@ public final class QuestWalkRule
 			lastAnnounced = "";
 			lastQuestWalkTarget = null;
 		}
+	}
+
+	/** Whether the quest script is running its automation right now (on, not paused). */
+	public static boolean isQuestAutomationActive()
+	{
+		return questActive;
 	}
 
 	/** Other plugins: keep the walker on foot while they run. Never touches the quest script's state. */
@@ -407,9 +413,12 @@ public final class QuestWalkRule
 			case CROSSINGS:
 				return isCrossing(transport);
 			case TELEPORTS:
-				// the last resort never newly enables tablets and scrolls: only the owned jewellery's item teleports
-				return transport.getType() != TransportType.TELEPORTATION_ITEM
-					|| isOwnedJewellery(transport) || isSkillsNecklaceToFishingGuild(transport);
+				// The last resort never newly enables tablets, scrolls or spell and minigame teleports: of the teleports
+				// only the owned jewellery's. When nothing else reaches, the walk gives up and says so.
+				return transport.getType() != TransportType.TELEPORTATION_SPELL
+					&& transport.getType() != TransportType.TELEPORTATION_MINIGAME
+					&& (transport.getType() != TransportType.TELEPORTATION_ITEM
+						|| isOwnedJewellery(transport) || isSkillsNecklaceToFishingGuild(transport));
 			default:
 				return false;
 		}

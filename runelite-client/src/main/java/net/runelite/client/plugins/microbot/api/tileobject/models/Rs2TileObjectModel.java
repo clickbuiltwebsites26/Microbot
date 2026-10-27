@@ -434,7 +434,7 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
         }
         if (CantReachTargetRecovery.retryExhausted(
                 Microbot.cantReachTargetRetries, Rs2Random.between(3, 5))) {
-            CantReachTargetRecovery.giveUp("an object");
+            CantReachTargetRecovery.onExhausted("an object");
             return false;
         }
         WorldPoint objectLocation = getRuneLiteWorldLocation();

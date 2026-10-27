@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.util.walker.recovery;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import java.util.function.BiPredicate;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
@@ -46,6 +47,23 @@ public final class CantReachTargetRecovery
 		Microbot.status = "Skipping " + what + " that cannot be reached";
 		Microbot.cantReachTarget = false;
 		Microbot.cantReachTargetRetries = 0;
+	}
+
+	/**
+	 * Called when the retries are used up. A hands-off quest run skips the target ({@link #giveUp}); anything else
+	 * keeps the old behaviour of pausing every script and asking a person to look, because a skilling or combat script
+	 * would otherwise loop silently on a target it cannot reach.
+	 */
+	public static void onExhausted(String what)
+	{
+		if (QuestWalkRule.isQuestAutomationActive())
+		{
+			giveUp(what);
+			return;
+		}
+		Microbot.pauseAllScripts.compareAndSet(false, true);
+		Microbot.showMessage("Your bot tried to interact with " + what + " for "
+			+ Microbot.cantReachTargetRetries + " times but failed. Please take a look at what is happening.");
 	}
 
 	public static boolean walkTo(WorldPoint target, int distance)

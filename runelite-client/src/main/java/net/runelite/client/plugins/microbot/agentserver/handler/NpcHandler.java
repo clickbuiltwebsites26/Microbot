@@ -110,6 +110,10 @@ public class NpcHandler extends AgentHandler {
 		Integer wantX = getIntField(body, "x");
 		Integer wantY = getIntField(body, "y");
 		Integer wantPlane = getIntField(body, "plane");
+		if (TargetFilter.halfATile(wantX, wantY)) {
+			sendJson(exchange, 400, errorResponse("Give x and y together"));
+			return;
+		}
 
 		Rs2NpcModel npc = null;
 		if (name != null && !name.isEmpty()) {
@@ -130,7 +134,8 @@ public class NpcHandler extends AgentHandler {
 		Map<String, Object> response = new LinkedHashMap<>();
 		if (npc == null) {
 			response.put("success", false);
-			response.put("reason", "NPC not found");
+			response.put("reason", TargetFilter.isSpecific(wantIndex, wantX, wantY)
+					? "filtered: no matching NPC for the given index or tile" : "NPC not found");
 		} else {
 			boolean clicked = npc.click(action);
 			response.put("success", clicked);

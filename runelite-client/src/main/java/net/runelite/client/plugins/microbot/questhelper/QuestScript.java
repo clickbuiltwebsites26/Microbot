@@ -40,6 +40,7 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
+import net.runelite.client.plugins.microbot.util.antiban.HumanMouseSpeed;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.shop.Rs2Shop;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
@@ -546,7 +547,7 @@ public class QuestScript extends Script {
 					|| QuestCombatHandler.isAwaitingSetup() || QuestPreflight.isInProgress()
 					|| Rs2Combat.inCombat() || Rs2Bank.isOpen();
 			QuestStuckWatchdog.Stage entered = stuckWatchdog.tick(now,
-					QuestStuckRecovery.signature(step, var, Rs2Dialogue.isInDialogue(), escortProgress), suppressed);
+					QuestStuckRecovery.signature(step, var, false, escortProgress), suppressed);
 			stuckStage = stuckWatchdog.current().name();
 			stuckForMs = stuckWatchdog.stuckForMs(now);
 			if (entered == null) return;
@@ -719,8 +720,10 @@ public class QuestScript extends Script {
 	}
 
 	/**
-	 * A dialogue menu none of the step's choices matched is answered by the same click forever (the old fallback
-	 * just closed the menu and re-clicked the NPC). After two repeats of the same step and menu, pick an option.
+	 * A dialogue menu none of the step's choices matched. The old fallback closed it and re-clicked the NPC forever, so
+	 * the best-matching option is chosen at once. Options that travel, teleport, buy, pay, sell, start a quest or leave
+	 * are never chosen unless the step's own words match them, and each option is tried at most once (every third
+	 * appearance of the same menu moves to the next one); when they run out the menu is closed as before.
 	 */
 	private boolean pickFallbackMenuOption(QuestStep step) {
 		List<Widget> optionWidgets = Rs2Dialogue.getDialogueOptions();
@@ -741,9 +744,10 @@ public class QuestScript extends Script {
 		}
 		int attempt = (menuAppearances.getOrDefault(key, 1) - 1) / MENU_REPEATS_BEFORE_NEXT_OPTION;
 		List<String> hints = new ArrayList<>();
+		List<String> questName = new ArrayList<>();
 		var selected = getQuestHelperPlugin().getSelectedQuest();
 		if (selected != null && selected.getQuest() != null) {
-			hints.add(selected.getQuest().getName());
+			questName.add(selected.getQuest().getName());
 		}
 		if (step != null) {
 			if (step.getText() != null) {
@@ -755,7 +759,7 @@ public class QuestScript extends Script {
 				}
 			}
 		}
-		String pick = QuestDialogueRules.pickFallbackOption(options, hints, attempt);
+		String pick = QuestDialogueRules.pickFallbackOption(options, hints, questName, attempt, lastDialogueLine);
 		if (pick == null) {
 			return false;
 		}
@@ -3614,12 +3618,13 @@ public class QuestScript extends Script {
         List<Rs2NpcModel> npcs = step.getNpcs().stream()
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());
-        if (step.isAllowMultipleHighlights() && !killStep) {
-            // Many identical targets (the kitten crates): those showing their hint overhead ("Mew!") first, nearest
-            // first, and never wander to the others while some show it.
+        final boolean kittenSearch = isKittenSearchStep(step);
+        if (kittenSearch) {
+            // The kitten crates: those showing "Mew!" first, nearest first, and never wander to the others while
+            // some show it. Only this step: other many-target steps (shop keepers behind counters, wandering
+            // citizens) must not be held to it.
             WorldPoint me = Rs2Player.getWorldLocation();
-            npcs = QuestObjectApproach.orderForSearch(npcs,
-                    n -> n.getOverheadText() != null && !n.getOverheadText().isEmpty(),
+            npcs = QuestObjectApproach.orderForSearch(npcs, QuestScript::showsMew,
                     Comparator.comparingInt(n -> me.distanceTo(n.getWorldLocation())));
         }
         Rs2NpcModel npc = npcs.stream().findFirst().orElse(null);
@@ -3661,7 +3666,7 @@ public class QuestScript extends Script {
                 && Rs2Camera.isTileOnScreen(npc.getLocalLocation()) && npc.getWorldLocation() != null
                 && npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= 10 && npc.hasLineOfSight();
         boolean npcKnown = npc != null && npc.getLocalLocation() != null;
-        if (npcKnown && step.isAllowMultipleHighlights() && !killStep && !Microbot.getClient().isInInstancedRegion()
+        if (npcKnown && kittenSearch && !Microbot.getClient().isInInstancedRegion()
                 && !standsBesideWithoutWall(npc.getWorldLocation())) {
             // Search each from a tile that touches it with no wall or fence between: a crate on the far side of a wall
             // answers "I can't reach that!" however close it looks.
@@ -4121,6 +4126,17 @@ public class QuestScript extends Script {
 
     private static final int APPROACH_MAX_CANDIDATES = 8;
 
+    /** Gertrude's Cat: the step that searches the "Mew!" crate NPCs for the kitten. */
+    private static boolean isKittenSearchStep(NpcStep step) {
+        return step.getNpcID() == net.runelite.api.gameval.NpcID.KITTENS_MEW;
+    }
+
+    /** Whether a kitten crate shows its "Mew!" overhead text right now (read on the client thread). */
+    private static boolean showsMew(Rs2NpcModel npc) {
+        String text = Microbot.getClientThread().runOnClientThreadOptional(npc::getOverheadText).orElse(null);
+        return text != null && text.toLowerCase(java.util.Locale.ROOT).contains("mew");
+    }
+
     /** Whether the player stands on a tile touching {@code target} with no wall, fence or bars on the shared edge. */
     private boolean standsBesideWithoutWall(WorldPoint target) {
         WorldPoint me = Rs2Player.getWorldLocation();
@@ -4151,8 +4167,21 @@ public class QuestScript extends Script {
     private boolean clickVerified(QuestStep step, BooleanSupplier click, Runnable turnCamera, String what) {
         preClickDelay(step);
         WorldPoint before = Rs2Player.getWorldLocation();
-        boolean worked = VerifiedInteraction.run(click, () -> interactionTookEffect(before), turnCamera,
-                System::currentTimeMillis, ms -> sleep((int) ms));
+        // a timed or repeated-click step keeps the quick mouse motion
+        boolean timed = !QuestInteractionDelay.allowed(false, false, false, false,
+                step == null ? null : String.join(" ", step.getText()));
+        if (timed) {
+            HumanMouseSpeed.enterTimeCritical();
+        }
+        boolean worked;
+        try {
+            worked = VerifiedInteraction.run(click, () -> interactionTookEffect(before), turnCamera,
+                    System::currentTimeMillis, ms -> sleep((int) ms));
+        } finally {
+            if (timed) {
+                HumanMouseSpeed.exitTimeCritical();
+            }
+        }
         long now = System.currentTimeMillis();
         if (!worked && now - lastNoEffectLoggedAt > NO_EFFECT_LOG_INTERVAL_MS) {
             lastNoEffectLoggedAt = now;

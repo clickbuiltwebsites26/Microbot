@@ -463,12 +463,28 @@ public class QuestWalkStageTest
 	}
 
 	@Test
-	public void theLastResortNeverEnablesTabletsAndScrolls()
+	public void theLastResortNeverEnablesTabletsScrollsSpellsOrMinigameTeleports()
 	{
 		assertFalse(QuestWalkRule.permits(Stage.TELEPORTS, item("Varrock Teleport (tablet)"), false));
 		assertTrue(QuestWalkRule.permits(Stage.TELEPORTS, item("Ring of wealth: Grand Exchange"), false));
-		assertTrue(QuestWalkRule.permits(Stage.TELEPORTS,
+		assertFalse(QuestWalkRule.permits(Stage.TELEPORTS,
 			new Transport(null, B, "Varrock Teleport", TransportType.TELEPORTATION_SPELL, true, 4), false));
+		assertFalse(QuestWalkRule.permits(Stage.TELEPORTS,
+			new Transport(null, B, "Clan Wars", TransportType.TELEPORTATION_MINIGAME, true, 4), false));
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean walking = QuestWalkRule.beginQuestWalk(A);
+		try
+		{
+			assertFalse("spell and minigame teleports are not even loaded", QuestWalkRule.forcesToggle("useTeleportationSpells"));
+			assertFalse(QuestWalkRule.forcesToggle("useTeleportationMinigames"));
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(walking);
+			QuestWalkRule.markQuestThread(false);
+		}
 	}
 
 	@Test
