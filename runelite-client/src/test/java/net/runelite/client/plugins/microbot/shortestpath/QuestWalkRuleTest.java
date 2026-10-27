@@ -53,7 +53,19 @@ public class QuestWalkRuleTest
 			}
 		}
 		Pathfinder pf = new Pathfinder(config, from, to);
-		pf.run();
+		// a quest walk: the rule is on, crossing mode is on and the quest loop is walking
+		QuestWalkRule.setCrossingMode(true);
+		QuestWalkRule.markQuestThread(true);
+		boolean walking = QuestWalkRule.beginQuestWalk(to);
+		try
+		{
+			pf.run();
+		}
+		finally
+		{
+			QuestWalkRule.endQuestWalk(walking);
+			QuestWalkRule.markQuestThread(false);
+		}
 		return pf;
 	}
 
@@ -107,6 +119,19 @@ public class QuestWalkRuleTest
 				String ferry = e.getTransport().getName();
 				assertTrue("unexpected ferry " + ferry, "Veos".equals(ferry) || "Cabin Boy Herbert".equals(ferry));
 			}
+		}
+	}
+
+	/** Nothing reaches this tile: the on-foot result stands, with no boat or teleport left in the partial path. */
+	@Test
+	public void unreachableTargetLeavesNoRestrictedTransportInThePath() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Pathfinder pf = run(new WorldPoint(3222, 3218, 0), new WorldPoint(100, 100, 0));
+		for (PathEdge e : pf.getPathEdges())
+		{
+			assertFalse("kept " + e.getTransport() + " in a failed search",
+				e.isTransport() && QuestWalkRule.isRestricted(e.getTransport()));
 		}
 	}
 

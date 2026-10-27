@@ -841,18 +841,55 @@ public class Pathfinder implements Runnable {
     @Override
     public void run() {
         runInner();
-        if (!QuestWalkRule.isActive() || QuestWalkRule.stage() != QuestWalkRule.Stage.ON_FOOT || cancelled
-                || terminationReason == PathTerminationReason.TARGET_REACHED) {
+        boolean widen = QuestWalkRule.shouldWiden(
+                !cancelled && QuestWalkRule.stage() == QuestWalkRule.Stage.ON_FOOT && QuestWalkRule.crossingEnabled(),
+                terminationReason, sealedTargetMode);
+        if (!widen) {
             return;
         }
-        // quest walking found no route on foot: widen to the named routes, then crossings, then teleports
+        // The on-foot search proved the target unreachable: widen to the named routes, then crossings, then
+        // teleports. If none reaches it, the on-foot result stands, never a partial path over a boat or teleport.
+        OnFootResult onFoot = new OnFootResult();
+        boolean ardougne = QuestWalkRule.isArdougneArea(targets);
         for (QuestWalkRule.Stage stage = QuestWalkRule.Stage.ON_FOOT.next(); stage != null && !cancelled;
              stage = stage.next()) {
-            QuestWalkRule.runAt(stage, this::runInner);
+            QuestWalkRule.runAt(stage, ardougne, this::runInner);
             if (terminationReason == PathTerminationReason.TARGET_REACHED) {
                 announceWidenedRoute(stage);
                 return;
             }
+        }
+        onFoot.restore();
+    }
+
+    /** The state of a finished search, so a failed widened search can put the on-foot result back. */
+    private final class OnFootResult {
+        private final List<WorldPoint> savedPath = path;
+        private final List<WorldPoint> savedSmoothedPath = smoothedPath;
+        private final Node savedMaterializedLastNode = materializedPathLastNode;
+        private final boolean savedSmoothed = smoothed;
+        private final Node savedBestLastNode = bestLastNode;
+        private final List<WorldPoint> savedJoinedPath = joinedPath;
+        private final List<PathEdge> savedJoinedPathEdges = joinedPathEdges;
+        private final PathTerminationReason savedReason = terminationReason;
+        private final long savedCost = selectedPathCost;
+        private final boolean savedSealedMode = sealedTargetMode;
+        private final int savedSealedSubstitute = reachedSealedSubstitutePacked;
+        private final int[] savedSearchTargets = searchTargetsPacked;
+
+        void restore() {
+            path = savedPath;
+            smoothedPath = savedSmoothedPath;
+            materializedPathLastNode = savedMaterializedLastNode;
+            smoothed = savedSmoothed;
+            bestLastNode = savedBestLastNode;
+            joinedPath = savedJoinedPath;
+            joinedPathEdges = savedJoinedPathEdges;
+            terminationReason = savedReason;
+            selectedPathCost = savedCost;
+            sealedTargetMode = savedSealedMode;
+            reachedSealedSubstitutePacked = savedSealedSubstitute;
+            searchTargetsPacked = savedSearchTargets;
         }
     }
 

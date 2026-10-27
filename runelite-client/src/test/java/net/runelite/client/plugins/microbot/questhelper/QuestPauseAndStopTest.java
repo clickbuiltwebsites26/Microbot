@@ -24,13 +24,12 @@ public class QuestPauseAndStopTest
 	}
 
 	@Test
-	public void pauseOnlyCancelsTheQuestsOwnWalk()
+	public void pauseOnlyCancelsTheQuestLoopsOwnWalk()
 	{
-		WorldPoint quest = new WorldPoint(2592, 3336, 0);
-		assertTrue(QuestPause.ownsWalk(quest, new WorldPoint(2592, 3336, 0)));
-		assertFalse(QuestPause.ownsWalk(new WorldPoint(3164, 3485, 0), quest));
-		assertFalse(QuestPause.ownsWalk(null, quest));
-		assertFalse(QuestPause.ownsWalk(quest, null));
+		WorldPoint walk = new WorldPoint(2592, 3336, 0);
+		assertTrue(QuestPause.shouldCancelWalk(true, walk));
+		assertFalse(QuestPause.shouldCancelWalk(false, walk));
+		assertFalse(QuestPause.shouldCancelWalk(true, null));
 	}
 
 	@Test

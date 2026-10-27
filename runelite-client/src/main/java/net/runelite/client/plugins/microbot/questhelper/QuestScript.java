@@ -11,6 +11,7 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.api.tileobject.models.TileObjectType;
 import net.runelite.client.plugins.microbot.questhelper.combat.QuestCombatDetector;
@@ -43,7 +44,7 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.shop.Rs2Shop;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2PathApi;
-import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
+import net.runelite.client.plugins.microbot.util.walker.Rs2RouteRequest;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -139,7 +140,7 @@ public class QuestScript extends Script {
     /** Watchdog stage for GET /quest-helper/status ("NONE" when making progress). */
     public static String getStuckStage()
     {
-        return QuestWalkRule.unreachableTarget() != null ? "UNREACHABLE" : stuckStage;
+        return QuestWalkRule.unreachableTarget(Rs2Player.getWorldLocation()) != null ? "UNREACHABLE" : stuckStage;
     }
 
     public static long getStuckForMs() { return stuckForMs; }
@@ -185,7 +186,7 @@ public class QuestScript extends Script {
         this.mQuestPlugin = mQuestPlugin;
         cancelLoops();
 
-        mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(guardedTick(() -> {
+        mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(onQuestThread(guardedTick(() -> {
             try {
                 net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
                         config.pathVariation() && !escortActive, config.pathVariationStrength().getLevel());
@@ -476,7 +477,7 @@ public class QuestScript extends Script {
                 System.out.println(ex.getMessage());
                 ex.printStackTrace(System.out);
             }
-        }), 0, Rs2Random.between(400, 1000), TimeUnit.MILLISECONDS);
+        })), 0, Rs2Random.between(400, 1000), TimeUnit.MILLISECONDS);
 
         combatSupportFuture = scheduledExecutorService.scheduleWithFixedDelay(this::combatSupportTick,
                 600, 600, TimeUnit.MILLISECONDS);
@@ -511,13 +512,14 @@ public class QuestScript extends Script {
 			boolean on = config != null && config.startStopQuestHelper() && !QuestPause.isPaused();
 			QuestHelper selected = getQuestHelperPlugin() == null ? null : getQuestHelperPlugin().getSelectedQuest();
 			long now = System.currentTimeMillis();
+			QuestWalkRule.setCrossingMode(on && selected != null && !selectedIsCompleted(selected));
 			if (!on || selected == null) {
 				if (automationWasOn) {
 					automationWasOn = false;
 					pausedAtMs = now;
 				}
 				// keep cancelling for a few seconds: the main loop may re-issue a walk before it sees the pause
-				if (now - pausedAtMs < 10_000L && QuestPause.ownsWalk(Rs2Walker.getCurrentTarget(), lastWalkTarget)) {
+				if (now - pausedAtMs < 10_000L && QuestPause.shouldCancelWalk(QuestWalkRule.isQuestWalkInFlight(), Rs2Walker.getCurrentTarget())) {
 					Rs2Walker.clearWalkingRoute(on ? "quest-helper:quest-deselected" : "quest-helper:paused");
 				}
 				stuckWatchdog.reset(now);
@@ -533,7 +535,7 @@ public class QuestScript extends Script {
 			dismissRandomEventTick(now);
 			endEscortIfInactive(selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep());
 			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();
-			if (walkTarget != null) lastWalkTarget = walkTarget;
+			if (walkTarget != null && QuestWalkRule.isQuestWalkInFlight()) lastWalkTarget = walkTarget;
 			QuestStep step = selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep();
 			int var = Microbot.getClientThread().runOnClientThreadOptional(selected::getVar).orElse(-1);
 			boolean suppressed = (config.takeShortBreaks() && breakEndsAtMs > now)
@@ -3144,6 +3146,22 @@ public class QuestScript extends Script {
 	// ---- one loop, pause, stop and the quest window ----
 
 	/** Wraps the main tick so only one tick runs at a time, even if a second loop was scheduled by mistake. */
+	private static boolean selectedIsCompleted(QuestHelper quest) {
+		return Microbot.getClientThread().runOnClientThreadOptional(quest::isCompleted).orElse(true);
+	}
+
+	/** Marks the executor thread as the quest loop while {@code body} runs, so only its walks may cross water. */
+	private static Runnable onQuestThread(Runnable body) {
+		return () -> {
+			QuestWalkRule.markQuestThread(true);
+			try {
+				body.run();
+			} finally {
+				QuestWalkRule.markQuestThread(false);
+			}
+		};
+	}
+
 	private Runnable guardedTick(Runnable body) {
 		return TICK_GUARD.guard(body);
 	}
@@ -3994,21 +4012,13 @@ public class QuestScript extends Script {
         // to the right side before we interact.
         if (step.getDefinedPoint().getWorldPoint() != null && Rs2Player.getWorldLocation().distanceTo2D(step.getDefinedPoint().getWorldPoint()) > 1
                 && (object == null || !isInteractableFromReachableTile(step, object))) {
-            WorldPoint targetTile = null;
             WorldPoint stepLocation = object == null ? step.getDefinedPoint().getWorldPoint() : object.getWorldLocation();
-            int radius = 0;
-            while (targetTile == null) {
-                if (mainScheduledFuture.isCancelled())
-                    break;
-                radius++;
-                Rs2TileObjectModel finalObject = object;
-                targetTile = Rs2Tile.getWalkableTilesAroundTile(stepLocation, radius)
-                        .stream().filter(x -> hasLineOfSightFrom(x, finalObject))
-                        .sorted(Comparator.comparingInt((WorldPoint x) -> Rs2Tile.isTileReachable(x) ? 0 : 1)
-                                .thenComparing(x -> x.distanceTo(Rs2Player.getWorldLocation()))).findFirst().orElse(null);
-
-                if (radius > 10 && targetTile == null)
-                    targetTile = stepLocation;
+            WorldPoint targetTile = chooseObjectApproachTile(stepLocation);
+            if (targetTile == null) {
+                // Nowhere to stand that the planner can reach: let the walker path as close as it can (it opens
+                // closed doors and gates on the way) rather than asking it to stand on the object's own tile.
+                Rs2Walker.walkTo(stepLocation, 2);
+                return false;
             }
 
             // A tolerance of 3 tiles is only honest when the tile is on our side of any wall: through a wall it would
@@ -4045,6 +4055,41 @@ public class QuestScript extends Script {
         }
 
         return true;
+    }
+
+    private static final int APPROACH_MAX_RADIUS = 3;
+    private static final int APPROACH_MAX_CANDIDATES = 6;
+
+    /**
+     * The tile to stand on to use the object at {@code objectTile}: usable from there without a wall between, and
+     * reachable by the real route planner, which opens closed doors and gates (a chain of them too). Does not need
+     * the object itself to be in the scene, so a closed cupboard whose id differs from the step's still works.
+     */
+    private WorldPoint chooseObjectApproachTile(WorldPoint objectTile) {
+        WorldPoint me = Rs2Player.getWorldLocation();
+        for (int radius = 1; radius <= APPROACH_MAX_RADIUS; radius++) {
+            List<WorldPoint> candidates = Rs2Tile.getWalkableTilesAroundTile(objectTile, radius).stream()
+                    .filter(x -> hasLineOfSightFrom(x, objectTile))
+                    .sorted(Comparator.comparingInt((WorldPoint x) -> x.distanceTo2D(objectTile)))
+                    .limit(APPROACH_MAX_CANDIDATES)
+                    .collect(Collectors.toList());
+            WorldPoint best = QuestObjectApproach.choose(objectTile, candidates, x -> true, x -> plannedRouteLength(me, x));
+            if (best != null) {
+                return best;
+            }
+        }
+        return null;
+    }
+
+    private static int plannedRouteLength(WorldPoint from, WorldPoint to) {
+        try {
+            var route = Rs2PathApi.plan(Rs2RouteRequest.to(from, to).withRefreshTarget(to));
+            var path = route.getPath();
+            return !path.isEmpty() && path.get(path.size() - 1).equals(to)
+                    ? path.size() : QuestObjectApproach.UNREACHABLE;
+        } catch (RuntimeException ex) {
+            return QuestObjectApproach.UNREACHABLE;
+        }
     }
 
     private static final int FALLBACK_OBJECT_RADIUS = 4;
@@ -4285,13 +4330,13 @@ public class QuestScript extends Script {
 				&& playerArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), objectArea);
 	}
 
-	private boolean hasLineOfSightFrom(WorldPoint point, Rs2TileObjectModel object) {
-		if (point == null || object == null || object.getWorldLocation() == null) {
+	private boolean hasLineOfSightFrom(WorldPoint point, WorldPoint target) {
+		if (point == null || target == null) {
 			return false;
 		}
 
 		WorldArea fromArea = point.toWorldArea();
-		WorldArea targetArea = object.getWorldLocation().toWorldArea();
+		WorldArea targetArea = target.toWorldArea();
 
 		return Microbot.getClient().getTopLevelWorldView() != null
 				&& fromArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), targetArea);

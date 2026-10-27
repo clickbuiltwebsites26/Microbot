@@ -1269,7 +1269,7 @@ public class Rs2Walker {
         try {
 			return withShadowExecutionEvidence(() -> config.walkWithBankedTransports()
 					? walkWithBankedTransportsAndStateLocked(target, distance, false)
-					: walkWithStateInternal(target, distance));
+					: walkMarkingQuestWalk(target, distance));
         } finally {
             walkerLock.unlock();
         }
@@ -1330,13 +1330,41 @@ public class Rs2Walker {
         {
 			return withShadowExecutionEvidence(() -> config.walkWithBankedTransports()
 					? walkWithBankedTransportsAndStateLocked(target, distance, false)
-					: walkWithStateInternal(target, distance));
+					: walkMarkingQuestWalk(target, distance));
         }
         finally
         {
             walkerLock.unlock();
         }
     }
+    /** Quest walking only: no stage of the search reached the tile, so say so once and back off. */
+    private static void reportQuestWalkUnreachable(WorldPoint target) {
+        if (QuestWalkRule.crossingEnabled() && QuestWalkRule.reportUnreachable(target, Rs2Player.getWorldLocation())) {
+            Microbot.log("Quest walk: " + target + " is not reachable on foot, by crossing or by teleport;"
+                    + " not retrying for " + QuestWalkRule.unreachableRetryInMs() / 1000 + "s");
+        }
+    }
+
+    /**
+     * Every blocking walk runs through here. Walks made by the quest script's loop are marked as quest walks (the
+     * only ones allowed to cross water) and skipped while their target is backed off as unreachable.
+     */
+    private static WalkerState walkMarkingQuestWalk(WorldPoint target, int distance) {
+        boolean questWalk = QuestWalkRule.beginQuestWalk(target);
+        try {
+            if (questWalk && QuestWalkRule.isBackedOff(target, Rs2Player.getWorldLocation())) {
+                return WalkerState.UNREACHABLE;
+            }
+            WalkerState state = walkWithStateInternal(target, distance);
+            if (questWalk && state == WalkerState.ARRIVED) {
+                QuestWalkRule.walkArrived(target);
+            }
+            return state;
+        } finally {
+            QuestWalkRule.endQuestWalk(questWalk);
+        }
+    }
+
     /**
      * Replaces the walkTo method
      *
@@ -1344,14 +1372,6 @@ public class Rs2Walker {
      * @param distance
      * @return
      */
-    /** Quest walking only: no stage of the search reached the tile, so say so once and back off. */
-    private static void reportQuestWalkUnreachable(WorldPoint target) {
-        if (QuestWalkRule.isActive() && QuestWalkRule.reportUnreachable(target)) {
-            Microbot.log("Quest walk: " + target + " is not reachable on foot, by crossing or by teleport;"
-                    + " not retrying for " + QuestWalkRule.unreachableRetryInMs() / 1000 + "s");
-        }
-    }
-
     private static WalkerState walkWithStateInternal(WorldPoint target, int distance) {
         Objects.requireNonNull(target, "walk target");
         currentWalkDistance = Math.max(0, distance);
@@ -1365,10 +1385,6 @@ public class Rs2Walker {
         // sealed goal), collapsed to a 1-tile path, and the retry burned itself on it while the
         // unlearn arrived two lines later.
         withdrawPreviousWalkScopedBlocks(walkerLock.getHoldCount());
-        if (QuestWalkRule.isBackedOff(target)) {
-            // quest walking already tried every route to this tile; wait out the back-off instead of searching again
-            return WalkerState.UNREACHABLE;
-        }
         WorldPoint playerLocWalk = Rs2Player.getWorldLocation();
         if (playerLocWalk == null) {
             return WalkerState.MOVING;
@@ -7744,7 +7760,7 @@ public class Rs2Walker {
                     && Rs2WalkerBankingPlanner.hasCarriedConsumablesForRoute(directProbe)) {
                 WebWalkLog.spInfo("bank_walk | skip_compare_short_distance dist={} directTiles={} goal={}",
                         chebyshevToTarget, directProbeTiles, target);
-                return walkWithStateInternal(target, distance);
+                return walkMarkingQuestWalk(target, distance);
             }
             WebWalkLog.spInfo("bank_walk | short_distance_detour dist={} directTiles={} ceiling={} goal={} — running bank compare",
                     chebyshevToTarget,
@@ -7789,7 +7805,7 @@ public class Rs2Walker {
         // If no missing transport items, go directly
         if (transportLoadout.isEmpty() && !forceBanking && comparison.getDirectDistance() >= 0) {
             WebWalkLog.spInfo("bank_walk | direct_no_missing_items goal={}", target);
-            WalkerState state = walkWithStateInternal(target, distance);
+            WalkerState state = walkMarkingQuestWalk(target, distance);
             if (state == WalkerState.ARRIVED) {
                 WebWalkLog.bankWalkDebug("arrived goal={}", target);
             } else if (state != WalkerState.MOVING) {
@@ -7833,7 +7849,7 @@ public class Rs2Walker {
             WebWalkLog.spWarn("bank_walk | direct route cannot fund selected transports goal={}", target);
             return WalkerState.UNREACHABLE;
         }
-        return walkWithStateInternal(target, distance);
+        return walkMarkingQuestWalk(target, distance);
     }
 
 
@@ -7865,7 +7881,7 @@ public class Rs2Walker {
         WebWalkLog.spInfo("bank_cache_bootstrap | epoch={} start={} bank={}",
                 Rs2Bank.getBankLiveEpoch(), start, bankLocation);
 
-        WalkerState walkToBank = walkWithStateInternal(bankLocation, distance);
+        WalkerState walkToBank = walkMarkingQuestWalk(bankLocation, distance);
         if (walkToBank != WalkerState.ARRIVED) {
             WebWalkLog.spWarn("bank_cache_bootstrap | walk_to_bank_failed state={} bank={}",
                     walkToBank, bankLocation);
@@ -7912,7 +7928,7 @@ public class Rs2Walker {
                 return WalkerState.EXIT;
             }
             // Step 1: Walk to bank
-            WalkerState bankWalkResult = walkWithStateInternal(bankLocation, distance);
+            WalkerState bankWalkResult = walkMarkingQuestWalk(bankLocation, distance);
             if (bankWalkResult != WalkerState.ARRIVED) {
                 log.warn("Failed to arrive at bank at: " + bankLocation + ", state: " + bankWalkResult);
                 return bankWalkResult;
@@ -7983,7 +7999,7 @@ public class Rs2Walker {
             }
             // Step 5: Continue to final target
             log.debug("Banking complete, continuing to final target: " + finalTarget);
-            return walkWithStateInternal(finalTarget, distance);
+            return walkMarkingQuestWalk(finalTarget, distance);
 
         } catch (Exception e) {
             log.error("Error in banking workflow: " + e.getMessage(), e);
@@ -8083,7 +8099,7 @@ public class Rs2Walker {
         boolean prepared = Rs2PathApi.prepareInventoryOnlyRoute(finalTarget);
         WebWalkLog.spWarn("bank_walk | direct_fallback reason={} prepared={} goal={}",
                 reason, prepared, finalTarget);
-        return prepared ? walkWithStateInternal(finalTarget, distance) : WalkerState.EXIT;
+        return prepared ? walkMarkingQuestWalk(finalTarget, distance) : WalkerState.EXIT;
     }
 
     public static boolean closeWorldMap() {

@@ -1022,16 +1022,13 @@ public class ShortestPathPlugin extends Plugin {
     }
 
 	public static boolean override(String configOverrideKey, boolean defaultValue) {
-		if (QuestWalkRule.forcesToggle(configOverrideKey)) {
-			return true;
-		}
 		if (!configOverride.isEmpty()) {
 			Object value = configOverride.get(configOverrideKey);
 			if (value instanceof Boolean) {
 				return (boolean) value;
 			}
 		}
-		return defaultValue;
+		return defaultValue || QuestWalkRule.forcesToggle(configOverrideKey);
 	}
 
 	private Color override(String configOverrideKey, Color defaultValue) {
@@ -1055,10 +1052,6 @@ public class ShortestPathPlugin extends Plugin {
 	}
 
 	public static TeleportationItem override(String configOverrideKey, TeleportationItem defaultValue) {
-		if (QuestWalkRule.forcesTeleportItems() && "useTeleportationItems".equals(configOverrideKey)
-				&& defaultValue == TeleportationItem.NONE) {
-			return TeleportationItem.INVENTORY;
-		}
 		if (!configOverride.isEmpty()) {
 			Object value = configOverride.get(configOverrideKey);
 			if (value instanceof String) {
@@ -1067,6 +1060,10 @@ public class ShortestPathPlugin extends Plugin {
 					return teleportationItem;
 				}
 			}
+		}
+		if (defaultValue == TeleportationItem.NONE && "useTeleportationItems".equals(configOverrideKey)
+				&& QuestWalkRule.forcesTeleportItems()) {
+			return TeleportationItem.INVENTORY;
 		}
 		return defaultValue;
 	}

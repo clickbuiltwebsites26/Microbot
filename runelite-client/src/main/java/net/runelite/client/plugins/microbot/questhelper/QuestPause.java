@@ -57,12 +57,12 @@ public final class QuestPause
 	}
 
 	/**
-	 * Whether the walk in flight is the quest script's own, so a pause may cancel it. A walk toward any other tile
-	 * (started by the Agent Server or another plugin) is left alone.
+	 * Whether a pause may cancel the walker's current walk: only when the quest script's own loop is the one
+	 * walking. A walk started by the Agent Server or another plugin is left alone.
 	 */
-	public static boolean ownsWalk(WorldPoint currentWalkTarget, WorldPoint questWalkTarget)
+	public static boolean shouldCancelWalk(boolean questWalkInFlight, WorldPoint currentWalkTarget)
 	{
-		return currentWalkTarget != null && currentWalkTarget.equals(questWalkTarget);
+		return questWalkInFlight && currentWalkTarget != null;
 	}
 
 	/** Stop beats pause; pause beats run. */

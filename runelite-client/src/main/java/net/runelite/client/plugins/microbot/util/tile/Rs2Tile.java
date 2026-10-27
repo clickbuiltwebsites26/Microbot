@@ -233,6 +233,9 @@ public abstract class Rs2Tile implements Tile {
         return isWalkableLocalInternal(LocalPoint.fromWorld(wv, worldPoint));
     }
 
+    /** Plane whose collision flags {@link #getFlagsInternal()} reads instead of the player's, or null. */
+    private static final ThreadLocal<Integer> FLAGS_PLANE = new ThreadLocal<>();
+
     private static int[][] getFlagsInternal() {
         final WorldView wv = Microbot.getClient().getTopLevelWorldView();
         if (wv == null) return null;
@@ -240,7 +243,9 @@ public abstract class Rs2Tile implements Tile {
         final CollisionData[] collisionData = wv.getCollisionMaps();
         if (collisionData == null) return null;
 
-        return collisionData[wv.getPlane()].getFlags();
+        final Integer plane = FLAGS_PLANE.get();
+        final int use = plane != null && plane >= 0 && plane < collisionData.length ? plane : wv.getPlane();
+        return collisionData[use].getFlags();
     }
 
     private static boolean isFlagSet(int data, @MagicConstant(flagsFromClass = CollisionDataFlag.class) int flag) {
@@ -284,7 +289,14 @@ public abstract class Rs2Tile implements Tile {
         final LocalPoint localPoint = LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(), point);
         if (localPoint == null) return Collections.emptyList();
 
-        final int[][] flags = getFlagsInternal();
+        // read the floor of the point itself, so tiles around an object upstairs come from its own collision map
+        final int[][] flags;
+        FLAGS_PLANE.set(point.getPlane());
+        try {
+            flags = getFlagsInternal();
+        } finally {
+            FLAGS_PLANE.remove();
+        }
         if (flags == null) return Collections.emptyList(); // this differs from original impl. would return all tiles
 
         final int sceneX = localPoint.getSceneX();
