@@ -1,6 +1,8 @@
 package net.runelite.client.plugins.microbot.util.walker.recovery;
 
 import java.util.Objects;
+import lombok.extern.slf4j.Slf4j;
+import net.runelite.client.plugins.microbot.Microbot;
 import java.util.function.BiPredicate;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
@@ -13,6 +15,7 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
  * but it must not recursively start another global recovery from the door interaction on the
  * same thread.</p>
  */
+@Slf4j
 public final class CantReachTargetRecovery
 {
 	private static final ThreadLocal<Integer> RECOVERY_DEPTH = ThreadLocal.withInitial(() -> 0);
@@ -29,6 +32,20 @@ public final class CantReachTargetRecovery
 	public static boolean retryExhausted(int retries, int retryLimit)
 	{
 		return retries >= retryLimit;
+	}
+
+	/**
+	 * Gives up on a target the game keeps answering "I can't reach that!" for: logs it, clears the can't-reach latch and
+	 * the retry counter, and leaves the scripts running. It used to pause every script and show a modal asking a person
+	 * to look, which a hands-off run cannot answer and which left later clicks latched. The failed click just returns
+	 * false, so the caller skips this target.
+	 */
+	public static void giveUp(String what)
+	{
+		log.warn("[Interact] gave up on {} after {} can't-reach attempts; skipping it", what, Microbot.cantReachTargetRetries);
+		Microbot.status = "Skipping " + what + " that cannot be reached";
+		Microbot.cantReachTarget = false;
+		Microbot.cantReachTargetRetries = 0;
 	}
 
 	public static boolean walkTo(WorldPoint target, int distance)
