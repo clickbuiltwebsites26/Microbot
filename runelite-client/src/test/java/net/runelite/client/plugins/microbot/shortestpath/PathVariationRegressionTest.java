@@ -108,16 +108,22 @@ public class PathVariationRegressionTest
 		}
 	}
 
-	private static Set<String> transportList(Pathfinder pathfinder)
+	/**
+	 * The transports a route uses, as a sorted list of their types. Equal-cost twins (the two Varrock east gates, the
+	 * two ends of a double door) differ in tile, so the comparison is by type and count: an added or dropped
+	 * staircase, door, shortcut, boat or teleport still changes the list.
+	 */
+	private static List<String> transportList(Pathfinder pathfinder)
 	{
-		Set<String> keys = new HashSet<>();
+		List<String> keys = new java.util.ArrayList<>();
 		for (PathEdge e : pathfinder.getPathEdges())
 		{
 			if (e.isTransport())
 			{
-				keys.add(e.getTransport().getType() + ":" + e.getFrom() + ">" + e.getTo());
+				keys.add(e.getTransport().getType().name());
 			}
 		}
+		Collections.sort(keys);
 		return keys;
 	}
 
@@ -140,7 +146,7 @@ public class PathVariationRegressionTest
 		Pathfinder base = new Pathfinder(config(), from, to);
 		base.run();
 		assertFalse(base.getPath().isEmpty());
-		Set<Set<String>> baseTransportLists = new HashSet<>();
+		Set<List<String>> baseTransportLists = new HashSet<>();
 		baseTransportLists.add(transportList(base));
 		for (int i = 0; i < 5; i++)
 		{

@@ -164,9 +164,11 @@ public class QuestScript extends Script {
 
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
     private volatile String lastDialogueLine = "";
-    private String menuRepeatKey;
-    private int menuRepeats;
+    private QuestStep menuStep;
+    private boolean menuWasVisible;
+    private final Map<String, Integer> menuAppearances = new HashMap<>();
     private String menuLoggedKey;
+    private static final int MENU_REPEATS_BEFORE_NEXT_OPTION = 3;
     /** True when this script turned auto-retaliate off and the player had it on. */
     private volatile boolean autoRetaliateDisabledByUs;
 
@@ -239,8 +241,7 @@ public class QuestScript extends Script {
                     }
                 }
                 if (!Rs2Widget.isWidgetVisible(ComponentID.DIALOG_OPTION_OPTIONS)) {
-                    menuRepeatKey = null;
-                    menuRepeats = 0;
+                    menuWasVisible = false;
                 }
 
                 if (Rs2Dialogue.isInDialogue() && dialogueStartedStep == null)
@@ -726,17 +727,23 @@ public class QuestScript extends Script {
 			return false;
 		}
 		List<String> options = optionWidgets.stream().map(Widget::getText).collect(Collectors.toList());
-		String key = System.identityHashCode(step) + "|" + options.stream()
-				.map(QuestDialogueRules::normalize).collect(Collectors.joining("|"));
-		if (!key.equals(menuRepeatKey)) {
-			menuRepeatKey = key;
-			menuRepeats = 0;
+		String key = options.stream().map(QuestDialogueRules::normalize).collect(Collectors.joining("|"));
+		// Count how often this menu has appeared since the step began, across the box closing and the NPC being
+		// talked to again: a conversation that loops without progress then tries the next-best option.
+		if (step != menuStep) {
+			menuStep = step;
+			menuAppearances.clear();
 		}
-		menuRepeats++;
-		if (menuRepeats <= 2) {
-			return false;
+		if (!menuWasVisible) {
+			menuWasVisible = true;
+			menuAppearances.merge(key, 1, Integer::sum);
 		}
+		int attempt = (menuAppearances.getOrDefault(key, 1) - 1) / MENU_REPEATS_BEFORE_NEXT_OPTION;
 		List<String> hints = new ArrayList<>();
+		var selected = getQuestHelperPlugin().getSelectedQuest();
+		if (selected != null && selected.getQuest() != null) {
+			hints.add(selected.getQuest().getName());
+		}
 		if (step != null) {
 			if (step.getText() != null) {
 				hints.addAll(step.getText());
@@ -747,13 +754,14 @@ public class QuestScript extends Script {
 				}
 			}
 		}
-		String pick = QuestDialogueRules.pickFallbackOption(options, hints);
+		String pick = QuestDialogueRules.pickFallbackOption(options, hints, attempt);
 		if (pick == null) {
 			return false;
 		}
 		if (!key.equals(menuLoggedKey)) {
 			menuLoggedKey = key;
-			Microbot.log("Quest helper: no configured dialogue option matched, choosing \"" + normalizeDialogText(pick) + "\"", Level.INFO);
+			Microbot.log("Quest helper: no configured dialogue option matched, choosing \"" + normalizeDialogText(pick)
+					+ "\" (try " + (attempt + 1) + ")", Level.INFO);
 		}
 		Widget[] children = Rs2Widget.getWidget(ComponentID.DIALOG_OPTION_OPTIONS).getDynamicChildren();
 		return children != null && selectDialogChoice(children, normalizeDialogText(pick));

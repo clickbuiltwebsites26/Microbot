@@ -14,6 +14,12 @@ public final class QuestDialogueRules {
 	private static final Pattern WORD = Pattern.compile("[a-z']{4,}");
 	private static final Pattern BAD_OPTION = Pattern.compile(
 		"^(?:no|nope|no,? thanks?(?: you)?|goodbye|bye|nothing|not really|never ?mind|maybe later|cancel)\\W*$");
+	/** Declining or leaving lines: "No. I think you've had enough.", "I'd rather not.", "Not now." */
+	private static final Pattern DECLINE = Pattern.compile(
+		"^(?:no|nope)(?:[.,!?]|\\s|$).*|.*\\bhad enough\\b.*|^i'?d rather not.*|^not (?:now|today|yet).*|^leave me alone.*");
+	/** Lines that move a conversation on: "Alright, here you go.", "Yes.", "I need your help ...". */
+	private static final Pattern AFFIRM = Pattern.compile(
+		"^(?:yes|yeah|yep|ok|okay|alright|all right|sure|please|accept|i need|i would|i'?d like|i want)\\b.*|.*\\bhere you go\\b.*");
 	private static final Pattern BUY_TEXT = Pattern.compile("(?i)(?<![a-z])(?:buy|purchase)(?![a-z])");
 	private static final Set<String> STOP_WORDS = new HashSet<>(List.of(
 		"talk", "speak", "with", "that", "this", "them", "then", "from", "into", "your", "have", "about", "there",
@@ -43,6 +49,12 @@ public final class QuestDialogueRules {
 		return normalize(lastLine).contains(normalize(expected));
 	}
 
+	/** Whether an option leaves or declines the conversation. */
+	static boolean isRefusal(String option) {
+		String plain = normalize(option);
+		return plain.isEmpty() || BAD_OPTION.matcher(plain).matches() || DECLINE.matcher(plain).matches();
+	}
+
 	/**
 	 * Picks a dialogue option when none of the step's configured choices matched. Prefers the option sharing the most
 	 * words with the step text / choices; otherwise the first option that is not a refusal ("Goodbye", "No", ...).
@@ -50,8 +62,24 @@ public final class QuestDialogueRules {
 	 * @return the chosen option's text as given, or null when there are no options
 	 */
 	public static String pickFallbackOption(List<String> options, List<String> hintTexts) {
+		return pickFallbackOption(options, hintTexts, 0);
+	}
+
+	/**
+	 * As {@link #pickFallbackOption(List, List)}, for the {@code attempt}-th try of the same menu: attempt 0 is the best
+	 * option, 1 the next best, and so on round the options, so a conversation that loops without progress tries
+	 * something else. Refusals are never picked.
+	 */
+	public static String pickFallbackOption(List<String> options, List<String> hintTexts, int attempt) {
+		List<String> ranked = rankOptions(options, hintTexts);
+		return ranked.isEmpty() ? null : ranked.get(Math.floorMod(attempt, ranked.size()));
+	}
+
+	/** The non-refusal options, best first: hint words weigh most, then a go-ahead wording, then the menu order. */
+	public static List<String> rankOptions(List<String> options, List<String> hintTexts) {
+		List<String> ranked = new ArrayList<>();
 		if (options == null || options.isEmpty()) {
-			return null;
+			return ranked;
 		}
 		Set<String> hints = new HashSet<>();
 		if (hintTexts != null) {
@@ -64,33 +92,26 @@ public final class QuestDialogueRules {
 				}
 			}
 		}
-		String best = null;
-		int bestScore = 0;
+		List<Integer> scores = new ArrayList<>();
 		for (String option : options) {
-			if (option == null || BAD_OPTION.matcher(normalize(option)).matches()) {
+			if (option == null || isRefusal(option)) {
 				continue;
 			}
 			String plain = normalize(option);
-			int score = 0;
+			int score = AFFIRM.matcher(plain).matches() ? 1 : 0;
 			for (String hint : hints) {
 				if (plain.contains(hint)) {
-					score++;
+					score += 3;
 				}
 			}
-			if (score > bestScore) {
-				bestScore = score;
-				best = option;
+			int at = 0;
+			while (at < ranked.size() && scores.get(at) >= score) {
+				at++;
 			}
+			ranked.add(at, option);
+			scores.add(at, score);
 		}
-		if (best != null) {
-			return best;
-		}
-		for (String option : options) {
-			if (option != null && !option.isBlank() && !BAD_OPTION.matcher(normalize(option)).matches()) {
-				return option;
-			}
-		}
-		return null;
+		return ranked;
 	}
 
 	/** Step text asks to buy something. */
