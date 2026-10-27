@@ -139,6 +139,26 @@ public class QuestWalkRuleTest
 		}
 	}
 
+	/** #89: Varrock (Guidor's house) to Elena in East Ardougne stays on the ground road, never over Falador castle. */
+	@Test
+	public void varrockToArdougneNeverUsesTheFaladorCastleStaircases() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Pathfinder pf = run(new WorldPoint(3283, 3382, 0), new WorldPoint(2592, 3336, 0));
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		for (PathEdge e : pf.getPathEdges())
+		{
+			if (!e.isTransport())
+			{
+				continue;
+			}
+			int id = e.getTransport().getObjectId();
+			assertFalse("used Falador castle object " + id + " " + e.getFrom() + ">" + e.getTo(), id >= 24070 && id <= 24075);
+			boolean inFalador = e.getFrom().getX() > 2940 && e.getFrom().getX() < 3015 && e.getFrom().getY() < 3360;
+			assertFalse("left the ground floor in Falador", inFalador && e.getTo().getPlane() > 0);
+		}
+	}
+
 	@Test
 	public void islandFallsBackToTheShip() throws Exception
 	{
