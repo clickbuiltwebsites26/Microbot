@@ -16,6 +16,7 @@ import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.support.Defa
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.support.DefaultSpeedManager;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.support.Flow;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.support.MouseMotionNature;
+import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.util.FactoryTemplates;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.util.FlowTemplates;
 import net.runelite.client.plugins.microbot.util.mouse.naturalmouse.util.Pair;
@@ -91,6 +92,11 @@ public class NaturalMouse {
     }
 
     public MouseMotionFactory getFactory() {
+        if (Rs2AntibanSettings.humanMouseSpeed) {
+            // built for every move: its speed, curvature and overshoot differ each time
+            return FactoryTemplates.createHumanMotionFactory(nature, Rs2AntibanSettings.mouseSpeedMinMs,
+                    Rs2AntibanSettings.mouseSpeedMaxMs, new java.util.Random());
+        }
         ActivityIntensity intensity = Rs2Antiban.getActivityIntensity();
         if (cachedFactory != null && intensity == cachedIntensity) {
             return cachedFactory;
