@@ -311,16 +311,6 @@ public class Rs2NpcModel extends Rs2ActorModel implements IEntity
         }).orElseGet(java.util.ArrayList::new);
     }
 
-    /** The actions of the NPC's transformed form (varbit/varp), empty when it has none. */
-    public java.util.List<String> getTransformedActions() {
-        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            NPCComposition base = Microbot.getClient().getNpcDefinition(getId());
-            NPCComposition transformed = base == null ? null : base.transform();
-            String[] actions = transformed == null ? null : transformed.getActions();
-            return actions == null ? new java.util.ArrayList<String>() : java.util.Arrays.asList(actions);
-        }).orElseGet(java.util.ArrayList::new);
-    }
-
     /** The composition the game shows now: a varbit/varp-transformed NPC offers the actions of its current form. Client thread. */
     private NPCComposition currentComposition() {
         NPCComposition composition = Microbot.getClient().getNpcDefinition(getId());
