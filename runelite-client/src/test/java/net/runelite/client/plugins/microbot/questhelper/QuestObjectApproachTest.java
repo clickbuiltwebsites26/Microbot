@@ -177,4 +177,24 @@ public class QuestObjectApproachTest
 		assertNull(choose(object, Collections.singleton(blockedSide), routes));
 		assertNull(choose(object, Collections.emptySet(), Collections.emptyMap()));
 	}
+
+	/** Dragon Slayer I: a ladder tracked 60 tiles from the trapdoor the step names must never be clicked in its place. */
+	@Test
+	public void anObjectFarFromTheStepsPointIsNotTheStepsObject()
+	{
+		WorldPoint trapdoor = new WorldPoint(3019, 3450, 0);
+		assertTrue(QuestObjectApproach.nearStepPoint(new WorldPoint(3019, 3452, 0), trapdoor, 15));
+		assertFalse(QuestObjectApproach.nearStepPoint(new WorldPoint(3021, 3510, 0), trapdoor, 15));
+		assertFalse(QuestObjectApproach.nearStepPoint(new WorldPoint(3019, 3450, 1), trapdoor, 15));
+		assertTrue("unknown locations do not exclude", QuestObjectApproach.nearStepPoint(null, trapdoor, 15));
+	}
+
+	@Test
+	public void aTargetFiftyTilesAwayIsWalkedToNotClicked()
+	{
+		WorldPoint oracle = new WorldPoint(3014, 3501, 0);
+		assertFalse(QuestObjectApproach.withinClickRange(oracle, new WorldPoint(3019, 3450, 0), 20));
+		assertTrue(QuestObjectApproach.withinClickRange(new WorldPoint(3019, 3460, 0), new WorldPoint(3019, 3450, 0), 20));
+		assertFalse(QuestObjectApproach.withinClickRange(oracle, new WorldPoint(3014, 3501, 1), 20));
+	}
 }

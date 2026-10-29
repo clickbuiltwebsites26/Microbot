@@ -160,4 +160,25 @@ public final class QuestObjectApproach
 		}
 		return best;
 	}
+
+	/**
+	 * Whether a tracked object can be the step's: on the step's plane and within {@code radius} tiles of the step's point.
+	 * A stale or unrelated object tracked elsewhere (a ladder 60 tiles from the trapdoor the step names) must never be
+	 * clicked in its place. True when either location is unknown.
+	 */
+	public static boolean nearStepPoint(WorldPoint object, WorldPoint stepPoint, int radius)
+	{
+		if (object == null || stepPoint == null)
+		{
+			return true;
+		}
+		return object.getPlane() == stepPoint.getPlane() && object.distanceTo2D(stepPoint) <= radius;
+	}
+
+	/** Whether the player is close enough to click the object (same plane, within {@code range} tiles). */
+	public static boolean withinClickRange(WorldPoint player, WorldPoint object, int range)
+	{
+		return player != null && object != null && player.getPlane() == object.getPlane()
+			&& player.distanceTo2D(object) <= range;
+	}
 }

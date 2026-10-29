@@ -18,9 +18,11 @@ public final class QuestCompositeRequirements
 	{
 	}
 
-	public static boolean isComposite(ItemRequirement requirement)
+	/** What a requirement comes down to: items to fetch, and parts nothing can fetch (the shortfall to report). */
+	public static final class Resolution
 	{
-		return requirement instanceof ItemRequirements;
+		public final List<ItemRequirement> fetch = new ArrayList<>();
+		public final List<ItemRequirement> unobtainable = new ArrayList<>();
 	}
 
 	/**
@@ -28,22 +30,23 @@ public final class QuestCompositeRequirements
 	 * @param onPlayer    whether a requirement is met by what the player carries or wears
 	 * @param bankCovers  whether the bank holds enough of a requirement to withdraw it
 	 * @param tradable    whether a requirement can be bought on the Grand Exchange
-	 * @return the concrete requirements to fetch; empty when the composite is already met by one of its children
+	 * @return what to fetch (empty when an OR is already met by one of its children) and, when no child of an OR can
+	 *         be fetched from the bank or bought, those children as the shortfall
 	 */
-	public static List<ItemRequirement> resolve(ItemRequirement requirement, Predicate<ItemRequirement> onPlayer,
+	public static Resolution resolve(ItemRequirement requirement, Predicate<ItemRequirement> onPlayer,
 		Predicate<ItemRequirement> bankCovers, Predicate<ItemRequirement> tradable)
 	{
-		List<ItemRequirement> out = new ArrayList<>();
+		Resolution out = new Resolution();
 		collect(requirement, onPlayer, bankCovers, tradable, out);
 		return out;
 	}
 
 	private static void collect(ItemRequirement requirement, Predicate<ItemRequirement> onPlayer,
-		Predicate<ItemRequirement> bankCovers, Predicate<ItemRequirement> tradable, List<ItemRequirement> out)
+		Predicate<ItemRequirement> bankCovers, Predicate<ItemRequirement> tradable, Resolution out)
 	{
 		if (!(requirement instanceof ItemRequirements))
 		{
-			out.add(requirement);
+			out.fetch.add(requirement);
 			return;
 		}
 		ItemRequirements composite = (ItemRequirements) requirement;
@@ -66,7 +69,12 @@ public final class QuestCompositeRequirements
 			{
 				chosen = pick(children, tradable);
 			}
-			collect(chosen != null ? chosen : children.get(0), onPlayer, bankCovers, tradable, out);
+			if (chosen == null)
+			{
+				out.unobtainable.addAll(children);
+				return;
+			}
+			collect(chosen, onPlayer, bankCovers, tradable, out);
 			return;
 		}
 		for (ItemRequirement child : children)
@@ -85,7 +93,7 @@ public final class QuestCompositeRequirements
 		{
 			if (child instanceof ItemRequirements)
 			{
-				for (ItemRequirement leaf : resolve(child, c -> false, c -> true, c -> true))
+				for (ItemRequirement leaf : resolve(child, c -> false, c -> true, c -> true).fetch)
 				{
 					if (test.test(leaf))
 					{

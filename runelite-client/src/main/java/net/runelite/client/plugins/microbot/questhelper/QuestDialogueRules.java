@@ -15,9 +15,10 @@ public final class QuestDialogueRules {
 	private static final Pattern WORD = Pattern.compile("[a-z']{4,}");
 	private static final Pattern BAD_OPTION = Pattern.compile(
 		"^(?:no|nope|no,? thanks?(?: you)?|goodbye|bye|nothing|not really|never ?mind|maybe later|cancel)\\W*$");
-	/** Declining or leaving lines: "No. I think you've had enough.", "I'd rather not.", "Not now." */
+	/** Declining or leaving lines: "No. I think you've had enough.", "I'd rather not.", "Not now.", "Okay, I'll get going!" */
 	private static final Pattern DECLINE = Pattern.compile(
-		"^(?:no|nope)(?:[.,!?]|\\s|$).*|.*\\bhad enough\\b.*|^i'?d rather not.*|^not (?:now|today|yet).*|^leave me alone.*");
+		"^(?:no|nope)(?:[.,!?]|\\s|$).*|.*\\bhad enough\\b.*|^i'?d rather not.*|^not (?:now|today|yet).*|^leave me alone.*"
+			+ "|^(?:(?:ok|okay|alright|all right),? )?i'?(?:ll|d best) (?:get going|be going|be off|go now|leave)\\W*$");
 	/**
 	 * Options that spend, travel, teleport, buy, sell, start something or leave: never chosen by the fallback unless the
 	 * step's own words match them.
@@ -109,6 +110,25 @@ public final class QuestDialogueRules {
 	public static String pickFallbackOption(List<String> options, List<String> hintTexts, List<String> weakHints,
 		int attempt, String lastLine) {
 		List<String> ranked = rankOptions(options, hintTexts, weakHints, lastLine);
+		return attempt < 0 || attempt >= ranked.size() ? null : ranked.get(attempt);
+	}
+
+	/**
+	 * As above, rotating through the menu: the best option NOT chosen before in this conversation comes first, so a menu
+	 * whose options change as they are asked (a guildmaster's list of questions) never repeats the same one while
+	 * another is still unasked. Only when every safe option has been chosen does the {@code attempt}-th ranked option
+	 * (or null) decide, as before.
+	 *
+	 * @param alreadyChosen the normalised texts chosen so far
+	 */
+	public static String pickFallbackOption(List<String> options, List<String> hintTexts, List<String> weakHints,
+		int attempt, String lastLine, Set<String> alreadyChosen) {
+		List<String> ranked = rankOptions(options, hintTexts, weakHints, lastLine);
+		for (String option : ranked) {
+			if (!alreadyChosen.contains(normalize(option))) {
+				return option;
+			}
+		}
 		return attempt < 0 || attempt >= ranked.size() ? null : ranked.get(attempt);
 	}
 

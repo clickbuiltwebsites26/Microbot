@@ -342,19 +342,19 @@ public class DragonSlayer extends BasicQuestHelper
 		talkToOziach.addDialogStep("A dragon, that sounds like fun.");
 
 		returnToGuildmaster = new NpcStep(this, NpcID.GUILDMASTER, new WorldPoint(3190, 3360, 0), "Return to the Guildmaster and ask him all the available questions.");
-		returnToGuildmaster.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find the right ship?");
+		returnToGuildmaster.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "What kind of ship do I need?");
 
 		askAboutShield = new NpcStep(this, NpcID.GUILDMASTER, new WorldPoint(3190, 3360, 0), "Return to the Guildmaster and ask him all the available questions.");
 		askAboutShield.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "How can I protect myself from the dragon's breath?");
 
 		askAboutMelzar = new NpcStep(this, NpcID.GUILDMASTER, new WorldPoint(3190, 3360, 0), "Return to the Guildmaster and ask him all the available questions.");
-		askAboutMelzar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "How can I find the route to Crandor?", "Where is Melzar's map piece?");
+		askAboutMelzar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find a map to Crandor?", "Where is Melzar's map piece?");
 
 		askAboutThalzar = new NpcStep(this, NpcID.GUILDMASTER, new WorldPoint(3190, 3360, 0), "Return to the Guildmaster and ask him all the available questions.");
-		askAboutThalzar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "How can I find the route to Crandor?", "Where is Thalzar's map piece?");
+		askAboutThalzar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find a map to Crandor?", "Where is Thalzar's map piece?");
 
 		askAboutLozar = new NpcStep(this, NpcID.GUILDMASTER, new WorldPoint(3190, 3360, 0), "Return to the Guildmaster and ask him all the available questions.");
-		askAboutLozar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "How can I find the route to Crandor?", "Where is Lozar's map piece?");
+		askAboutLozar.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find a map to Crandor?", "Where is Lozar's map piece?");
 
 		returnToGuildmaster.addSubSteps(askAboutShield, askAboutMelzar, askAboutLozar, askAboutThalzar);
 
@@ -382,7 +382,7 @@ public class DragonSlayer extends BasicQuestHelper
 		optionsForLozarPiece.addDialogStep("Alright then, 10,000 it is.");
 
 		enterMelzarsMaze = new ObjectStep(this, ObjectID.MELZARDOOR, new WorldPoint(2941, 3248, 0), "Enter Melzar's Maze north of Rimmington. Be prepared to fight multiple monsters up to a level 82 lesser demon.", melzarsKey);
-		enterMelzarsMaze.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "How can I find the route to Crandor?", "Where is Melzar's map piece?");
+		enterMelzarsMaze.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find a map to Crandor?", "Where is Melzar's map piece?");
 
 		killRat = new NpcStep(this, NpcID.DRAGONSLAYER_GIANTRAT_1_KEY, new WorldPoint(2933, 3250, 0), "Kill the marked zombie rat for a key.");
 		openRedDoor = new ObjectStep(this, ObjectID.REDDOOR, new WorldPoint(2926, 3253, 0), "Go through the north west red door", ratKey);

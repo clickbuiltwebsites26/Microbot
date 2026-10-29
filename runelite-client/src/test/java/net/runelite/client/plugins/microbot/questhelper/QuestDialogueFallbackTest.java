@@ -7,7 +7,9 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.Test;
 
 /** Vampyre Slayer, Dr. Harlow in the Blue Moon Inn: the options box was closed on each visit instead of answered. */
@@ -108,5 +110,27 @@ public class QuestDialogueFallbackTest
 	{
 		assertEquals("Yes, I will.", QuestDialogueRules.pickFallbackOption(
 			Arrays.asList("Tell me about the weather.", "Yes, I will."), Collections.emptyList()));
+	}
+
+	/** Dragon Slayer I, Guildmaster: the options change as they are asked, so rotation must follow what was chosen. */
+	@Test
+	public void aMenuThatChangesIsRotatedByWhatWasAlreadyChosen()
+	{
+		List<String> hints = Arrays.asList("Return to the Guildmaster and ask him all the available questions.");
+		List<String> menu = Arrays.asList("Where is Thalzar's map piece?", "Where is Lozar's map piece?",
+			"What kind of ship do I need?", "How can I protect myself from the dragon's breath?", "Okay, I'll get going!");
+		Set<String> chosen = new HashSet<>();
+		Set<String> picks = new HashSet<>();
+		// the safe options only: risky ones (a ship question) are left to the configured dialogue text
+		int safe = QuestDialogueRules.rankOptions(menu, hints).size();
+		assertTrue(safe >= 3);
+		for (int i = 0; i < safe; i++)
+		{
+			String pick = QuestDialogueRules.pickFallbackOption(menu, hints, Collections.emptyList(), 0, null, chosen);
+			assertTrue("picked " + pick + " again", picks.add(pick));
+			chosen.add(QuestDialogueRules.normalize(pick));
+		}
+		assertEquals(safe, picks.size());
+		assertTrue(!picks.contains("Okay, I'll get going!"));
 	}
 }
