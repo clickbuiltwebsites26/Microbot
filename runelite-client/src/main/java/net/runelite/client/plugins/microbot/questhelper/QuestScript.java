@@ -440,6 +440,10 @@ public class QuestScript extends Script {
 						return;
 					}
 
+					if (questStep instanceof DetailedQuestStep && handleBossPrep((DetailedQuestStep) questStep)) {
+						return;
+					}
+
 					if ((QuestCombatDetector.isKillStep(questStep) || QuestCombatDetector.hasFights(selectedQuest))
 							&& combat.prepareForKill(questStep, slotsReservedForStep(questStep))) {
 						return;
@@ -1504,6 +1508,53 @@ public class QuestScript extends Script {
 		Rs2Inventory.interact(invId, action);
 		sleepUntil(() -> itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 2_000);
 		return true;
+	}
+
+	private QuestStep bossWearStep;
+	private int bossWearAttempts;
+
+	/**
+	 * "Prepare to fight X (level N)": wears what the step asks for that can be worn (the anti-dragon shield), then tops
+	 * the food up for the boss from the bank. The quest's own combat setup runs after this as before.
+	 *
+	 * @return true when this tick was spent on it
+	 */
+	private boolean handleBossPrep(DetailedQuestStep step) {
+		int level = QuestBossPrep.bossLevel(step.getText());
+		if (level < 0 || Rs2Combat.inCombat()) {
+			return false;
+		}
+		if (step != bossWearStep) {
+			bossWearStep = step;
+			bossWearAttempts = 0;
+		}
+		for (Requirement requirement : step.getRequirements()) {
+			if (!(requirement instanceof ItemRequirement) || bossWearAttempts >= 3) {
+				continue;
+			}
+			ItemRequirement item = (ItemRequirement) requirement;
+			boolean hasRealId = item.getAllIds().stream().anyMatch(id -> id != null && id > 0);
+			if (hasRealId && isWearableInInventory(item)) {
+				bossWearAttempts++;
+				if (wearMustBeEquippedFromInventory(item)) {
+					return true;
+				}
+			}
+		}
+		int hitpoints = Rs2Player.getRealSkillLevel(net.runelite.api.Skill.HITPOINTS);
+		return combat.prepareBossFood(step, slotsReservedForStep(step), QuestBossPrep.foodWanted(level, hitpoints));
+	}
+
+	/** Whether the inventory holds the item and it offers a wear/wield action. */
+	private static boolean isWearableInInventory(ItemRequirement item) {
+		Integer invId = item.getAllIds().stream().filter(id -> id != null && id > 0 && Rs2Inventory.contains(id))
+				.findFirst().orElse(null);
+		if (invId == null) {
+			return false;
+		}
+		var held = Rs2Inventory.get(invId);
+		return held != null && held.getInventoryActions() != null && Arrays.stream(held.getInventoryActions())
+				.anyMatch(a -> a != null && (a.equalsIgnoreCase("Wear") || a.equalsIgnoreCase("Wield")));
 	}
 
 	/** After the bank trips: buys a style-swap kit the bank lacked, or stops the quest when it cannot be had. */
@@ -2741,7 +2792,9 @@ public class QuestScript extends Script {
 					if (ir.getQuantity() > QUEST_LEVEL_PREGATHER_MAX && !ir.mustBeEquipped() && !isStackable(ir)) {
 						continue;
 					}
-					combined.add(ir);
+					// "any amount" requirements (quantity -1, like the antifire for Elvarg) count as one at a boss prep
+					combined.add(ir.getQuantity() < 1 && QuestBossPrep.bossLevel(questStep.getText()) >= 0
+							? withQuantityOne(ir) : ir);
 				}
 			}
 		}
@@ -2753,6 +2806,12 @@ public class QuestScript extends Script {
 		}
 
 		return combined;
+	}
+
+	private static ItemRequirement withQuantityOne(ItemRequirement ir) {
+		ItemRequirement one = ir.copy();
+		one.setQuantity(1);
+		return one;
 	}
 
 	private void updateEverHeldItemTracking(QuestHelper selectedQuest) {
