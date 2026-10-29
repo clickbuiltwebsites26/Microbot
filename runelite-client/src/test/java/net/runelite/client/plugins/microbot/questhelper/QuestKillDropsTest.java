@@ -23,4 +23,10 @@ public class QuestKillDropsTest
 		assertNull(QuestKillDrops.dropName(List.of("Talk to the Guildmaster in the Champions' Guild.")));
 		assertNull(QuestKillDrops.dropName(null));
 	}
+
+	@Test
+	public void theDropIsFoundMidSentence()
+	{
+		assertEquals("key", QuestKillDrops.dropName(List.of("Kill the marked ghost for a key. Then go upstairs.")));
+	}
 }

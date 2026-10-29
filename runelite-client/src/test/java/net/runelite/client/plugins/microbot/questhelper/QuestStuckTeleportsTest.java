@@ -19,7 +19,7 @@ public class QuestStuckTeleportsTest
 	public void theFaladorTabletIsTheOneNearestPortSarim()
 	{
 		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(MAGIC_DOOR_ROOM, PORT_SARIM_JAIL,
-			List.of("Falador teleport", "Varrock teleport", "Coins"));
+			List.of("Falador teleport", "Varrock teleport", "Coins"), List.of());
 		assertEquals("falador teleport", option.item);
 		assertEquals("Break", option.action);
 		assertFalse(option.worn);
@@ -28,8 +28,8 @@ public class QuestStuckTeleportsTest
 	@Test
 	public void wornJewelleryCountsAndIsUsedByItsOwnAction()
 	{
-		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(MAGIC_DOOR_ROOM, PORT_SARIM_JAIL,
-			List.of("Amulet of glory(4)"));
+		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(PORT_SARIM_JAIL, new WorldPoint(3090, 3500, 0),
+			List.of(), List.of("Amulet of glory(4)"));
 		assertEquals("amulet of glory", option.item);
 		assertTrue(option.worn);
 		assertEquals("Edgeville", option.action);
@@ -38,19 +38,35 @@ public class QuestStuckTeleportsTest
 	@Test
 	public void nothingOwnedMeansNoTeleport()
 	{
-		assertNull(QuestStuckTeleports.choose(MAGIC_DOOR_ROOM, PORT_SARIM_JAIL, List.of("Coins", "Lobster pot")));
+		assertNull(QuestStuckTeleports.choose(MAGIC_DOOR_ROOM, PORT_SARIM_JAIL, List.of("Coins", "Lobster pot"), List.of()));
 	}
 
 	@Test
 	public void aNearGoalIsNeverTeleportedTo()
 	{
-		assertNull(QuestStuckTeleports.choose(new WorldPoint(3010, 3190, 0), PORT_SARIM_JAIL, List.of("Falador teleport")));
+		assertNull(QuestStuckTeleports.choose(new WorldPoint(3010, 3190, 0), PORT_SARIM_JAIL, List.of("Falador teleport"), List.of()));
 	}
 
 	@Test
 	public void aTeleportThatLandsNoNearerIsNotUsed()
 	{
 		// standing in Falador, heading for Port Sarim Jail ~190 tiles away: the Falador tablet lands where we are
-		assertNull(QuestStuckTeleports.choose(new WorldPoint(2966, 3379, 0), PORT_SARIM_JAIL, List.of("Falador teleport")));
+		assertNull(QuestStuckTeleports.choose(new WorldPoint(2966, 3379, 0), PORT_SARIM_JAIL, List.of("Falador teleport"), List.of()));
+	}
+
+	/** A glory amulet in the inventory is not worn: it must not be picked as the worn option. */
+	@Test
+	public void jewelleryInTheInventoryIsNotWorn()
+	{
+		assertNull(QuestStuckTeleports.choose(PORT_SARIM_JAIL, new WorldPoint(3090, 3500, 0), List.of("Amulet of glory(4)"), List.of()));
+	}
+
+	/** Underground y is 6,400 north of the surface: a catacomb under Lumbridge is not nearer Edgeville than the goal. */
+	@Test
+	public void undergroundPlayerIsComparedByTheSurfaceAbove()
+	{
+		WorldPoint lumbridgeCatacombs = new WorldPoint(3150, 9600, 0);
+		WorldPoint lumbridgeGoal = new WorldPoint(3222, 3218, 0);
+		assertNull(QuestStuckTeleports.choose(lumbridgeCatacombs, lumbridgeGoal, List.of(), List.of("Amulet of glory(4)")));
 	}
 }

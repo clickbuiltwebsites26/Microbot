@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 public final class QuestKillDrops
 {
 	private static final Pattern FOR_ITEM = Pattern.compile(
-		"(?i)\\bfor (?:a|an|the|some) ([a-z][a-z' -]{1,30}?)\\s*[.!]?\\s*$");
+		"(?i)\\bfor (?:a|an|the|some) ([a-z][a-z' -]{1,30}?)\\s*(?:[.!,;]|$)");
 
 	private QuestKillDrops()
 	{

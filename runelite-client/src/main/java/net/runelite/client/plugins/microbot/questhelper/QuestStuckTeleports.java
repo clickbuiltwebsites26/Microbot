@@ -48,32 +48,45 @@ public final class QuestStuckTeleports
 	{
 	}
 
+	/** The surface-equivalent y: the underground map sits 6,400 tiles north of the surface it lies under. */
+	private static int surfaceY(WorldPoint p)
+	{
+		return p.getY() >= 6400 ? p.getY() - 6400 : p.getY();
+	}
+
+	/** Tiles between two points, underground ones read as the surface above them. */
+	static int distance(WorldPoint a, WorldPoint b)
+	{
+		return Math.max(Math.abs(a.getX() - b.getX()), Math.abs(surfaceY(a) - surfaceY(b)));
+	}
+
 	/** Whether the goal is far enough from the player for a teleport to be the way out. */
 	public static boolean goalIsFar(WorldPoint at, WorldPoint goal)
 	{
-		return at != null && goal != null && at.distanceTo2D(goal) > FAR_GOAL_TILES;
+		return at != null && goal != null && distance(at, goal) > FAR_GOAL_TILES;
 	}
 
 	/**
-	 * @param owned lower-case names of the inventory items and worn items the player has
+	 * @param inventory names of the inventory items (tablets are found here)
+	 * @param worn      names of the worn items (jewellery is found here, so one in the inventory never counts)
 	 * @return the owned option landing nearest the goal and clearly nearer than {@code at}; null when none helps
 	 */
-	public static Option choose(WorldPoint at, WorldPoint goal, Collection<String> owned)
+	public static Option choose(WorldPoint at, WorldPoint goal, Collection<String> inventory, Collection<String> worn)
 	{
 		if (!goalIsFar(at, goal))
 		{
 			return null;
 		}
-		int current = at.distanceTo2D(goal);
+		int current = distance(at, goal);
 		Option best = null;
 		int bestDistance = Integer.MAX_VALUE;
 		for (Option option : OPTIONS)
 		{
-			if (!owns(owned, option))
+			if (!owns(option.worn ? worn : inventory, option))
 			{
 				continue;
 			}
-			int distance = option.landing.distanceTo2D(goal);
+			int distance = distance(option.landing, goal);
 			if (distance + MIN_GAIN < current && distance < bestDistance)
 			{
 				best = option;

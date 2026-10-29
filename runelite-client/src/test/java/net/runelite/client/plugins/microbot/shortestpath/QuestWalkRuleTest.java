@@ -416,4 +416,24 @@ public class QuestWalkRuleTest
 		Pathfinder free = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, ring);
 		assertTrue(usesTeleport(free, "Ring of wealth: Grand Exchange"));
 	}
+
+	/** The on-foot search fails (an island): while fighting, the owned glory must not be the way off it either. */
+	@Test
+	public void noOwnedGloryOffAnIslandWhileFighting() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		QuestWalkRule.clearFare();
+		excluded = QuestWalkRuleTest::needsSomethingAFreshAccountLacks;
+		Transport glory = itemTeleport("Amulet of glory: Draynor Village", new WorldPoint(3105, 3251, 0));
+		QuestWalkRule.setLongTravelHeld(true);
+		try
+		{
+			Pathfinder pf = run(new WorldPoint(2880, 3160, 0), new WorldPoint(3092, 3243, 0), glory);
+			assertFalse("held: " + pf.getPathEdges(), usesTeleport(pf, "Amulet of glory: Draynor Village"));
+		}
+		finally
+		{
+			QuestWalkRule.setLongTravelHeld(false);
+		}
+	}
 }

@@ -85,8 +85,9 @@ final class QuestStuckRecovery
 	}
 
 	/**
-	 * Stage 4: teleport out with worn jewellery (Amulet of glory, Ring of wealth). Never a tablet or a spell: those are
-	 * surprise teleports. Returns false when there is nothing to teleport with and the watchdog goes on to give up.
+	 * Stage 4: teleport out with worn jewellery (Amulet of glory, Ring of wealth). Owned tablets are used earlier, by
+	 * {@link #teleportTowardFarGoal}; never a spell. Returns false when there is nothing to teleport with and the
+	 * watchdog goes on to give up.
 	 */
 	static boolean teleport(WorldPoint stepRegion)
 	{
@@ -120,16 +121,18 @@ final class QuestStuckRecovery
 		{
 			return false;
 		}
-		List<String> owned = new ArrayList<>();
-		Rs2Inventory.items().forEach(item -> owned.add(item.getName()));
+		List<String> inventory = new ArrayList<>();
+		Rs2Inventory.items().forEach(item -> inventory.add(item.getName()));
+		List<String> worn = new ArrayList<>();
 		for (EquipmentInventorySlot slot : new EquipmentInventorySlot[]{EquipmentInventorySlot.AMULET, EquipmentInventorySlot.RING})
 		{
-			if (Rs2Equipment.get(slot) != null)
+			var item = Rs2Equipment.get(slot);
+			if (item != null)
 			{
-				owned.add(Rs2Equipment.get(slot).getName());
+				worn.add(item.getName());
 			}
 		}
-		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(at, goal, owned);
+		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(at, goal, inventory, worn);
 		if (option == null)
 		{
 			return false;

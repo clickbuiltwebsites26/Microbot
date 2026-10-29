@@ -71,7 +71,6 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
-import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -170,6 +169,30 @@ public class QuestScript extends Script {
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
     private volatile String lastDialogueLine = "";
     private long lastCombatAtMs;
+
+    /**
+     * Whether a fight is really on: the player's target, or an NPC attacking the player, shows a health bar (it appears
+     * on a hit and fades after a few ticks). Talking to a monster or standing in an aggressive area is not a fight.
+     */
+    private static boolean isFightingHostile() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            var client = Microbot.getClient();
+            var me = client.getLocalPlayer();
+            if (me == null) {
+                return false;
+            }
+            net.runelite.api.Actor target = me.getInteracting();
+            if (target instanceof net.runelite.api.NPC && target.getCombatLevel() > 0 && target.getHealthRatio() >= 0) {
+                return true;
+            }
+            for (net.runelite.api.NPC npc : client.getTopLevelWorldView().npcs()) {
+                if (npc.getInteracting() == me && npc.getCombatLevel() > 0 && npc.getHealthRatio() >= 0) {
+                    return true;
+                }
+            }
+            return false;
+        }).orElse(false);
+    }
     /** The step a successful item-on-item combine was made on, whose consumed parts are no longer required. */
     private QuestStep combinedOnStep;
     private QuestStep menuStep;
@@ -554,7 +577,7 @@ public class QuestScript extends Script {
 				stuckWatchdog.reset(now);
 				return;
 			}
-			boolean fighting = Rs2Combat.inCombat();
+			boolean fighting = isFightingHostile();
 			if (fighting) lastCombatAtMs = now;
 			QuestWalkRule.setLongTravelHeld(QuestWalkRule.shouldHoldLongTravel(fighting, lastCombatAtMs, now));
 			dismissRandomEventTick(now);
@@ -574,6 +597,7 @@ public class QuestScript extends Script {
 			if (step != seenLinesStep) {
 				seenLinesStep = step;
 				seenDialogueLines.clear();
+				lastWalkTarget = null;
 			}
 			if (Rs2Dialogue.isInDialogue() && lastDialogueLine != null && !lastDialogueLine.isEmpty()) {
 				seenDialogueLines.add(lastDialogueLine);
@@ -593,9 +617,14 @@ public class QuestScript extends Script {
 					? ((DetailedQuestStep) step).getDefinedPoint().getWorldPoint() : lastWalkTarget;
 			switch (entered) {
 				case REPLAN:
+					// read before replan() clears the route
+					boolean walkInFlight = QuestWalkRule.isQuestWalkInFlight();
 					QuestStuckRecovery.replan();
-					// a walk that is going nowhere far from its goal: an owned teleport beats waiting four more minutes
-					QuestStuckRecovery.teleportTowardFarGoal(lastWalkTarget != null ? lastWalkTarget : stepPoint);
+					// a quest walk going nowhere far from the current step's goal: an owned teleport beats waiting four
+					// more minutes. Never from a stale goal, and not inside an instance (coordinates are not real there)
+					if (walkInFlight && !Microbot.getClient().isInInstancedRegion()) {
+						QuestStuckRecovery.teleportTowardFarGoal(stepPoint != null ? stepPoint : lastWalkTarget);
+					}
 					break;
 				case BLACKLIST:
 					QuestStuckRecovery.blacklist(lastWalkTarget != null ? lastWalkTarget : stepPoint);
@@ -1505,8 +1534,15 @@ public class QuestScript extends Script {
 				}
 			}
 		}
+		List<Integer> before = Rs2Bank.isOpen() ? Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList()) : null;
 		Rs2Inventory.interact(invId, action);
 		sleepUntil(() -> itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 2_000);
+		if (before != null && Rs2Bank.isOpen()) {
+			List<Integer> after = Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList());
+			for (int displaced : QuestEquipSwap.displaced(before, after)) {
+				Rs2Bank.depositAll(displaced);
+			}
+		}
 		return true;
 	}
 
@@ -1534,15 +1570,55 @@ public class QuestScript extends Script {
 			}
 			ItemRequirement item = (ItemRequirement) requirement;
 			boolean hasRealId = item.getAllIds().stream().anyMatch(id -> id != null && id > 0);
-			if (hasRealId && isWearableInInventory(item)) {
+			if (hasRealId && !item.getAllIds().stream().anyMatch(Rs2Equipment::isWearing)
+					&& isWearableInInventory(item)) {
 				bossWearAttempts++;
-				if (wearMustBeEquippedFromInventory(item)) {
+				if (equipAtBank(item)) {
 					return true;
 				}
 			}
 		}
 		int hitpoints = Rs2Player.getRealSkillLevel(net.runelite.api.Skill.HITPOINTS);
-		return combat.prepareBossFood(step, slotsReservedForStep(step), QuestBossPrep.foodWanted(level, hitpoints));
+		if (combat.prepareBossFood(step, slotsReservedForStep(step), QuestBossPrep.foodWanted(level, hitpoints))) {
+			return true;
+		}
+		if (bossBankOpened && Rs2Bank.isOpen()) {
+			Rs2Bank.closeBank();
+		}
+		bossBankOpened = false;
+		return false;
+	}
+
+	private boolean bossBankOpened;
+
+	/**
+	 * Puts the item on at the bank and sends the piece it replaced back to the bank: bring exactly what is needed,
+	 * never carry the swapped-out gear.
+	 *
+	 * @return true when this tick was spent on it
+	 */
+	private boolean equipAtBank(ItemRequirement item) {
+		Microbot.status = "Quest helper: putting on " + item.getName();
+		if (!Rs2Bank.isOpen()) {
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
+			if (!sleepUntil(Rs2Bank::isOpen, 15_000)) {
+				return true;
+			}
+		}
+		bossBankOpened = true;
+		List<Integer> before = Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList());
+		Integer invId = item.getAllIds().stream().filter(id -> id != null && id > 0 && Rs2Inventory.contains(id))
+				.findFirst().orElse(null);
+		if (invId == null) {
+			return false;
+		}
+		Rs2Inventory.wear(invId);
+		sleepUntil(() -> item.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 3_000);
+		List<Integer> after = Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList());
+		for (int displaced : QuestEquipSwap.displaced(before, after)) {
+			Rs2Bank.depositAll(displaced);
+		}
+		return true;
 	}
 
 	/** Whether the inventory holds the item and it offers a wear/wield action. */
@@ -1636,8 +1712,9 @@ public class QuestScript extends Script {
 		}
 		List<ItemRequirement> unobtainable = new ArrayList<>();
 		missing = resolveComposites(missing, unobtainable);
+		unobtainable.removeIf(ir -> !isStepOwn(ir) && isItemRequirementTradable(ir));
 		if (!unobtainable.isEmpty()) {
-			if (QuestContainerManager.getBankData().getItems() == null) {
+			if (unobtainable.stream().anyMatch(this::isStepOwn) && QuestContainerManager.getBankData().getItems() == null) {
 				// the bank has not been read this session: it may hold what the step needs
 				Microbot.status = "Quest helper: checking the bank";
 				Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
@@ -1645,9 +1722,10 @@ public class QuestScript extends Script {
 				return true;
 			}
 			// the old path for things that cannot be bought (a drop lying at the step's point)
-			ItemRequirement ground = unobtainable.stream().filter(ir -> !isItemRequirementTradable(ir)).findFirst().orElse(null);
-			if (ground != null) {
-				missing.add(ground);
+			List<ItemRequirement> ground = unobtainable.stream().filter(ir -> !isItemRequirementTradable(ir))
+					.collect(Collectors.toList());
+			if (!ground.isEmpty()) {
+				missing.addAll(ground);
 			} else if (unobtainable.stream().anyMatch(this::isStepOwn)) {
 				stopQuesterWithReason("Missing " + unobtainable.stream().map(ItemRequirement::getName)
 						.collect(Collectors.joining(" or ")) + ": none of it is in the bank and it cannot be bought");
@@ -1725,7 +1803,6 @@ public class QuestScript extends Script {
 	private static final long BANK_FETCH_BACKOFF_MS = 30_000;
 	private static final int MAX_BANK_FETCH_FAILURES = 3;
 	private QuestStep bankFetchStep;
-	private boolean bankFetchStopped;
 	private Set<Integer> stepOwnIds = new HashSet<>();
 
 	/** Whether the requirement is one of the current step's own (not an item gathered ahead for later steps). */
@@ -1748,18 +1825,18 @@ public class QuestScript extends Script {
 	 * A bank trip that left the holdings of this requirement unchanged: wait before the next, and stop the quest with
 	 * the reason once the same item has failed {@link #MAX_BANK_FETCH_FAILURES} times in a row.
 	 */
-	private void noteBankFetchFailed(ItemRequirement ir, String reason) {
+	private boolean noteBankFetchFailed(ItemRequirement ir, String reason) {
 		int failures = bankFetchFailures.merge(fetchKey(ir), 1, Integer::sum);
 		if (failures >= MAX_BANK_FETCH_FAILURES && isStepOwn(ir)) {
 			bankFetchFailures.remove(fetchKey(ir));
 			bankFetchBackoffUntil.remove(fetchKey(ir));
-			bankFetchStopped = true;
 			stopQuesterWithReason("Cannot get " + ir.getName() + " from the bank (" + failures + " trips): " + reason);
-			return;
+			return true;
 		}
 		Microbot.log("Quest helper: the bank trip for " + ir.getName() + " brought nothing (" + reason + "); waiting "
 				+ BANK_FETCH_BACKOFF_MS / 1000 + " s before trying again", Level.WARN);
 		bankFetchBackoffUntil.put(fetchKey(ir), System.currentTimeMillis() + BANK_FETCH_BACKOFF_MS);
+		return false;
 	}
 
 	private void noteBankFetchSucceeded(ItemRequirement ir) {
@@ -1829,11 +1906,7 @@ public class QuestScript extends Script {
 			return true;
 		}
 
-		bankFetchStopped = false;
 		for (ItemRequirement ir : inBank) {
-			if (bankFetchStopped) {
-				return true;
-			}
 			// the bank's items load a moment after it opens: a count of 0 straight away proves nothing
 			if (isHeldInBank(ir)) {
 				sleepUntil(() -> ir.getAllIds().stream().anyMatch(id -> id != null && id > 0 && Rs2Bank.count(id) > 0), 3_000);
@@ -1853,12 +1926,16 @@ public class QuestScript extends Script {
 
 			int qty = Math.min(remainingQuantityNeeded(ir), bestCount);
 			if (idToWithdraw == -1 || qty <= 0) {
-				noteBankFetchFailed(ir, "the bank shows none of it");
+				if (noteBankFetchFailed(ir, "the bank shows none of it")) {
+					return true;
+				}
 				continue;
 			}
 			qty = roomFor(ir, qty);
 			if (qty <= 0) {
-				noteBankFetchFailed(ir, "no room in the inventory");
+				if (noteBankFetchFailed(ir, "no room in the inventory")) {
+					return true;
+				}
 				continue;
 			}
 
@@ -1870,7 +1947,9 @@ public class QuestScript extends Script {
 			if (sleepUntil(landed::getAsBoolean, 5_000)) {
 				noteBankFetchSucceeded(ir);
 			} else {
-				noteBankFetchFailed(ir, "the withdrawal did not land");
+				if (noteBankFetchFailed(ir, "the withdrawal did not land")) {
+					return true;
+				}
 			}
 		}
 
@@ -2713,9 +2792,10 @@ public class QuestScript extends Script {
 		}
 		// a "Kill X for a key" step that lists no item: pick up the item its text names, when it lies near the kill
 		String dropName = QuestKillDrops.dropName(step.getText());
-		if (dropName != null && !Rs2Inventory.hasItem(dropName)) {
+		if (dropName != null && !Rs2Inventory.hasItem(dropName, true)) {
 			Rs2TileItemModel drop = new Rs2TileItemQueryable().withName(dropName).within(8).nearestOnClientThread();
-			if (drop != null && lootGroundItem(drop.getId(), 8, true)) {
+			// the item is guessed from the text: it never makes room by dropping things
+			if (drop != null && lootGroundItem(drop.getId(), 8, false)) {
 				return true;
 			}
 		}
@@ -4054,8 +4134,8 @@ public class QuestScript extends Script {
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());
         if (killStep) {
-            // a dead or despawning NPC has no name and no actions: clicking Attack on it can never work
-            npcs = npcs.stream().filter(n -> n.getName() != null && !n.getAvailableActions().isEmpty())
+            // a dying NPC (health ratio 0, or flagged dead) can no longer be attacked, and one that is gone has no name
+            npcs = npcs.stream().filter(n -> n.getName() != null && !n.isDead() && n.getHealthRatio() != 0)
                     .collect(Collectors.toList());
         }
         final boolean kittenSearch = isKittenSearchStep(step);
@@ -4755,7 +4835,7 @@ public class QuestScript extends Script {
             var me = Microbot.getClient().getLocalPlayer();
             return me != null && object.getLocalLocation() != null
                     && QuestObjectApproach.withinClickRange(me.getLocalLocation(), object.getLocalLocation(),
-                    me.getWorldLocation().getPlane(), object.getWorldLocation().getPlane(), CLICK_RANGE);
+                    Microbot.getClient().getTopLevelWorldView().getPlane(), object.getPlane(), CLICK_RANGE);
         }).orElse(false);
     }
     private static final long NO_OBJECT_LOG_INTERVAL_MS = 30_000;
