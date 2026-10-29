@@ -1546,6 +1546,11 @@ public class QuestScript extends Script {
 			missing.add(itemRequirement);
 		}
 
+		// "X or Y" and "X and Y" requirements have no id or quantity of their own: fetch the concrete child
+		missing = resolveComposites(missing);
+		// a bank trip that brought nothing is not repeated at once
+		missing.removeIf(this::bankFetchBackedOff);
+
 		if (!needsUnnoting.isEmpty()) {
 			return unnoteItemsViaBank(needsUnnoting);
 		}
@@ -1585,6 +1590,41 @@ public class QuestScript extends Script {
 		}
 
 		return acquireMissingTradableItems(missing);
+	}
+
+	private List<ItemRequirement> resolveComposites(List<ItemRequirement> missing) {
+		List<ItemRequirement> resolved = new ArrayList<>();
+		for (ItemRequirement ir : missing) {
+			if (!QuestCompositeRequirements.isComposite(ir)) {
+				resolved.add(ir);
+				continue;
+			}
+			resolved.addAll(QuestCompositeRequirements.resolve(ir, this::hasItemRequirementOnPlayer,
+					child -> isHeldInBank(child) && QuestPreflight.bankCovers(
+							child.checkTotalMatchesInContainers(QuestContainerManager.getBankData()),
+							remainingQuantityNeeded(child), isCarryLimited(child)),
+					this::isItemRequirementTradable));
+		}
+		return resolved;
+	}
+
+	private static final long BANK_FETCH_BACKOFF_MS = 30_000;
+	private final Map<Integer, Long> bankFetchBackoffUntil = new HashMap<>();
+
+	private static int fetchKey(ItemRequirement ir) {
+		return ir.getAllIds().stream().findFirst().orElse(ir.getId());
+	}
+
+	private boolean bankFetchBackedOff(ItemRequirement ir) {
+		Long until = bankFetchBackoffUntil.get(fetchKey(ir));
+		return until != null && System.currentTimeMillis() < until;
+	}
+
+	/** A bank trip that left the holdings of this requirement unchanged: log once and wait before the next. */
+	private void noteBankFetchFailed(ItemRequirement ir) {
+		Microbot.log("Quest helper: the bank trip for " + ir.getName() + " brought nothing; waiting "
+				+ BANK_FETCH_BACKOFF_MS / 1000 + " s before trying again", Level.WARN);
+		bankFetchBackoffUntil.put(fetchKey(ir), System.currentTimeMillis() + BANK_FETCH_BACKOFF_MS);
 	}
 
 	private static final int[] BURNT_MEAT_SOURCES = {ItemID.COOKED_MEAT, ItemID.RAW_BEEF, ItemID.RAW_RAT_MEAT,
@@ -1665,17 +1705,25 @@ public class QuestScript extends Script {
 
 			int qty = Math.min(remainingQuantityNeeded(ir), bestCount);
 			if (idToWithdraw == -1 || qty <= 0) {
+				noteBankFetchFailed(ir);
 				continue;
 			}
 			qty = roomFor(ir, qty);
 			if (qty <= 0) {
+				noteBankFetchFailed(ir);
 				continue;
 			}
 
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
+			final int before = inventoryQuantity(ir);
 			Rs2Bank.withdrawX(idToWithdraw, qty);
 			if (!sleepUntil(() -> hasItemInInventoryOrEquipped(ir) || isFilledToCarryCapacity(ir), 2_000)) {
 				Microbot.log("Quest helper: bank withdrawal for " + ir.getName() + " did not land in time", Level.WARN);
+			}
+			if (inventoryQuantity(ir) <= before && !isFilledToCarryCapacity(ir)) {
+				noteBankFetchFailed(ir);
+			} else {
+				bankFetchBackoffUntil.remove(fetchKey(ir));
 			}
 		}
 
