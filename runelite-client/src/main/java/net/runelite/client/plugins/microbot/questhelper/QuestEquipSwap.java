@@ -10,8 +10,18 @@ import java.util.Set;
  */
 public final class QuestEquipSwap
 {
+	private static final java.util.regex.Pattern TELEPORT_JEWELLERY = java.util.regex.Pattern.compile(
+		"(?i)^(?:ring of wealth|amulet of glory|skills necklace|games necklace|combat bracelet|ring of dueling|necklace of passage"
+			+ "|digsite pendant|burning amulet|slayer ring|ring of the elements|xeric's talisman|amulet of eternal glory).*");
+
 	private QuestEquipSwap()
 	{
+	}
+
+	/** Jewellery that teleports: kept in the inventory, never sent back to the bank by a swap. */
+	public static boolean isTeleportJewellery(String itemName)
+	{
+		return itemName != null && TELEPORT_JEWELLERY.matcher(itemName.trim()).matches();
 	}
 
 	/**

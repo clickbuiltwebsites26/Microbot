@@ -34,4 +34,14 @@ public class QuestEquipSwapTest
 	{
 		assertTrue(QuestEquipSwap.displaced(List.of(RUNE_KITESHIELD, ANTI_DRAGON_SHIELD), List.of(RUNE_KITESHIELD)).isEmpty());
 	}
+
+	@Test
+	public void teleportJewelleryIsNeverSentBack()
+	{
+		assertTrue(QuestEquipSwap.isTeleportJewellery("Ring of wealth (5)"));
+		assertTrue(QuestEquipSwap.isTeleportJewellery("Amulet of glory(4)"));
+		assertTrue(QuestEquipSwap.isTeleportJewellery("Skills necklace(6)"));
+		assertTrue(!QuestEquipSwap.isTeleportJewellery("Rune kiteshield"));
+		assertTrue(!QuestEquipSwap.isTeleportJewellery(null));
+	}
 }

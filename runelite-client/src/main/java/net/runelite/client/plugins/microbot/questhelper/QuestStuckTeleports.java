@@ -12,7 +12,7 @@ import net.runelite.api.coords.WorldPoint;
  */
 public final class QuestStuckTeleports
 {
-	/** A goal this far away (or underground, which reads as thousands of tiles) is worth teleporting toward. */
+	/** A goal further than this from the player (underground read as the surface above it) is worth teleporting toward. */
 	public static final int FAR_GOAL_TILES = 100;
 	/** The landing must beat the current distance by this much to be worth a teleport. */
 	private static final int MIN_GAIN = 50;
@@ -48,10 +48,15 @@ public final class QuestStuckTeleports
 	{
 	}
 
-	/** The surface-equivalent y: the underground map sits 6,400 tiles north of the surface it lies under. */
+	/** Underground maps start here; surface regions in the 6,400-7,500 band (Castle Drakan, Sanguine) are not shifted. */
+	private static final int UNDERGROUND_Y = 9000;
+	/** The underground map sits 6,400 tiles north of the surface it lies under. */
+	private static final int UNDERGROUND_SHIFT = 6400;
+
+	/** The surface-equivalent y of a point. */
 	private static int surfaceY(WorldPoint p)
 	{
-		return p.getY() >= 6400 ? p.getY() - 6400 : p.getY();
+		return p.getY() >= UNDERGROUND_Y ? p.getY() - UNDERGROUND_SHIFT : p.getY();
 	}
 
 	/** Tiles between two points, underground ones read as the surface above them. */

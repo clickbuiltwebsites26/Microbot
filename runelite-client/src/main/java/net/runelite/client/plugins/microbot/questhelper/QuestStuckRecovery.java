@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.questhelper;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.QuestWalkRule;
 import net.runelite.client.plugins.microbot.questhelper.steps.QuestStep;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
@@ -117,9 +118,9 @@ final class QuestStuckRecovery
 	static boolean teleportTowardFarGoal(WorldPoint goal)
 	{
 		WorldPoint at = Rs2Player.getWorldLocation();
-		if (!QuestStuckTeleports.goalIsFar(at, goal))
+		if (QuestWalkRule.isLongTravelHeld() || !QuestStuckTeleports.goalIsFar(at, goal))
 		{
-			return false;
+			return false; // not in a fight, nor just after one
 		}
 		List<String> inventory = new ArrayList<>();
 		Rs2Inventory.items().forEach(item -> inventory.add(item.getName()));

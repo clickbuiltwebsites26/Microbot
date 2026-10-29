@@ -195,6 +195,7 @@ public class QuestScript extends Script {
     }
     /** The step a successful item-on-item combine was made on, whose consumed parts are no longer required. */
     private QuestStep combinedOnStep;
+    private Set<Integer> combinedIds = new HashSet<>();
     private QuestStep menuStep;
     /** Menu options the fallback chose during the current step, so it rotates to the ones not yet asked. */
     private final Set<String> chosenFallbackOptions = new HashSet<>();
@@ -598,6 +599,8 @@ public class QuestScript extends Script {
 				seenLinesStep = step;
 				seenDialogueLines.clear();
 				lastWalkTarget = null;
+				combinedOnStep = null;
+				combinedIds = new HashSet<>();
 			}
 			if (Rs2Dialogue.isInDialogue() && lastDialogueLine != null && !lastDialogueLine.isEmpty()) {
 				seenDialogueLines.add(lastDialogueLine);
@@ -1538,10 +1541,7 @@ public class QuestScript extends Script {
 		Rs2Inventory.interact(invId, action);
 		sleepUntil(() -> itemRequirement.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 2_000);
 		if (before != null && Rs2Bank.isOpen()) {
-			List<Integer> after = Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList());
-			for (int displaced : QuestEquipSwap.displaced(before, after)) {
-				Rs2Bank.depositAll(displaced);
-			}
+			depositDisplaced(before);
 		}
 		return true;
 	}
@@ -1573,7 +1573,8 @@ public class QuestScript extends Script {
 			if (hasRealId && !item.getAllIds().stream().anyMatch(Rs2Equipment::isWearing)
 					&& isWearableInInventory(item)) {
 				bossWearAttempts++;
-				if (equipAtBank(item)) {
+				item.getAllIds().stream().filter(id -> id != null && id > 0).findFirst().ifPresent(combat::reserveWornSlot);
+				if (equipForBoss(item, level)) {
 					return true;
 				}
 			}
@@ -1590,6 +1591,18 @@ public class QuestScript extends Script {
 	}
 
 	private boolean bossBankOpened;
+
+	/**
+	 * Wears a boss-prep item. At the bank (open already, or when food or antifire needs a trip there anyway) the piece it
+	 * replaces goes straight back; otherwise it is worn where the player stands, as before.
+	 */
+	private boolean equipForBoss(ItemRequirement item, int level) {
+		boolean bankNeeded = Rs2Bank.isOpen()
+				|| Rs2Inventory.getInventoryFood().stream().mapToInt(Rs2ItemModel::getQuantity).sum()
+				< QuestBossPrep.foodWanted(level, Rs2Player.getRealSkillLevel(net.runelite.api.Skill.HITPOINTS))
+				|| Rs2Inventory.items().noneMatch(i -> QuestFightSupport.isAntifire(i.getName()));
+		return bankNeeded ? equipAtBank(item) : wearMustBeEquippedFromInventory(item);
+	}
 
 	/**
 	 * Puts the item on at the bank and sends the piece it replaced back to the bank: bring exactly what is needed,
@@ -1614,11 +1627,37 @@ public class QuestScript extends Script {
 		}
 		Rs2Inventory.wear(invId);
 		sleepUntil(() -> item.getAllIds().stream().anyMatch(Rs2Equipment::isWearing), 3_000);
-		List<Integer> after = Rs2Inventory.items().map(i -> i.getId()).collect(Collectors.toList());
-		for (int displaced : QuestEquipSwap.displaced(before, after)) {
+		depositDisplaced(before);
+		return true;
+	}
+
+	/**
+	 * Sends what an equip pushed into the inventory back to the bank, unless the quest or the player needs it: the
+	 * requirements of the quest and step, coins, owned teleport jewellery, and supplies the player brought themselves.
+	 */
+	private void depositDisplaced(List<Integer> before) {
+		Set<Integer> keep = new HashSet<>();
+		keep.add(ItemID.COINS_995);
+		if (currentRequirements != null) {
+			for (Requirement requirement : currentRequirements) {
+				if (requirement instanceof ItemRequirement) {
+					for (Integer id : ((ItemRequirement) requirement).getAllIds()) {
+						if (id != null) {
+							keep.add(id);
+						}
+					}
+				}
+			}
+		}
+		List<Rs2ItemModel> after = Rs2Inventory.items().collect(Collectors.toList());
+		for (int displaced : QuestEquipSwap.displaced(before, after.stream().map(Rs2ItemModel::getId).collect(Collectors.toList()))) {
+			Rs2ItemModel item = after.stream().filter(i -> i.getId() == displaced).findFirst().orElse(null);
+			if (keep.contains(displaced) || item != null && (QuestEquipSwap.isTeleportJewellery(item.getName())
+					|| combat.isUserBroughtProtected(item))) {
+				continue;
+			}
 			Rs2Bank.depositAll(displaced);
 		}
-		return true;
 	}
 
 	/** Whether the inventory holds the item and it offers a wear/wield action. */
@@ -2841,7 +2880,9 @@ public class QuestScript extends Script {
 
 		// parts a combine on this step has used up are not missing: the step is about to advance on the product
 		if (questStep == combinedOnStep) {
-			combined.removeIf(req -> req instanceof ItemRequirement && !hasItemRequirementOnPlayer((ItemRequirement) req));
+			combined.removeIf(req -> req instanceof ItemRequirement
+					&& ((ItemRequirement) req).getAllIds().stream().anyMatch(combinedIds::contains)
+					&& !hasItemRequirementOnPlayer((ItemRequirement) req));
 		}
 
 		Set<Integer> seenIds = new HashSet<>();
@@ -2872,9 +2913,20 @@ public class QuestScript extends Script {
 					if (ir.getQuantity() > QUEST_LEVEL_PREGATHER_MAX && !ir.mustBeEquipped() && !isStackable(ir)) {
 						continue;
 					}
-					// "any amount" requirements (quantity -1, like the antifire for Elvarg) count as one at a boss prep
-					combined.add(ir.getQuantity() < 1 && QuestBossPrep.bossLevel(questStep.getText()) >= 0
-							? withQuantityOne(ir) : ir);
+					// "any amount" requirements (quantity -1) count as one at a boss prep
+					ItemRequirement toAdd = ir.getQuantity() < 1 && QuestBossPrep.bossLevel(questStep.getText()) >= 0
+							? withQuantityOne(ir) : ir;
+					if (toAdd != null) {
+						combined.add(toAdd);
+					}
+				}
+			}
+			// the antifire for a dragon boss is a recommendation, not a requirement: a boss prep fetches it all the same
+			if (QuestBossPrep.bossLevel(questStep.getText()) >= 0) {
+				for (ItemRequirement antifire : recommendedAntifire(selectedQuest)) {
+					if (seenIds.add(antifire.getId())) {
+						combined.add(antifire);
+					}
 				}
 			}
 		}
@@ -2888,10 +2940,34 @@ public class QuestScript extends Script {
 		return combined;
 	}
 
+	/** A count-less requirement as one item; null for a placeholder with no real item id (id -1). */
 	private static ItemRequirement withQuantityOne(ItemRequirement ir) {
+		if (ir.getAllIds().stream().noneMatch(id -> id != null && id > 0)) {
+			return null;
+		}
 		ItemRequirement one = ir.copy();
 		one.setQuantity(1);
 		return one;
+	}
+
+	private static final Set<Integer> ANTIFIRE_POTION_IDS = new HashSet<>(net.runelite.client.plugins.microbot.questhelper.collections.ItemCollections.ANTIFIRE_POTIONS.getItems());
+
+	/** The quest's recommended dragonfire protection (a potion), as one item: nothing else recommended is pulled in. */
+	private static List<ItemRequirement> recommendedAntifire(QuestHelper quest) {
+		List<ItemRequirement> out = new ArrayList<>();
+		List<ItemRequirement> recommended = quest == null ? null : quest.getItemRecommended();
+		if (recommended == null) {
+			return out;
+		}
+		for (ItemRequirement ir : recommended) {
+			if (ir != null && ir.getAllIds().stream().anyMatch(ANTIFIRE_POTION_IDS::contains)) {
+				ItemRequirement one = ir.getQuantity() < 1 ? withQuantityOne(ir) : ir;
+				if (one != null) {
+					out.add(one);
+				}
+			}
+		}
+		return out;
 	}
 
 	private void updateEverHeldItemTracking(QuestHelper selectedQuest) {
@@ -5227,10 +5303,13 @@ public class QuestScript extends Script {
         // highlighted items. Firing every combine in one burst consumes the items the next combine needs.
         List<Integer> highlightedUseIds = new ArrayList<>();
         // "Use the three map parts together": the step text is enough, even when the items are not marked for highlight
-        boolean combineText = QuestCombineText.isCombineText(conditionalStep.getText());
+        boolean anyHighlighted = conditionalStep.getRequirements().stream().anyMatch(r -> r instanceof ItemRequirement
+                && ((ItemRequirement) r).shouldHighlightInInventory(Microbot.getClient()));
+        boolean combineText = !anyHighlighted && QuestCombineText.isCombineText(conditionalStep.getText());
         for (Requirement requirement : conditionalStep.getRequirements()) {
             if (requirement instanceof ItemRequirement
-                    && (combineText || ((ItemRequirement) requirement).shouldHighlightInInventory(Microbot.getClient()))) {
+                    && (combineText && ((ItemRequirement) requirement).isConsumed()
+                    || ((ItemRequirement) requirement).shouldHighlightInInventory(Microbot.getClient()))) {
                 ((ItemRequirement) requirement).getAllIds().stream().filter(Rs2Inventory::contains).findFirst().ifPresent(id -> {
                     if (!highlightedUseIds.contains(id) && "use".equalsIgnoreCase(chooseCorrectItemOption(conditionalStep, id))) {
                         highlightedUseIds.add(id);
@@ -5246,6 +5325,7 @@ public class QuestScript extends Script {
             int sizeBefore = Rs2Inventory.size();
             if (Rs2Inventory.combine(first, second)) {
                 combinedOnStep = conditionalStep;
+                combinedIds = new HashSet<>(highlightedUseIds);
                 sleepUntil(() -> Rs2Inventory.itemQuantity(first) < firstBefore
                         || Rs2Inventory.itemQuantity(second) < secondBefore
                         || Rs2Inventory.size() != sizeBefore || Rs2Dialogue.isInDialogue()

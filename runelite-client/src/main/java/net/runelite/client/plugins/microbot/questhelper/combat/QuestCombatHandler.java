@@ -616,6 +616,18 @@ public class QuestCombatHandler
 	// ---- gear ----
 
 	private volatile Set<String> questGearSlots = Collections.emptySet();
+	/** Slots a boss-prep step wore a protection item in: the combat loadout must not swap them back. */
+	private final Set<String> extraWornSlots = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+	public void reserveWornSlot(int itemId)
+	{
+		String slot = slotNameOfItem(itemId);
+		if (!slot.isEmpty())
+		{
+			extraWornSlots.add(slot);
+			questGearSlotsQuest = null;
+		}
+	}
 	private volatile QuestStep questGearSlotsStep;
 	private volatile QuestHelper questGearSlotsQuest;
 
@@ -662,7 +674,7 @@ public class QuestCombatHandler
 		{
 			return questGearSlots;
 		}
-		Set<String> slots = new HashSet<>();
+		Set<String> slots = new HashSet<>(extraWornSlots);
 		try
 		{
 			List<ItemRequirement> requirements = new ArrayList<>();

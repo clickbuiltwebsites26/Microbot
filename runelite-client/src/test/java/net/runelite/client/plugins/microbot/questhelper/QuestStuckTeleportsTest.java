@@ -69,4 +69,12 @@ public class QuestStuckTeleportsTest
 		WorldPoint lumbridgeGoal = new WorldPoint(3222, 3218, 0);
 		assertNull(QuestStuckTeleports.choose(lumbridgeCatacombs, lumbridgeGoal, List.of(), List.of("Amulet of glory(4)")));
 	}
+
+	/** Only real underground maps read as the surface above; surface regions in the 6,400-7,500 band do not shift. */
+	@Test
+	public void onlyRealUndergroundIsShifted()
+	{
+		assertEquals(0, QuestStuckTeleports.distance(new WorldPoint(3300, 9800, 0), new WorldPoint(3300, 3400, 0)));
+		assertEquals(6400, QuestStuckTeleports.distance(new WorldPoint(3300, 7000, 0), new WorldPoint(3300, 600, 0)));
+	}
 }
