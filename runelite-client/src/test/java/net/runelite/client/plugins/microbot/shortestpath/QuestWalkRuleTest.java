@@ -391,4 +391,29 @@ public class QuestWalkRuleTest
 		}
 		assertTrue("expected the magic door in " + pf.getPathEdges(), usesDoor);
 	}
+
+	/** Dragon Slayer I's lesser demon fight: the step regressed and the walker planned a Ring of wealth teleport out. */
+	@Test
+	public void noJewelleryTeleportWhileFightingOrJustAfter() throws Exception
+	{
+		assertTrue(QuestWalkRule.shouldHoldLongTravel(true, 0, 1_000));
+		assertTrue(QuestWalkRule.shouldHoldLongTravel(false, 1_000, 10_000));
+		assertFalse(QuestWalkRule.shouldHoldLongTravel(false, 1_000, 1_000 + QuestWalkRule.COMBAT_HOLD_MS));
+		assertFalse(QuestWalkRule.shouldHoldLongTravel(false, 0, 100_000));
+
+		QuestWalkRule.setActive(true);
+		Transport ring = itemTeleport("Ring of wealth: Grand Exchange", new WorldPoint(3163, 3478, 0));
+		QuestWalkRule.setLongTravelHeld(true);
+		try
+		{
+			Pathfinder held = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, ring);
+			assertFalse("held: " + held.getPathEdges(), usesTeleport(held, "Ring of wealth: Grand Exchange"));
+		}
+		finally
+		{
+			QuestWalkRule.setLongTravelHeld(false);
+		}
+		Pathfinder free = run(ARDOUGNE_CASTLE, GRAND_EXCHANGE, ring);
+		assertTrue(usesTeleport(free, "Ring of wealth: Grand Exchange"));
+	}
 }

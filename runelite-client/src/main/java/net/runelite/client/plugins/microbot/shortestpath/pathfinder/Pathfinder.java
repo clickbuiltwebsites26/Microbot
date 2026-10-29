@@ -897,6 +897,9 @@ public class Pathfinder implements Runnable {
         boolean ardougne = QuestWalkRule.isArdougneArea(targets);
         for (QuestWalkRule.Stage stage = QuestWalkRule.Stage.ON_FOOT.next(); stage != null && !cancelled;
              stage = stage.next()) {
+            if (stage == QuestWalkRule.Stage.TELEPORTS && QuestWalkRule.isLongTravelHeld()) {
+                break; // never teleport away in the middle of a fight
+            }
             QuestWalkRule.runAt(stage, ardougne, this::runInner);
             if (terminationReason == PathTerminationReason.TARGET_REACHED) {
                 announceWidenedRoute(stage);
@@ -945,6 +948,9 @@ public class Pathfinder implements Runnable {
         // without jitter the two costs are comparable: the walk's own cost includes the penalties of a varied route
         long onFootCost = unjitteredBaseCost >= 0 ? unjitteredBaseCost : selectedPathCost;
         if (!QuestWalkRule.jewelleryWorthTrying(onFootCost) || !config.hasUsableTeleport(QuestWalkRule::isJewelleryTeleport)) {
+            return;
+        }
+        if (QuestWalkRule.isLongTravelHeld()) {
             return;
         }
         OnFootResult onFoot = new OnFootResult();

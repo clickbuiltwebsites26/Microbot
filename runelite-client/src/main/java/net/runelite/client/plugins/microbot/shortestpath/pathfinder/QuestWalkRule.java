@@ -426,6 +426,27 @@ public final class QuestWalkRule
 		return isOwnedJewellery(transport) || isSkillsNecklaceToFishingGuild(transport);
 	}
 
+	private static volatile boolean longTravelHeld;
+	/** How long after a fight a quest walk still does not teleport or travel far. */
+	public static final long COMBAT_HOLD_MS = 15_000;
+
+	/** Pure decision: no long-distance travel or teleport while fighting, or just after a fight. */
+	public static boolean shouldHoldLongTravel(boolean inCombat, long lastCombatAtMs, long nowMs)
+	{
+		return inCombat || (lastCombatAtMs > 0 && nowMs - lastCombatAtMs < COMBAT_HOLD_MS);
+	}
+
+	/** Set by the quest loop every tick; while true the walker plans neither owned-jewellery nor teleport routes. */
+	public static void setLongTravelHeld(boolean held)
+	{
+		longTravelHeld = held;
+	}
+
+	public static boolean isLongTravelHeld()
+	{
+		return longTravelHeld;
+	}
+
 	/** Pure decision: a walk this long is compared with the owned-jewellery route. */
 	public static boolean jewelleryWorthTrying(long onFootCost)
 	{

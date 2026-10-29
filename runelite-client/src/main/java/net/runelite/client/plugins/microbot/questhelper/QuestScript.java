@@ -169,6 +169,7 @@ public class QuestScript extends Script {
 
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
     private volatile String lastDialogueLine = "";
+    private long lastCombatAtMs;
     private QuestStep menuStep;
     /** Menu options the fallback chose during the current step, so it rotates to the ones not yet asked. */
     private final Set<String> chosenFallbackOptions = new HashSet<>();
@@ -547,6 +548,9 @@ public class QuestScript extends Script {
 				stuckWatchdog.reset(now);
 				return;
 			}
+			boolean fighting = Rs2Combat.inCombat();
+			if (fighting) lastCombatAtMs = now;
+			QuestWalkRule.setLongTravelHeld(QuestWalkRule.shouldHoldLongTravel(fighting, lastCombatAtMs, now));
 			dismissRandomEventTick(now);
 			endEscortIfInactive(selected.getCurrentStep() == null ? null : selected.getCurrentStep().getActiveStep());
 			WorldPoint walkTarget = Rs2Walker.getCurrentTarget();

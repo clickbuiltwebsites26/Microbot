@@ -256,9 +256,9 @@ public class DragonSlayer extends BasicQuestHelper
 		melzarRoom2 = new Zone(new WorldPoint(2931, 9646, 0), new WorldPoint( 2931, 9651, 0));
 
 		demonRoom1 = new Zone(new WorldPoint(2924, 9652, 0), new WorldPoint( 2933, 9655, 0));
-		demonRoom2 = new Zone(new WorldPoint(2934, 9647, 0), new WorldPoint( 2933, 9658, 0));
+		demonRoom2 = new Zone(new WorldPoint(2934, 9647, 0), new WorldPoint(2942, 9655, 0));
 		melzarsMaze = new Zone(new WorldPoint(2922, 3237, 0), new WorldPoint(2942, 9658, 0));
-		melzarsBasement = new Zone(new WorldPoint(2920, 9639, 0), new WorldPoint(1,2,0));
+		melzarsBasement = new Zone(new WorldPoint(2920, 9639, 0), new WorldPoint(2942, 9660, 0));
 
 		lastMelzarRoom1 = new Zone(new WorldPoint(2924, 9656, 0), new WorldPoint(2942, 9656, 0));
 		lastMelzarRoom2 = new Zone(new WorldPoint(2926, 9657, 0), new WorldPoint(2942, 9657, 0));
