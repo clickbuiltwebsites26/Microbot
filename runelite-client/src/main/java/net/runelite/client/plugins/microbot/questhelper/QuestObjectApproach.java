@@ -5,6 +5,8 @@ import net.runelite.api.CollisionDataFlag;
 import java.util.Comparator;
 import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
+import net.runelite.api.Perspective;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 
 /**
@@ -162,23 +164,18 @@ public final class QuestObjectApproach
 	}
 
 	/**
-	 * Whether a tracked object can be the step's: on the step's plane and within {@code radius} tiles of the step's point.
-	 * A stale or unrelated object tracked elsewhere (a ladder 60 tiles from the trapdoor the step names) must never be
-	 * clicked in its place. True when either location is unknown.
+	 * Whether the player is close enough to click the object (same plane, within {@code range} tiles). Both points are
+	 * scene-local, so it holds inside instanced areas, where world coordinates of the player (template) and of objects
+	 * (instance) differ.
 	 */
-	public static boolean nearStepPoint(WorldPoint object, WorldPoint stepPoint, int radius)
+	public static boolean withinClickRange(LocalPoint player, LocalPoint object, int playerPlane, int objectPlane, int range)
 	{
-		if (object == null || stepPoint == null)
+		if (player == null || object == null || playerPlane != objectPlane)
 		{
-			return true;
+			return false;
 		}
-		return object.getPlane() == stepPoint.getPlane() && object.distanceTo2D(stepPoint) <= radius;
-	}
-
-	/** Whether the player is close enough to click the object (same plane, within {@code range} tiles). */
-	public static boolean withinClickRange(WorldPoint player, WorldPoint object, int range)
-	{
-		return player != null && object != null && player.getPlane() == object.getPlane()
-			&& player.distanceTo2D(object) <= range;
+		int tiles = Math.max(Math.abs(player.getX() - object.getX()), Math.abs(player.getY() - object.getY()))
+			/ Perspective.LOCAL_TILE_SIZE;
+		return tiles <= range;
 	}
 }

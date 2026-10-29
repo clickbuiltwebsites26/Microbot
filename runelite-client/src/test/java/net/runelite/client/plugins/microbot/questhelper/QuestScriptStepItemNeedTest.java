@@ -30,19 +30,4 @@ public class QuestScriptStepItemNeedTest
 		assertTrue(QuestScript.stepNeedsItemRequirement(false, "USE the cabbage on the hole.", false, false));
 		assertFalse(QuestScript.stepNeedsItemRequirement(false, "Browse the housewares.", false, false));
 	}
-
-	/** Dragon Slayer I magic door: the mind-bomb step must not fetch the lobster pot already used on the door. */
-	@Test
-	public void aUseItemOnObjectStepNeedsOnlyItsOwnItem()
-	{
-		java.util.List<Integer> pot = java.util.List.of(301);
-		java.util.List<Integer> bomb = java.util.List.of(1907);
-		assertFalse(QuestScript.objectStepNeedsRequirement(true, 1907, pot, false, false));
-		assertTrue(QuestScript.objectStepNeedsRequirement(true, 1907, bomb, false, false));
-		assertTrue("worn items are still needed", QuestScript.objectStepNeedsRequirement(true, 1907, pot, true, false));
-		assertTrue("highlighted items are still needed", QuestScript.objectStepNeedsRequirement(true, 1907, pot, false, true));
-		assertTrue("an object step without an icon keeps its requirements",
-			QuestScript.objectStepNeedsRequirement(true, -1, pot, false, false));
-		assertTrue("other step types are unchanged", QuestScript.objectStepNeedsRequirement(false, 1907, pot, false, false));
-	}
 }

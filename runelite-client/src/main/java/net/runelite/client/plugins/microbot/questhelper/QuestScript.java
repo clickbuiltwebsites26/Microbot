@@ -71,6 +71,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -171,6 +172,7 @@ public class QuestScript extends Script {
     private QuestStep menuStep;
     /** Menu options the fallback chose during the current step, so it rotates to the ones not yet asked. */
     private final Set<String> chosenFallbackOptions = new HashSet<>();
+    private Set<String> chosenMenuOptions = new HashSet<>();
     private boolean menuWasVisible;
     private final Map<String, Integer> menuAppearances = new HashMap<>();
     private String menuLoggedKey;
@@ -766,6 +768,7 @@ public class QuestScript extends Script {
 			menuStep = step;
 			menuAppearances.clear();
 			chosenFallbackOptions.clear();
+			chosenMenuOptions = new HashSet<>();
 		}
 		if (!menuWasVisible) {
 			menuWasVisible = true;
@@ -788,19 +791,28 @@ public class QuestScript extends Script {
 				}
 			}
 		}
+		Set<String> menuOptions = options.stream().map(QuestDialogueRules::normalize).collect(Collectors.toSet());
+		if (!chosenMenuOptions.isEmpty() && java.util.Collections.disjoint(chosenMenuOptions, menuOptions)) {
+			// a different menu altogether: what was chosen in the last one says nothing about this one
+			chosenFallbackOptions.clear();
+		}
+		chosenMenuOptions = menuOptions;
 		String pick = QuestDialogueRules.pickFallbackOption(options, hints, questName, attempt, lastDialogueLine,
 				chosenFallbackOptions);
 		if (pick == null) {
 			return false;
 		}
-		chosenFallbackOptions.add(QuestDialogueRules.normalize(pick));
 		if (!key.equals(menuLoggedKey)) {
 			menuLoggedKey = key;
 			Microbot.log("Quest helper: no configured dialogue option matched, choosing \"" + normalizeDialogText(pick)
 					+ "\" (try " + (attempt + 1) + ")", Level.INFO);
 		}
 		Widget[] children = Rs2Widget.getWidget(ComponentID.DIALOG_OPTION_OPTIONS).getDynamicChildren();
-		return children != null && selectDialogChoice(children, normalizeDialogText(pick));
+		boolean chose = children != null && selectDialogChoice(children, normalizeDialogText(pick));
+		if (chose) {
+			chosenFallbackOptions.add(QuestDialogueRules.normalize(pick));
+		}
+		return chose;
 	}
 
 	private static boolean isShopPurchaseStep(QuestStep step) {
@@ -1554,14 +1566,40 @@ public class QuestScript extends Script {
 		}
 
 		// "X or Y" and "X and Y" requirements have no id or quantity of their own: fetch the concrete child
+		if (questStep != bankFetchStep) {
+			bankFetchStep = questStep;
+			bankFetchFailures.clear();
+			bankFetchBackoffUntil.clear();
+		}
+		stepOwnIds = new HashSet<>();
+		for (Requirement own : questStep.getRequirements()) {
+			if (own instanceof ItemRequirement) {
+				stepOwnIds.addAll(((ItemRequirement) own).getAllIds());
+			}
+		}
 		List<ItemRequirement> unobtainable = new ArrayList<>();
 		missing = resolveComposites(missing, unobtainable);
 		if (!unobtainable.isEmpty()) {
-			stopQuesterWithReason("Missing " + unobtainable.stream().map(ItemRequirement::getName)
-					.collect(Collectors.joining(" or ")) + ": none of it is in the bank and it cannot be bought");
-			return true;
+			if (QuestContainerManager.getBankData().getItems() == null) {
+				// the bank has not been read this session: it may hold what the step needs
+				Microbot.status = "Quest helper: checking the bank";
+				Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
+				sleepUntil(Rs2Bank::isOpen, 15_000);
+				return true;
+			}
+			// the old path for things that cannot be bought (a drop lying at the step's point)
+			ItemRequirement ground = unobtainable.stream().filter(ir -> !isItemRequirementTradable(ir)).findFirst().orElse(null);
+			if (ground != null) {
+				missing.add(ground);
+			} else if (unobtainable.stream().anyMatch(this::isStepOwn)) {
+				stopQuesterWithReason("Missing " + unobtainable.stream().map(ItemRequirement::getName)
+						.collect(Collectors.joining(" or ")) + ": none of it is in the bank and it cannot be bought");
+				return true;
+			}
 		}
-		// a bank trip that brought nothing is not repeated at once, and the step does not go on without the item
+		// a bank trip that brought nothing is not repeated at once: the step waits for its own item; items only
+		// gathered ahead of time for later steps are skipped, as before
+		missing.removeIf(ir -> bankFetchBackedOff(ir) && !isStepOwn(ir));
 		if (missing.stream().anyMatch(this::bankFetchBackedOff)) {
 			Microbot.status = "Quest helper: waiting before the next bank trip";
 			return true;
@@ -1629,6 +1667,14 @@ public class QuestScript extends Script {
 
 	private static final long BANK_FETCH_BACKOFF_MS = 30_000;
 	private static final int MAX_BANK_FETCH_FAILURES = 3;
+	private QuestStep bankFetchStep;
+	private boolean bankFetchStopped;
+	private Set<Integer> stepOwnIds = new HashSet<>();
+
+	/** Whether the requirement is one of the current step's own (not an item gathered ahead for later steps). */
+	private boolean isStepOwn(ItemRequirement ir) {
+		return ir.getAllIds().stream().anyMatch(stepOwnIds::contains);
+	}
 	private final Map<Integer, Long> bankFetchBackoffUntil = new HashMap<>();
 	private final Map<Integer, Integer> bankFetchFailures = new HashMap<>();
 
@@ -1647,9 +1693,10 @@ public class QuestScript extends Script {
 	 */
 	private void noteBankFetchFailed(ItemRequirement ir, String reason) {
 		int failures = bankFetchFailures.merge(fetchKey(ir), 1, Integer::sum);
-		if (failures >= MAX_BANK_FETCH_FAILURES) {
+		if (failures >= MAX_BANK_FETCH_FAILURES && isStepOwn(ir)) {
 			bankFetchFailures.remove(fetchKey(ir));
 			bankFetchBackoffUntil.remove(fetchKey(ir));
+			bankFetchStopped = true;
 			stopQuesterWithReason("Cannot get " + ir.getName() + " from the bank (" + failures + " trips): " + reason);
 			return;
 		}
@@ -1725,7 +1772,11 @@ public class QuestScript extends Script {
 			return true;
 		}
 
+		bankFetchStopped = false;
 		for (ItemRequirement ir : inBank) {
+			if (bankFetchStopped) {
+				return true;
+			}
 			// the bank's items load a moment after it opens: a count of 0 straight away proves nothing
 			if (isHeldInBank(ir)) {
 				sleepUntil(() -> ir.getAllIds().stream().anyMatch(id -> id != null && id > 0 && Rs2Bank.count(id) > 0), 3_000);
@@ -1756,7 +1807,7 @@ public class QuestScript extends Script {
 
 			Microbot.status = "Withdrawing " + ir.getName() + " x" + qty;
 			final int before = inventoryQuantity(ir);
-			final java.util.function.BooleanSupplier landed = () -> inventoryQuantity(ir) > before
+			final BooleanSupplier landed = () -> inventoryQuantity(ir) > before
 					|| isFilledToCarryCapacity(ir) || (before == 0 && hasItemInInventoryOrEquipped(ir));
 			Rs2Bank.withdrawX(idToWithdraw, qty);
 			if (sleepUntil(landed::getAsBoolean, 5_000)) {
@@ -2621,18 +2672,6 @@ public class QuestScript extends Script {
 		return stepText != null && STEP_USES_ITEM_TEXT.matcher(stepText).find();
 	}
 
-	/**
-	 * On a "use X on the object" step only X is needed: the other items the step lists are carried for later uses, and
-	 * one already used up by an earlier use must not be fetched again (Dragon Slayer I's magic door).
-	 */
-	static boolean objectStepNeedsRequirement(boolean objectStep, int iconItemId, List<Integer> requirementIds,
-			boolean mustBeEquipped, boolean highlighted) {
-		if (!objectStep || iconItemId == -1 || mustBeEquipped || highlighted) {
-			return true;
-		}
-		return requirementIds.contains(iconItemId);
-	}
-
 	private static String stepText(DetailedQuestStep questStep) {
 		List<String> text = questStep.getText();
 		return text == null ? "" : String.join(" ", text);
@@ -2644,11 +2683,6 @@ public class QuestScript extends Script {
 		combined.removeIf(req -> req instanceof ItemRequirement
 				&& !stepNeedsItemRequirement(questStep.getIconItemID() != -1, stepText(questStep),
 				((ItemRequirement) req).mustBeEquipped(), ((ItemRequirement) req).isHighlightInInventory()));
-
-		combined.removeIf(req -> req instanceof ItemRequirement
-				&& !objectStepNeedsRequirement(questStep instanceof ObjectStep, questStep.getIconItemID(),
-				((ItemRequirement) req).getAllIds(), ((ItemRequirement) req).mustBeEquipped(),
-				((ItemRequirement) req).isHighlightInInventory()));
 
 		Set<Integer> seenIds = new HashSet<>();
 		for (Requirement req : questStep.getRequirements()) {
@@ -4359,16 +4393,6 @@ public class QuestScript extends Script {
                 .map(Rs2TileObjectModel::new)
                 .collect(Collectors.toList());
 
-        // An object tracked far from the step's point is not the step's (a stale or unrelated one): ignore it, so the
-        // step walks to its own point instead of clicking something else
-        WorldPoint stepPoint = step.getDefinedPoint() == null ? null : step.getDefinedPoint().getWorldPoint();
-        stepObjects.removeIf(o -> !QuestObjectApproach.nearStepPoint(o.getWorldLocation(), stepPoint,
-                TRACKED_OBJECT_RADIUS));
-        if (object != null && !QuestObjectApproach.nearStepPoint(object.getWorldLocation(), stepPoint,
-                TRACKED_OBJECT_RADIUS)) {
-            object = stepObjects.stream().findFirst().orElse(null);
-        }
-
         if (stepObjects.size() > 1) {
             // Each object once, reachable ones first, nearest first; then round again.
             WorldPoint me = Rs2Player.getWorldLocation();
@@ -4440,8 +4464,7 @@ public class QuestScript extends Script {
         }
 
         // Line of sight and the canvas say nothing about distance: a target 50 tiles away is walked to, not clicked
-        if (object != null && QuestObjectApproach.withinClickRange(Rs2Player.getWorldLocation(), object.getWorldLocation(),
-                CLICK_RANGE)
+        if (object != null && withinClickRange(object)
                 && (hasLineOfSightToObject(object) || Rs2Camera.isTileOnScreen(object.getLocalLocation())
                 || object.getCanvasLocation() != null)) {
             Rs2Walker.clearWalkingRoute("quest-helper:object-step-interact");
@@ -4632,6 +4655,16 @@ public class QuestScript extends Script {
     private static final int TRACKED_OBJECT_RADIUS = 15;
     /** Furthest an object step clicks from; beyond it the step walks closer first. */
     private static final int CLICK_RANGE = 20;
+
+    /** Scene-local distance check: the player and objects report different world coordinates inside an instance. */
+    private static boolean withinClickRange(Rs2TileObjectModel object) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            var me = Microbot.getClient().getLocalPlayer();
+            return me != null && object.getLocalLocation() != null
+                    && QuestObjectApproach.withinClickRange(me.getLocalLocation(), object.getLocalLocation(),
+                    me.getWorldLocation().getPlane(), object.getWorldLocation().getPlane(), CLICK_RANGE);
+        }).orElse(false);
+    }
     private static final long NO_OBJECT_LOG_INTERVAL_MS = 30_000;
     private final Map<Integer, String> objectNameById = new HashMap<>();
     private QuestStep lastObjectFallbackLoggedStep = null;
