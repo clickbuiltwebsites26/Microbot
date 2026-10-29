@@ -318,6 +318,7 @@ public class Rs2Antiban {
         if (Rs2AntibanSettings.universalAntiban)
 			Microbot.pauseAllScripts.compareAndSet(false, true);
 
+        AntibanPlugin.busyHoldTicks = 0;
         Rs2AntibanSettings.actionCooldownActive = true;
 
         if (Rs2AntibanSettings.moveMouseRandomly && Rs2Random.diceFractional(Rs2AntibanSettings.currentMoveMouseRandomlyChance())) {
