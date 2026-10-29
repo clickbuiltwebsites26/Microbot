@@ -363,13 +363,13 @@ public class DragonSlayer extends BasicQuestHelper
 
 		goIntoDwarvenMine = new ObjectStep(this, ObjectID.FAI_DWARF_TRAPDOOR_DOWN, new WorldPoint(3019, 3450,0), "Go down the ladder in the dwarven camp to the south into the Dwarven Mines.", silk, lobsterPot, mindBomb, unfiredBowl);
 
-		useSilkOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the silk on the magic door.", silk, lobsterPot, mindBomb, unfiredBowl);
+		useSilkOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the silk on the magic door.", silk);
 		useSilkOnDoor.addIcon(ItemID.SILK);
-		usePotOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the lobster pot on the magic door.", lobsterPot, mindBomb, unfiredBowl);
+		usePotOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the lobster pot on the magic door.", lobsterPot);
 		usePotOnDoor.addIcon(ItemID.LOBSTER_POT);
-		useUnfiredBowlOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the unfired bowl on the magic door.",  mindBomb, unfiredBowl);
+		useUnfiredBowlOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the unfired bowl on the magic door.", unfiredBowl);
 		useUnfiredBowlOnDoor.addIcon(ItemID.BOWL_UNFIRED);
-		useMindBombOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the wizard's mind bomb on the magic door (BE CAREFUL NOT TO DRINK IT).", lobsterPot, mindBomb, unfiredBowl);
+		useMindBombOnDoor = new ObjectStep(this, ObjectID.DRAGON_SLAYER_QIP_MAGIC_DOOR, new WorldPoint(3050, 9840, 0), "Go to the north east of the Dwarven Mines and use the wizard's mind bomb on the magic door (BE CAREFUL NOT TO DRINK IT).", mindBomb);
 		useMindBombOnDoor.addIcon(ItemID.WIZARDS_MIND_BOMB);
 
 		searchThalzarChest = new ObjectStep(this, ObjectID.ORACLECHESTSHUT, new WorldPoint(3057, 9841, 0), "Search the chest for Thalzar's map piece.");

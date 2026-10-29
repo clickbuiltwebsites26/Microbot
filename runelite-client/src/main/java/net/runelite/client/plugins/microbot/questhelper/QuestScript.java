@@ -2619,6 +2619,18 @@ public class QuestScript extends Script {
 		return stepText != null && STEP_USES_ITEM_TEXT.matcher(stepText).find();
 	}
 
+	/**
+	 * On a "use X on the object" step only X is needed: the other items the step lists are carried for later uses, and
+	 * one already used up by an earlier use must not be fetched again (Dragon Slayer I's magic door).
+	 */
+	static boolean objectStepNeedsRequirement(boolean objectStep, int iconItemId, List<Integer> requirementIds,
+			boolean mustBeEquipped, boolean highlighted) {
+		if (!objectStep || iconItemId == -1 || mustBeEquipped || highlighted) {
+			return true;
+		}
+		return requirementIds.contains(iconItemId);
+	}
+
 	private static String stepText(DetailedQuestStep questStep) {
 		List<String> text = questStep.getText();
 		return text == null ? "" : String.join(" ", text);
@@ -2630,6 +2642,11 @@ public class QuestScript extends Script {
 		combined.removeIf(req -> req instanceof ItemRequirement
 				&& !stepNeedsItemRequirement(questStep.getIconItemID() != -1, stepText(questStep),
 				((ItemRequirement) req).mustBeEquipped(), ((ItemRequirement) req).isHighlightInInventory()));
+
+		combined.removeIf(req -> req instanceof ItemRequirement
+				&& !objectStepNeedsRequirement(questStep instanceof ObjectStep, questStep.getIconItemID(),
+				((ItemRequirement) req).getAllIds(), ((ItemRequirement) req).mustBeEquipped(),
+				((ItemRequirement) req).isHighlightInInventory()));
 
 		Set<Integer> seenIds = new HashSet<>();
 		for (Requirement req : questStep.getRequirements()) {
