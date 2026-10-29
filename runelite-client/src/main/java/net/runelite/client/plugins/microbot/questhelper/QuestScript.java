@@ -2654,6 +2654,14 @@ public class QuestScript extends Script {
 				}
 			}
 		}
+		// a "Kill X for a key" step that lists no item: pick up the item its text names, when it lies near the kill
+		String dropName = QuestKillDrops.dropName(step.getText());
+		if (dropName != null && !Rs2Inventory.hasItem(dropName)) {
+			Rs2TileItemModel drop = new Rs2TileItemQueryable().withName(dropName).within(8).nearestOnClientThread();
+			if (drop != null && lootGroundItem(drop.getId(), 8, true)) {
+				return true;
+			}
+		}
 		return false;
 	}
 
@@ -3965,6 +3973,11 @@ public class QuestScript extends Script {
         List<Rs2NpcModel> npcs = step.getNpcs().stream()
                 .map(Rs2NpcModel::new)
                 .collect(Collectors.toList());
+        if (killStep) {
+            // a dead or despawning NPC has no name and no actions: clicking Attack on it can never work
+            npcs = npcs.stream().filter(n -> n.getName() != null && !n.getAvailableActions().isEmpty())
+                    .collect(Collectors.toList());
+        }
         final boolean kittenSearch = isKittenSearchStep(step);
         if (kittenSearch) {
             // The kitten crates: those showing "Mew!" first, nearest first, and never wander to the others while

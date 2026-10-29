@@ -384,7 +384,7 @@ public class DragonSlayer extends BasicQuestHelper
 		enterMelzarsMaze = new ObjectStep(this, ObjectID.MELZARDOOR, new WorldPoint(2941, 3248, 0), "Enter Melzar's Maze north of Rimmington. Be prepared to fight multiple monsters up to a level 82 lesser demon.", melzarsKey);
 		enterMelzarsMaze.addDialogSteps("About my quest to kill the dragon...", "I talked to Oziach...", "Where can I find a map to Crandor?", "Where is Melzar's map piece?");
 
-		killRat = new NpcStep(this, NpcID.DRAGONSLAYER_GIANTRAT_1_KEY, new WorldPoint(2933, 3250, 0), "Kill the marked zombie rat for a key.");
+		killRat = new NpcStep(this, NpcID.DRAGONSLAYER_GIANTRAT_1_KEY, new WorldPoint(2933, 3250, 0), "Kill the marked zombie rat for a key.", ratKey);
 		openRedDoor = new ObjectStep(this, ObjectID.REDDOOR, new WorldPoint(2926, 3253, 0), "Go through the north west red door", ratKey);
 		goUpRatLadder = new ObjectStep(this, ObjectID.LADDER, new WorldPoint(2928, 3256, 0), "Climb up the ladder.");
 
