@@ -582,6 +582,8 @@ public class QuestScript extends Script {
 			switch (entered) {
 				case REPLAN:
 					QuestStuckRecovery.replan();
+					// a walk that is going nowhere far from its goal: an owned teleport beats waiting four more minutes
+					QuestStuckRecovery.teleportTowardFarGoal(lastWalkTarget != null ? lastWalkTarget : stepPoint);
 					break;
 				case BLACKLIST:
 					QuestStuckRecovery.blacklist(lastWalkTarget != null ? lastWalkTarget : stepPoint);

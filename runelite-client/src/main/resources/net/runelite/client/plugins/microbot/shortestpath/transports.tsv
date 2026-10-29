@@ -6014,3 +6014,5 @@
 3031 3508 1	3030 3510 1	Push;Wall;2341									
 3022 3517 0	3022 3517 1	Climb-up;Ladder;17159									
 3022 3517 1	3022 3517 0	Climb-down;Ladder;17160									
+# Dragon Slayer I: out of the Dwarven Mines magic-door room (the ritual that opened it is done if you are inside)
+3051 9839 0	3049 9839 0	Open;Magic door;25115								2	

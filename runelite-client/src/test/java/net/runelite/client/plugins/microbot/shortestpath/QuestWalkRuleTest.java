@@ -376,4 +376,19 @@ public class QuestWalkRuleTest
 			assertFalse("upstairs in Falador castle at " + p, inCastle && p.getPlane() > 0);
 		}
 	}
+
+	/** Dragon Slayer I: the way out of the Dwarven Mines magic-door room is the magic door itself. */
+	@Test
+	public void theMagicDoorRoomCanBeLeftThroughItsDoor() throws Exception
+	{
+		QuestWalkRule.setActive(true);
+		Pathfinder pf = run(new WorldPoint(3056, 9841, 0), new WorldPoint(3046, 9838, 0));
+		assertEquals(PathTerminationReason.TARGET_REACHED, pf.getTerminationReason());
+		boolean usesDoor = false;
+		for (PathEdge e : pf.getPathEdges())
+		{
+			usesDoor |= e.isTransport() && e.getTransport().getOrigin().equals(new WorldPoint(3051, 9839, 0));
+		}
+		assertTrue("expected the magic door in " + pf.getPathEdges(), usesDoor);
+	}
 }

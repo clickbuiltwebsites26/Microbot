@@ -11,6 +11,8 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.api.EquipmentInventorySlot;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -104,5 +106,42 @@ final class QuestStuckRecovery
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Early way out of a walk that is going nowhere far from its goal (the walker cannot leave a room): uses an owned
+	 * teleport tablet or worn jewellery that lands clearly nearer the goal. Only owned items, never a spell, and the use is
+	 * logged. Returns false when nothing owned helps.
+	 */
+	static boolean teleportTowardFarGoal(WorldPoint goal)
+	{
+		WorldPoint at = Rs2Player.getWorldLocation();
+		if (!QuestStuckTeleports.goalIsFar(at, goal))
+		{
+			return false;
+		}
+		List<String> owned = new ArrayList<>();
+		Rs2Inventory.items().forEach(item -> owned.add(item.getName()));
+		for (EquipmentInventorySlot slot : new EquipmentInventorySlot[]{EquipmentInventorySlot.AMULET, EquipmentInventorySlot.RING})
+		{
+			if (Rs2Equipment.get(slot) != null)
+			{
+				owned.add(Rs2Equipment.get(slot).getName());
+			}
+		}
+		QuestStuckTeleports.Option option = QuestStuckTeleports.choose(at, goal, owned);
+		if (option == null)
+		{
+			return false;
+		}
+		log.warn("[QuestWatchdog] stuck at {} with the goal {} far away: using the owned {} ({})", at, goal, option.item,
+			option.action);
+		Rs2Walker.clearWalkingRoute("quest-watchdog:teleport-toward-goal");
+		if (option.worn)
+		{
+			EquipmentInventorySlot slot = option.item.startsWith("amulet") ? EquipmentInventorySlot.AMULET : EquipmentInventorySlot.RING;
+			return Rs2Equipment.interact(slot, option.action);
+		}
+		return Rs2Inventory.interact(option.item, option.action);
 	}
 }
