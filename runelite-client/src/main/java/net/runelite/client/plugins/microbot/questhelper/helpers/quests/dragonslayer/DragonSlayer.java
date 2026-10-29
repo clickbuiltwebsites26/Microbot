@@ -435,7 +435,7 @@ public class DragonSlayer extends BasicQuestHelper
 		repairShip3 = new ObjectStep(this, ObjectID.DRAGONSLAYER_SHIPHOLE, new WorldPoint(3047, 9639, 1), "Repair the hole in the hull 1 more time.", nails30, planks1, hammer);
 		repairShip.addSubSteps(repairShip2, repairShip3);
 
-		repairMap = new DetailedQuestStep(this, "Use the three map parts together to repair the map.", mapPart1, mapPart2, mapPart3);
+		repairMap = new DetailedQuestStep(this, "Use the three map parts together to repair the map.", mapPart1.highlighted(), mapPart2.highlighted(), mapPart3.highlighted());
 		talkToNed = new NpcStep(this, NpcID.NED, new WorldPoint(3098, 3257, 0), "Bring Ned your map and ask him to be your captain.", fullMap);
 		talkToNed.addDialogStep("You're a sailor? Could you take me to Crandor?");
 

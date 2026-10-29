@@ -170,6 +170,8 @@ public class QuestScript extends Script {
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
     private volatile String lastDialogueLine = "";
     private long lastCombatAtMs;
+    /** The step a successful item-on-item combine was made on, whose consumed parts are no longer required. */
+    private QuestStep combinedOnStep;
     private QuestStep menuStep;
     /** Menu options the fallback chose during the current step, so it rotates to the ones not yet asked. */
     private final Set<String> chosenFallbackOptions = new HashSet<>();
@@ -2706,6 +2708,11 @@ public class QuestScript extends Script {
 				((ItemRequirement) req).mustBeEquipped(), ((ItemRequirement) req).isHighlightInInventory(),
 				questStep instanceof NpcStep && ((ItemRequirement) req).getAllIds().contains(ItemID.COINS_995)));
 
+		// parts a combine on this step has used up are not missing: the step is about to advance on the product
+		if (questStep == combinedOnStep) {
+			combined.removeIf(req -> req instanceof ItemRequirement && !hasItemRequirementOnPlayer((ItemRequirement) req));
+		}
+
 		Set<Integer> seenIds = new HashSet<>();
 		for (Requirement req : questStep.getRequirements()) {
 			if (req instanceof ItemRequirement) {
@@ -5080,9 +5087,11 @@ public class QuestScript extends Script {
         // Item-on-item: combine strictly one pair per tick, wait for the inventory to change, then re-read the
         // highlighted items. Firing every combine in one burst consumes the items the next combine needs.
         List<Integer> highlightedUseIds = new ArrayList<>();
+        // "Use the three map parts together": the step text is enough, even when the items are not marked for highlight
+        boolean combineText = QuestCombineText.isCombineText(conditionalStep.getText());
         for (Requirement requirement : conditionalStep.getRequirements()) {
             if (requirement instanceof ItemRequirement
-                    && ((ItemRequirement) requirement).shouldHighlightInInventory(Microbot.getClient())) {
+                    && (combineText || ((ItemRequirement) requirement).shouldHighlightInInventory(Microbot.getClient()))) {
                 ((ItemRequirement) requirement).getAllIds().stream().filter(Rs2Inventory::contains).findFirst().ifPresent(id -> {
                     if (!highlightedUseIds.contains(id) && "use".equalsIgnoreCase(chooseCorrectItemOption(conditionalStep, id))) {
                         highlightedUseIds.add(id);
@@ -5097,6 +5106,7 @@ public class QuestScript extends Script {
             int secondBefore = Rs2Inventory.itemQuantity(second);
             int sizeBefore = Rs2Inventory.size();
             if (Rs2Inventory.combine(first, second)) {
+                combinedOnStep = conditionalStep;
                 sleepUntil(() -> Rs2Inventory.itemQuantity(first) < firstBefore
                         || Rs2Inventory.itemQuantity(second) < secondBefore
                         || Rs2Inventory.size() != sizeBefore || Rs2Dialogue.isInDialogue()
