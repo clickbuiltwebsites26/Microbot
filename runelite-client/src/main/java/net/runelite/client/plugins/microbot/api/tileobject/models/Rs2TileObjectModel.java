@@ -634,7 +634,7 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
 
 
             // click where the object is visible and on top: a menu entry injected through a tree in front would still go through
-            Rectangle clickArea = Rs2ObjectOcclusion.findClickArea(tileObject, getRuneLiteWorldLocation());
+            Rectangle clickArea = Rs2ObjectOcclusion.findClickArea(tileObject);
             if (clickArea == null) {
                 log.warn("Failed to interact with object {} - it stays covered by a nearer object", getId());
                 return false;

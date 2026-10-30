@@ -7,6 +7,8 @@ import java.awt.Polygon;
 import java.awt.Rectangle;
 import java.awt.Shape;
 import java.awt.geom.Area;
+import java.awt.geom.Point2D;
+import java.awt.geom.Rectangle2D;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -83,5 +85,51 @@ public class VisibleClickPointTest {
 			assertTrue(triangle.contains(p));
 			assertFalse(occluders.get(0).contains(p));
 		}
+	}
+
+	private static final Rectangle2D TILE = new Rectangle2D.Double(512, 512, 128, 128);
+
+	@Test
+	public void nearerDisjointFootprintIsInFront() {
+		Rectangle2D nearer = new Rectangle2D.Double(512, 256, 128, 128);
+		assertTrue(VisibleClickPoint.isInFront(nearer, TILE, 576, 0));
+		assertFalse(VisibleClickPoint.isInFront(TILE, nearer, 576, 0));
+	}
+
+	@Test
+	public void footprintOnOrInsideTheTargetIsNeverInFront() {
+		Rectangle2D table = new Rectangle2D.Double(384, 384, 384, 384);
+		Rectangle2D onTable = new Rectangle2D.Double(512, 512, 128, 128);
+		assertFalse(VisibleClickPoint.isInFront(table, onTable, 576, 0));
+		assertFalse(VisibleClickPoint.isInFront(onTable, table, 576, 0));
+	}
+
+	@Test
+	public void edgeNearestTheCameraDecidesNotTheCentre() {
+		// the wide object has its centre farther away than the target but its edge closer
+		Rectangle2D wide = new Rectangle2D.Double(0, 300, 1000, 100);
+		Rectangle2D target = new Rectangle2D.Double(480, 450, 100, 100);
+		assertTrue(VisibleClickPoint.isInFront(wide, target, 530, 0));
+	}
+
+	@Test
+	public void viewerBesideOrBehindTheTargetSeesPastAnOccluder() {
+		Point2D target = new Point2D.Double(10, 10);
+		List<Point2D> occluders = List.of(new Point2D.Double(1, 0));
+		assertTrue(VisibleClickPoint.looksPastAll(new Point2D.Double(10, 13), target, occluders));
+		assertTrue(VisibleClickPoint.looksPastAll(new Point2D.Double(7, 10), target, occluders));
+		assertFalse(VisibleClickPoint.looksPastAll(new Point2D.Double(14, 10), target, occluders));
+	}
+
+	@Test
+	public void occluderOnTheTargetTileBlocksNoDirection() {
+		assertTrue(VisibleClickPoint.looksPastAll(new Point2D.Double(14, 10), new Point2D.Double(10, 10), List.of(new Point2D.Double(0, 0))));
+	}
+
+	@Test
+	public void clickableNeedsMarginAroundThePoint() {
+		Area visible = new Area(new Rectangle(0, 0, 20, 20));
+		assertTrue(VisibleClickPoint.isClickable(visible, new Point(10, 10)));
+		assertFalse(VisibleClickPoint.isClickable(visible, new Point(0, 10)));
 	}
 }

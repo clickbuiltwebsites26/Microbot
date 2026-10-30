@@ -4,6 +4,8 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Shape;
 import java.awt.geom.Area;
+import java.awt.geom.Point2D;
+import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -77,6 +79,42 @@ public final class VisibleClickPoint {
 			}
 		}
 		return clear.isEmpty() ? Optional.empty() : Optional.of(clear.get(random.nextInt(clear.size())));
+	}
+
+	/** True when {@code point} has {@link #MARGIN} px of visible area around it. */
+	public static boolean isClickable(Area visible, Point point) {
+		return hasClearance(visible, point);
+	}
+
+	/**
+	 * Whether {@code candidate} is drawn in front of {@code target} for a camera at ({@code cameraX}, {@code cameraY}):
+	 * the footprints are disjoint (an object standing on a table is not hidden by it) and the candidate edge
+	 * nearest the camera is closer than the target one.
+	 */
+	public static boolean isInFront(Rectangle2D candidate, Rectangle2D target, double cameraX, double cameraY) {
+		return !candidate.intersects(target)
+				&& squaredDistance(candidate, cameraX, cameraY) < squaredDistance(target, cameraX, cameraY);
+	}
+
+	/**
+	 * Whether a viewer at {@code view} looks at {@code target} from at least a right angle away from every
+	 * occluder, given as offsets from the target. An occluder on the target itself blocks no direction.
+	 */
+	public static boolean looksPastAll(Point2D view, Point2D target, Collection<? extends Point2D> occluderOffsets) {
+		double dx = view.getX() - target.getX();
+		double dy = view.getY() - target.getY();
+		for (Point2D offset : occluderOffsets) {
+			if ((offset.getX() != 0 || offset.getY() != 0) && dx * offset.getX() + dy * offset.getY() > 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static double squaredDistance(Rectangle2D rectangle, double x, double y) {
+		double dx = Math.max(Math.max(rectangle.getMinX() - x, x - rectangle.getMaxX()), 0);
+		double dy = Math.max(Math.max(rectangle.getMinY() - y, y - rectangle.getMaxY()), 0);
+		return dx * dx + dy * dy;
 	}
 
 	private static boolean hasClearance(Area visible, Point point) {

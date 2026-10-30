@@ -48,6 +48,7 @@ import net.runelite.client.plugins.microbot.util.shop.Rs2Shop;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2PathApi;
 import net.runelite.client.plugins.microbot.util.walker.Rs2RouteRequest;
+import net.runelite.client.plugins.microbot.util.gameobject.Rs2ObjectOcclusion;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -4839,13 +4840,18 @@ public class QuestScript extends Script {
             Rs2Walker.clearWalkingRoute("quest-helper:object-step-interact");
 
             final Rs2TileObjectModel clickedObject = object;
+            boolean clicked;
             if (itemId == -1) {
                 String option = fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object);
-                clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
+                clicked = clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
             } else {
                 // the item is selected inside the click, so the verified retry selects it again
-                clickVerified(step, () -> Rs2Inventory.use(itemId) && clickedObject.click(""),
+                clicked = clickVerified(step, () -> Rs2Inventory.use(itemId) && clickedObject.click(""),
                         () -> turnCameraTo(clickedObject), "object");
+            }
+            // another object stands in front of it and turning the camera did not help: look at it from elsewhere next tick
+            if (!clicked && walkForClearView(clickedObject)) {
+                return false;
             }
 
             sleepUntil(() -> Rs2Player.isMoving() || Rs2Player.isAnimating());
@@ -4859,6 +4865,25 @@ public class QuestScript extends Script {
             return false;
         }
 
+        return true;
+    }
+
+    private static final long CLEAR_VIEW_WALK_INTERVAL_MS = 15_000;
+    private long lastClearViewWalkAt;
+
+    /** Walks to a tile that sees a covered object from another side; at most once per interval. */
+    private boolean walkForClearView(Rs2TileObjectModel object) {
+        long now = System.currentTimeMillis();
+        if (now - lastClearViewWalkAt < CLEAR_VIEW_WALK_INTERVAL_MS) {
+            return false;
+        }
+        WorldPoint spot = Rs2ObjectOcclusion.findClearViewTile(object.getTileObject());
+        if (spot == null) {
+            return false;
+        }
+        lastClearViewWalkAt = now;
+        Microbot.log("Quest helper: " + object.getName() + " is covered by another object, walking to " + spot + " for a clear view", Level.INFO);
+        Rs2Walker.walkTo(spot, 0);
         return true;
     }
 
