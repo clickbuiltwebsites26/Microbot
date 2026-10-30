@@ -5244,19 +5244,8 @@ public class QuestScript extends Script {
         if (trade != null)
             return trade;
 
-        for (var action : actions) {
-            if (action != null && step.getText().stream().anyMatch(x -> x.toLowerCase().contains(action.toLowerCase())))
-                return action;
-        }
-
-        // Fallback: prefer Talk-to if the NPC has it, otherwise the first non-empty action.
-        String fallback = null;
-        for (var action : actions) {
-            if (action == null || action.isEmpty()) continue;
-            if ("Talk-to".equalsIgnoreCase(action)) return action;
-            if (fallback == null) fallback = action;
-        }
-        return fallback != null ? fallback : "Talk-to";
+        // An action named in the text (or a synonym such as Steal-from for pickpocket), else Talk-to.
+        return QuestNpcActions.choose(step.getText(), actions);
     }
 
 	private String chooseCorrectItemOption(QuestStep step, int itemId) {
