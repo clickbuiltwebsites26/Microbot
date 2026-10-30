@@ -132,6 +132,8 @@ public class QuestScript extends Script {
 	private volatile boolean stopInterruptSent;
 	/** Whether the last main-loop tick had automation on; a window is only dismissed on the running-to-stopped edge. */
 	private boolean wasRunning;
+	/** The "not buying quest items" notice is logged once per run, not on every preflight tick. */
+	private boolean loggedBuyingOff;
 	private int windowNonce = Integer.MIN_VALUE;
 	private String windowQuestKey;
 	private boolean windowDone = true;
@@ -251,6 +253,7 @@ public class QuestScript extends Script {
                 boolean justStopped = QuestRunEdge.justStopped(wasRunning, running);
                 wasRunning = running;
                 if (!running) {
+                    Rs2Walker.setStaminaThresholdOverride(-1);
                     net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
                     combat.reset();
@@ -1098,7 +1101,10 @@ public class QuestScript extends Script {
 					&& obtainItemsSessionChoice == null) {
 				return true; // the consent prompt is still open
 			}
-			Microbot.log("Quest helper preflight: not buying quest items (Obtain Missing Items is off)", Level.INFO);
+			if (!loggedBuyingOff) {
+				loggedBuyingOff = true;
+				Microbot.log("Quest helper preflight: not buying quest items (Obtain Missing Items is off)", Level.INFO);
+			}
 			if (withdrawSelectedSupplies(quest)) {
 				return true;
 			}
@@ -1709,15 +1715,19 @@ public class QuestScript extends Script {
 
     private void combatSupportTick() {
         try {
-            if (config == null || !config.startStopQuestHelper() || !Microbot.isLoggedIn()) return;
-            if (Microbot.pauseAllScripts.get()) return;
+            if (config == null || !config.startStopQuestHelper() || !Microbot.isLoggedIn()
+                    || Microbot.pauseAllScripts.get()) {
+                Rs2Walker.setStaminaThresholdOverride(-1);
+                return;
+            }
             QuestHelper selected = getQuestHelperPlugin().getSelectedQuest();
             if (selected == null || selected.getCurrentStep() == null) {
                 Rs2Walker.setStaminaThresholdOverride(-1);
                 return;
             }
             // quest walks drink at the quest's own "drink at energy %" instead of the walker's seeded default
-            Rs2Walker.setStaminaThresholdOverride(combat.staminaDrinkEnergy());
+            int drinkEnergy = combat.staminaDrinkEnergy();
+            Rs2Walker.setStaminaThresholdOverride(drinkEnergy > 0 ? drinkEnergy : -1);
             combat.fightTick(selected.getCurrentStep().getActiveStep());
         } catch (Exception ex) {
             Microbot.log("Quest helper combat support: " + ex.getMessage(), Level.WARN);
@@ -2595,6 +2605,7 @@ public class QuestScript extends Script {
 			if (primaryId == -1) {
 				Microbot.log("Quest helper: " + ir.getName() + " is not tradable on the Grand Exchange, "
 						+ "not buying it (the quest steps will obtain it in game)", Level.WARN);
+				unbuyable.add(ir);
 				continue;
 			}
 
@@ -2627,6 +2638,19 @@ public class QuestScript extends Script {
 		long availableGp = invCoins + bankCoins;
 
 		if (availableGp < totalBuyCost) {
+			// optional items never stop a quest: drop them and price what is required
+			for (ItemRequirement dropped : QuestBuyRules.optionalToDrop(toBuy, optionalBuys::contains,
+					ir -> (long) offerPrices.get(ir) * buyQuantities.get(ir), availableGp)) {
+				skipOptionalBuy(dropped, "not enough gp");
+				toBuy.remove(dropped);
+			}
+			totalBuyCost = 0L;
+			for (ItemRequirement ir : toBuy) {
+				totalBuyCost += (long) offerPrices.get(ir) * buyQuantities.get(ir);
+			}
+		}
+
+		if (availableGp < totalBuyCost) {
 			Rs2Bank.closeBank();
 			stopQuesterWithReason(String.format(
 					"Not enough gp to buy missing quest items (need %,d gp, have %,d gp)%s",
@@ -2636,7 +2660,12 @@ public class QuestScript extends Script {
 
 		if (!toBuy.isEmpty()) {
 			int freeSlots = Rs2GrandExchange.getAvailableSlotsCount();
-			if (freeSlots <= 0) {
+			if (freeSlots <= 0 && QuestBuyRules.onlyOptional(toBuy, optionalBuys::contains)) {
+				for (ItemRequirement dropped : new ArrayList<>(toBuy)) {
+					skipOptionalBuy(dropped, "no free Grand Exchange slots");
+				}
+				toBuy.clear();
+			} else if (freeSlots <= 0) {
 				Rs2Bank.closeBank();
 				if (Rs2GrandExchange.hasBoughtOffer()) {
 					Microbot.status = "Quest helper: collecting finished Grand Exchange offers";
@@ -2657,7 +2686,7 @@ public class QuestScript extends Script {
 				return true;
 			}
 			int missingCount = toBuy.size();
-			if (trimToGrandExchangeSlots(toBuy, freeSlots)) {
+			if (!toBuy.isEmpty() && trimToGrandExchangeSlots(toBuy, freeSlots, optionalBuys::contains)) {
 				Microbot.log(String.format(
 						"Quest helper: %d missing quest items but only %d free Grand Exchange slots; buying %d now and the rest afterwards",
 						missingCount, freeSlots, toBuy.size()), Level.INFO);
@@ -4346,6 +4375,7 @@ public class QuestScript extends Script {
 
 	/** Stop: the preflight goes back to idle and the plan of the run is dropped (idempotent, runs every stopped tick). */
 	private void resetPreflightOnStop() {
+		loggedBuyingOff = false;
 		QuestPause.resume();
 		QuestPreflight.resetToIdle();
 		preflightQuestKey = null;
@@ -5706,9 +5736,15 @@ public class QuestScript extends Script {
 	}
 
 	static boolean trimToGrandExchangeSlots(List<?> toBuy, int freeSlots) {
+		return trimToGrandExchangeSlots(toBuy, freeSlots, item -> false);
+	}
+
+	/** Keeps the first free-slot count of the items to buy, required items before optional ones. */
+	static <T> boolean trimToGrandExchangeSlots(List<T> toBuy, int freeSlots, Predicate<? super T> optional) {
 		if (toBuy.size() <= freeSlots) {
 			return false;
 		}
+		toBuy.sort(Comparator.comparing(item -> optional.test(item))); // stable: required first
 		toBuy.subList(Math.max(0, freeSlots), toBuy.size()).clear();
 		return true;
 	}
