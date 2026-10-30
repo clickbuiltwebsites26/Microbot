@@ -52,7 +52,7 @@ public class QuestJunkPickerTest
 	public void theQuestsOwnToolsAreNeverJunk()
 	{
 		Set<Integer> protectedIds = new HashSet<>(Arrays.asList(1, 2, 995));
-		List<String> picked = names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0));
+		List<String> picked = names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0, QuestJunkPicker.TARGET_FREE_SLOTS));
 		assertEquals(3, picked.size());
 		assertTrue(picked.stream().noneMatch(n -> n.equals("Spade") || n.equals("Rock pick")));
 	}
@@ -61,11 +61,11 @@ public class QuestJunkPickerTest
 	public void cheapestGoFirstAndOnlyAsManyAsNeeded()
 	{
 		Set<Integer> protectedIds = new HashSet<>(Arrays.asList(1, 2, 995));
-		assertEquals(Arrays.asList("Ceramic remains", "Broken armour", "Broken armour"),
-			names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0)));
-		assertEquals(Arrays.asList("Ceramic remains"),
-			names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 2)));
-		assertTrue(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 3).isEmpty());
+		assertEquals(Arrays.asList("Broken armour", "Broken armour", "Needle"),
+			names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0, QuestJunkPicker.TARGET_FREE_SLOTS)));
+		assertEquals(Arrays.asList("Broken armour"),
+			names(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 2, QuestJunkPicker.TARGET_FREE_SLOTS)));
+		assertTrue(QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 3, 3).isEmpty());
 	}
 
 	@Test
@@ -77,7 +77,7 @@ public class QuestJunkPickerTest
 		items.add(new Item(12, "Logs", 1, false, true, true, true));
 		items.add(new Item(13, "Odd letter", 0, false, false, false, true));
 		items.add(new Item(14, "Glowing thing", 0, false, false, true, false));
-		assertTrue(QuestJunkPicker.pickJunk(items, Collections.emptySet(), 0).isEmpty());
+		assertTrue(QuestJunkPicker.pickJunk(items, Collections.emptySet(), 0, 3).isEmpty());
 	}
 
 	@Test
@@ -90,7 +90,7 @@ public class QuestJunkPickerTest
 		items.add(new Item(11, "Arrow shaft", 1, true, false, true, true));
 		items.add(junk(3, "Ceramic remains", 0));
 		List<String> bankable = names(QuestJunkPicker.bankable(items, new HashSet<>(Arrays.asList(1))));
-		assertEquals(Arrays.asList("Rune scimitar", "Odd letter"), bankable);
+		assertEquals(Arrays.asList("Rune scimitar"), bankable);
 	}
 
 	@Test
@@ -101,7 +101,44 @@ public class QuestJunkPickerTest
 		{
 			all.add(item.id());
 		}
-		assertTrue(QuestJunkPicker.pickJunk(digSiteInventory(), all, 0).isEmpty());
+		assertTrue(QuestJunkPicker.pickJunk(digSiteInventory(), all, 0, 3).isEmpty());
 		assertTrue(QuestJunkPicker.bankable(digSiteInventory(), all).isEmpty());
+	}
+
+	@Test
+	public void anUnpricedItemIsNotJunk()
+	{
+		List<Item> items = new ArrayList<>();
+		items.add(junk(20, "Mystery find", 0));
+		assertTrue(QuestJunkPicker.pickJunk(items, Collections.emptySet(), 0, 3).isEmpty());
+	}
+
+	@Test
+	public void gearThePlayerStartedWithIsProtectedByTheCaller()
+	{
+		List<Item> items = new ArrayList<>();
+		items.add(junk(30, "Bronze axe", 12));
+		items.add(junk(31, "Pie dish", 3));
+		Set<Integer> userBrought = new HashSet<>(Arrays.asList(30));
+		assertEquals(Arrays.asList("Pie dish"), names(QuestJunkPicker.pickJunk(items, userBrought, 0, 3)));
+	}
+
+	@Test
+	public void aKillDropNeedsOneSlotButARefusedPickupFreesSeveral()
+	{
+		Set<Integer> protectedIds = new HashSet<>(Arrays.asList(1, 2, 995));
+		assertEquals(1, QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0, 1).size());
+		assertEquals(3, QuestJunkPicker.pickJunk(digSiteInventory(), protectedIds, 0, 3).size());
+	}
+
+	@Test
+	public void onlyTheGamesRefusalOrAKillDropCountsAsBlocked()
+	{
+		long now = 100_000;
+		assertTrue(QuestJunkPicker.pickupBlocked(now, now - 3_000, false));
+		assertTrue(QuestJunkPicker.pickupBlocked(now, 0, true));
+		assertTrue(!QuestJunkPicker.pickupBlocked(now, now - 20_000, false));
+		assertTrue(!QuestJunkPicker.pickupBlocked(now, 0, false));
+		assertTrue(!QuestJunkPicker.pickupRefused(now, 0));
 	}
 }

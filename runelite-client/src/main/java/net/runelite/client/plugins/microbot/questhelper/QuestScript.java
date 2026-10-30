@@ -1713,7 +1713,7 @@ public class QuestScript extends Script {
 	 * a tick to read it, and closes it again. Returns true when this tick was spent on the journal.
 	 */
 	private boolean handleJournalSync(QuestHelper quest, DetailedQuestStep step) {
-		if (!QuestJournalSync.isSyncStep(step.getText())) {
+		if (!QuestJournalSync.isSyncStep(step.getText()) || journalTabAttempts >= QUEST_LIST_BUTTONS.length) {
 			return false;
 		}
 		long now = System.currentTimeMillis();
@@ -1724,8 +1724,7 @@ public class QuestScript extends Script {
 		String name = quest.getQuest().getName();
 		Microbot.status = "Quest helper: reading the " + name + " journal";
 
-		if (!Rs2Tab.switchTo(InterfaceTab.QUESTS)
-				|| !sleepUntil(() -> Rs2Widget.isWidgetVisible(QuestWidgets.QUEST_CONTAINER.getGroupId(), QuestWidgets.QUEST_CONTAINER.getChildId()), 3_000)) {
+		if (!Rs2Tab.switchTo(InterfaceTab.QUESTS) || !openQuestList()) {
 			Microbot.log("[QuestHelper] journal sync: the quest list did not open", Level.WARN);
 			return true;
 		}
@@ -1748,13 +1747,47 @@ public class QuestScript extends Script {
 			Microbot.log("[QuestHelper] journal sync: the " + name + " journal did not open", Level.WARN);
 			return true;
 		}
-		// the helper reads the journal text on its own tick
-		sleep(700, 1_000);
+		// the helper reads the journal text on its own tick: wait for the step to move on or change its text
+		List<String> textBefore = step.getText() == null ? null : new ArrayList<>(step.getText());
+		sleepUntil(() -> {
+			QuestStep active = quest.getCurrentStep() == null ? null : quest.getCurrentStep().getActiveStep();
+			return active != step || !Objects.equals(textBefore, step.getText());
+		}, 1_500);
 		Rs2Widget.clickWidget(InterfaceID.Questjournal.CLOSE >>> 16, InterfaceID.Questjournal.CLOSE & 0xFFFF);
 		if (!sleepUntil(() -> !Rs2Widget.isWidgetVisible(InterfaceID.Questjournal.TITLE), 2_000)) {
 			Microbot.log("[QuestHelper] journal sync: the " + name + " journal did not close", Level.WARN);
 		}
 		return true;
+	}
+
+	private static boolean questListVisible() {
+		return Rs2Widget.isWidgetVisible(QuestWidgets.QUEST_CONTAINER.getGroupId(), QuestWidgets.QUEST_CONTAINER.getChildId());
+	}
+
+	/** The side journal's sub-tab buttons to try for the quest list, most likely first (interface 629). */
+	private static final int[] QUEST_LIST_BUTTONS = {
+			InterfaceID.SideJournal.TAB_2_1, InterfaceID.SideJournal.TAB_1_1, InterfaceID.SideJournal.TAB_3_1};
+	private int journalTabAttempts;
+
+	/**
+	 * The quest tab remembers its last sub-tab (Character Summary, Achievement Diaries, Kourend), which hides the quest
+	 * list: clicks the next quest-list button candidate. After all of them failed it gives up and warns once.
+	 */
+	private boolean openQuestList() {
+		if (sleepUntil(QuestScript::questListVisible, 1_500)) {
+			journalTabAttempts = 0;
+			return true;
+		}
+		int button = QUEST_LIST_BUTTONS[journalTabAttempts++];
+		Rs2Widget.clickWidget(button >>> 16, button & 0xFFFF);
+		if (sleepUntil(QuestScript::questListVisible, 3_000)) {
+			journalTabAttempts = 0;
+			return true;
+		}
+		if (journalTabAttempts >= QUEST_LIST_BUTTONS.length) {
+			Microbot.log("[QuestHelper] journal sync: no side-journal button opened the quest list; giving up on the sync", Level.WARN);
+		}
+		return false;
 	}
 
 	/** Client thread only. */
@@ -1765,7 +1798,7 @@ public class QuestScript extends Script {
 			return null;
 		}
 		for (Widget entry : entries) {
-			if (entry != null && name.equals(entry.getText())) {
+			if (entry != null && entry.getText() != null && name.equals(Text.removeTags(entry.getText()))) {
 				return entry;
 			}
 		}
@@ -2856,80 +2889,82 @@ public class QuestScript extends Script {
 
 	private final Set<Integer> failedRoomItems = new HashSet<>();
 
-	/** Coins and the items the rest of the quest still lists: the steps ahead and the quest's own requirements. */
-	private Set<Integer> neededItemIds(QuestHelper quest) {
+	/**
+	 * Coins and the item ids the rest of the quest still lists: the steps ahead and the quest's own requirements. With
+	 * {@code strict} it returns null when the steps ahead cannot be read, since nothing can then be called unneeded.
+	 */
+	private Set<Integer> neededItemIds(QuestHelper quest, boolean strict) {
 		Set<Integer> needed = new HashSet<>();
 		needed.add(ItemID.COINS_995);
 		List<DetailedQuestStep> ahead = quest == null ? null : QuestCombatDetector.remainingDetailedSteps(quest);
+		if (strict && ahead == null) {
+			return null;
+		}
 		if (ahead != null) {
 			for (DetailedQuestStep ahead1 : ahead) {
-				addItemRequirementIds(needed, ahead1.getRequirements());
+				QuestCombatDetector.addItemIds(ahead1.getRequirements(), needed);
 			}
 		}
 		if (quest != null) {
-			addItemRequirementIds(needed, quest.getItemRequirements());
+			QuestCombatDetector.addItemIds(quest.getItemRequirements(), needed);
 		}
 		return needed;
 	}
 
-	private static void addItemRequirementIds(Set<Integer> ids, List<? extends Requirement> requirements) {
-		if (requirements == null) {
-			return;
-		}
-		for (Requirement requirement : requirements) {
-			if (requirement instanceof ItemRequirement) {
-				for (Integer id : ((ItemRequirement) requirement).getAllIds()) {
-					if (id != null) {
-						ids.add(id);
-					}
-				}
-			}
-		}
-	}
-
 	private static final long JUNK_WARN_INTERVAL_MS = 60_000;
-	private static final long JUNK_BANK_RETRY_MS = 300_000;
 	private long junkWarnedAtMs;
-	private long junkBankTripAtMs;
+	private long junkIdleUntilMs;
+	private String junkBankQuest;
+	private boolean junkBankGaveUp;
 
 	/**
-	 * A full inventory stops an object or NPC step that gains an item (a dig spot, a pan, a search): drops what the
-	 * quest and the player do not need, cheapest first, until a few slots are free. Never an item the quest lists now
-	 * or later, recommends or the current step needs, a supply the preflight or the player brought (food, potions,
-	 * teleports), a stack, a noted or untradeable item, one worth {@link QuestJunkPicker#VALUABLE_VALUE} gp or more, or
-	 * one with no Drop action. With nothing to drop it warns, and tries one bank trip for the rest.
+	 * A full inventory blocks an object or NPC step that gains an item (a dig spot, a pan, a kill drop). Only when the
+	 * game refused a pickup lately, or a kill step waits for its drop: drops what the quest and the player do not need,
+	 * cheapest first (one slot, or a few after a refused pickup). Never an item the quest lists now or later, recommends
+	 * or the step needs, anything the player started with (gear too) or set up for the fight, food, potions, teleports,
+	 * a stack, a noted or untradeable item, an unpriced one, one worth {@link QuestJunkPicker#VALUABLE_VALUE} gp or
+	 * more, or one with no Drop action. Without the starting inventory or the quest's step list it drops nothing.
 	 *
 	 * @return true when this tick was spent making room
 	 */
-	private boolean freeJunkForStep(DetailedQuestStep step) {
+	private boolean freeJunkForStep(DetailedQuestStep step, boolean killStepWantsDrop) {
 		if (!Rs2Inventory.isFull()) {
 			return false;
 		}
-		QuestHelper quest = getQuestHelperPlugin().getSelectedQuest();
-		Set<Integer> protectedIds = neededItemIds(quest);
-		addItemRequirementIds(protectedIds, step.getRequirements());
-		addItemRequirementIds(protectedIds, currentRequirements);
-		if (quest != null) {
-			addItemRequirementIds(protectedIds, quest.getItemRecommended());
+		long now = System.currentTimeMillis();
+		if (now < junkIdleUntilMs
+				|| !QuestJunkPicker.pickupBlocked(now, Microbot.inventoryFullMessageAtMs, killStepWantsDrop)) {
+			return false;
 		}
+		QuestHelper quest = getQuestHelperPlugin().getSelectedQuest();
+		Set<Integer> protectedIds = quest == null || !combat.hasUserSnapshot() ? null : neededItemIds(quest, true);
+		if (protectedIds == null) {
+			return nothingToFree(now, "the starting inventory or the quest's steps are unknown", null);
+		}
+		QuestCombatDetector.addItemIds(step.getRequirements(), protectedIds);
+		QuestCombatDetector.addItemIds(currentRequirements, protectedIds);
+		QuestCombatDetector.addItemIds(quest.getItemRecommended(), protectedIds);
 		net.runelite.client.plugins.microbot.questhelper.planner.QuestProfile profile =
-				quest == null || quest.getQuest() == null ? null : activeProfile(quest);
+				quest.getQuest() == null ? null : activeProfile(quest);
 		Set<String> supplies = QuestInventoryRules.selectedSupplyNames(profile == null ? null : profile.getSupplies());
 		List<QuestJunkPicker.Item> slots = new ArrayList<>();
 		Rs2Inventory.items().forEach(item -> {
 			String name = item.getName();
 			String lower = name == null ? "" : name.toLowerCase(java.util.Locale.ROOT);
-			if (item.isFood() || QuestEquipSwap.isTeleportJewellery(name) || combat.isUserBroughtProtected(item)
-					|| QuestPotions.kindOfItem(name) != null || lower.contains("teleport") || lower.contains("rune")
+			if (item.isFood() || QuestEquipSwap.isTeleportJewellery(name) || combat.isUserOrSetupItem(item)
+					|| combat.isUserBroughtProtected(item) || QuestPotions.kindOfItem(name) != null
+					|| lower.contains("teleport") || lower.contains("rune")
 					|| supplies.contains(QuestInventoryRules.baseName(name))) {
 				protectedIds.add(item.getId());
 			}
 			slots.add(new QuestJunkPicker.Item(item.getId(), name, item.getPrice(), item.isStackable(), item.isNoted(),
 					item.isTradeable(), item.getAction("drop") != null));
 		});
-		List<QuestJunkPicker.Item> junk = QuestJunkPicker.pickJunk(slots, protectedIds, Rs2Inventory.emptySlotCount());
+		int targetFree = QuestJunkPicker.pickupRefused(now, Microbot.inventoryFullMessageAtMs)
+				? QuestJunkPicker.TARGET_FREE_SLOTS : 1;
+		List<QuestJunkPicker.Item> junk = QuestJunkPicker.pickJunk(slots, protectedIds, Rs2Inventory.emptySlotCount(), targetFree);
 		if (junk.isEmpty()) {
-			return bankForRoom(QuestJunkPicker.bankable(slots, protectedIds));
+			return nothingToFree(now, "nothing is safe to drop", QuestJunkPicker.bankable(slots, protectedIds));
 		}
 		boolean droppedAny = false;
 		for (QuestJunkPicker.Item item : junk) {
@@ -2946,33 +2981,52 @@ public class QuestScript extends Script {
 		return droppedAny;
 	}
 
-	/** Nothing may be dropped: warns (once a minute) and, for items only the bank rules can clear, tries one trip. */
-	private boolean bankForRoom(List<QuestJunkPicker.Item> bankable) {
-		long now = System.currentTimeMillis();
-		boolean trip = !bankable.isEmpty() && !Rs2Player.isIronman() && now - junkBankTripAtMs > JUNK_BANK_RETRY_MS;
+	/** Nothing may be dropped: backs off for a while, warns once a minute and banks valuables if that can help. */
+	private boolean nothingToFree(long now, String why, List<QuestJunkPicker.Item> bankable) {
+		junkIdleUntilMs = now + QuestJunkPicker.IDLE_COOLDOWN_MS;
 		if (now - junkWarnedAtMs > JUNK_WARN_INTERVAL_MS) {
 			junkWarnedAtMs = now;
-			Microbot.log("Quest helper: inventory full and nothing is safe to drop"
-					+ (trip ? ", banking " + bankable.stream().map(QuestJunkPicker.Item::name).collect(Collectors.joining(", "))
-					: ""), Level.WARN);
+			Microbot.log("Quest helper: inventory full and " + why, Level.WARN);
 		}
-		if (!trip) {
+		return bankable != null && bankValuablesForRoom(bankable);
+	}
+
+	/**
+	 * Banks the valuable tradeable items nothing claims (never untradeables: they may be quest items). A trip that
+	 * frees no slot is not tried again for the rest of the quest.
+	 */
+	private boolean bankValuablesForRoom(List<QuestJunkPicker.Item> bankable) {
+		QuestHelper quest = getQuestHelperPlugin().getSelectedQuest();
+		String questName = quest == null || quest.getQuest() == null ? null : quest.getQuest().getName();
+		if (!java.util.Objects.equals(questName, junkBankQuest)) {
+			junkBankQuest = questName;
+			junkBankGaveUp = false;
+		}
+		if (bankable.isEmpty() || junkBankGaveUp || Rs2Combat.inCombat()) {
 			return false;
 		}
-		junkBankTripAtMs = now;
-		Microbot.status = "Quest helper: banking items the quest does not need";
-		Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
-		if (!sleepUntil(Rs2Bank::isOpen, 15_000)) {
-			Microbot.log("Quest helper: could not open the bank to make room", Level.WARN);
-			return true;
-		}
+		Microbot.log("Quest helper: inventory full, banking " + bankable.stream().map(QuestJunkPicker.Item::name)
+				.collect(Collectors.joining(", ")), Level.INFO);
+		Microbot.status = "Quest helper: banking valuables to make room";
 		int before = Rs2Inventory.emptySlotCount();
-		clearInventoryForQuest();
-		if (!sleepUntil(() -> Rs2Inventory.emptySlotCount() > before, 3_000)) {
-			Microbot.log("Quest helper: the bank trip freed no slot", Level.WARN);
+		if (!Rs2Bank.isOpen()) {
+			Rs2Bank.walkToBankAndUseBankReturningTo(bankReturnPoint());
+			if (!sleepUntil(Rs2Bank::isOpen, 15_000)) {
+				Microbot.log("Quest helper: could not open the bank to make room; not trying again this quest", Level.WARN);
+				junkBankGaveUp = true;
+				return true;
+			}
 		}
-		Rs2Bank.closeBank();
-		sleepUntil(() -> !Rs2Bank.isOpen(), 3_000);
+		for (QuestJunkPicker.Item item : bankable) {
+			Rs2Bank.depositAll(item.id());
+		}
+		if (!sleepUntil(() -> Rs2Inventory.emptySlotCount() > before, 3_000)) {
+			Microbot.log("Quest helper: the bank trip freed no slot; not trying again this quest", Level.WARN);
+			junkBankGaveUp = true;
+		}
+		if (!Rs2Bank.closeBank() || !sleepUntil(() -> !Rs2Bank.isOpen(), 3_000)) {
+			Microbot.log("Quest helper: the bank did not close after making room", Level.WARN);
+		}
 		return true;
 	}
 
@@ -2987,7 +3041,7 @@ public class QuestScript extends Script {
 		if (!Rs2Inventory.isFull()) {
 			return false;
 		}
-		Set<Integer> needed = neededItemIds(getQuestHelperPlugin().getSelectedQuest());
+		Set<Integer> needed = neededItemIds(getQuestHelperPlugin().getSelectedQuest(), false);
 		boolean hurt = Rs2Player.getHealthPercentage() < 100;
 		List<QuestMakeRoom.Slot> slots = new ArrayList<>();
 		Rs2Inventory.items().forEach(item -> {
@@ -4413,12 +4467,12 @@ public class QuestScript extends Script {
     }
 
     public boolean applyNpcStep(NpcStep step) {
-        if (freeJunkForStep(step)) {
-            return true; // a full inventory would swallow the step's pickup
-        }
         boolean killStep = isKillNpcStep(step);
         if (killStep && killStepWantsDrop(step) && makeRoom()) {
             return true; // a free slot first: the drop could not be picked up otherwise
+        }
+        if (freeJunkForStep(step, killStep && killStepWantsDrop(step))) {
+            return true;
         }
         if (killStep && lootKillDrop(step)) {
             return true;
@@ -4849,7 +4903,7 @@ public class QuestScript extends Script {
     private final StepCommitment<QuestStep> conditionalCommitment = new StepCommitment<>(2);
 
     public boolean applyObjectStep(ObjectStep step) {
-        if (freeJunkForStep(step)) {
+        if (freeJunkForStep(step, false)) {
             return true; // a full inventory would swallow the step's pickup
         }
         // a step without a point (Cut off Sourhog's foot) has no defined point at all: it uses whatever object is visible

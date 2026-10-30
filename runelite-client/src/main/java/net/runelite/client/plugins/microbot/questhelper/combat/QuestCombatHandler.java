@@ -197,6 +197,27 @@ public class QuestCombatHandler
 			&& !QuestPotions.mayDepositUserItem(item.getId(), item.getName(), actionsOf(item), userItemIds, false);
 	}
 
+	/** Whether the starting inventory was recorded: without it nothing can be told apart as gained during the quest. */
+	public boolean hasUserSnapshot()
+	{
+		return userItemIds != null;
+	}
+
+	/**
+	 * True for an item the player owns rather than one the quest handed out: anything in the starting inventory (gear
+	 * too, not only consumables), the setup's custom items and listed potions, and the swap kit.
+	 */
+	public boolean isUserOrSetupItem(Rs2ItemModel item)
+	{
+		Set<Integer> snapshot = userItemIds;
+		if (item == null || snapshot == null || snapshot.contains(item.getId()) || isSwapKitItem(item))
+		{
+			return true;
+		}
+		QuestCombatLoadout current = phase == Phase.ACTIVE ? loadout : null;
+		return current != null && (isCustomItem(current, item) || isListedPotion(current, item));
+	}
+
 	/** Forget the current quest's state; the next quest tick starts from scratch. */
 	public synchronized void reset()
 	{
