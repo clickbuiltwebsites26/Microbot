@@ -176,6 +176,8 @@ public class QuestCombatHandler
 		{
 			Set<Integer> ids = new HashSet<>();
 			Rs2Inventory.items(i -> !i.isNoted()).forEach(i -> ids.add(i.getId()));
+			// worn gear is the player's too: it can come off into the inventory later
+			Rs2Equipment.items().forEach(i -> ids.add(i.getId()));
 			userItemIds = ids;
 		}
 		catch (RuntimeException e)
@@ -215,7 +217,8 @@ public class QuestCombatHandler
 			return true;
 		}
 		QuestCombatLoadout current = phase == Phase.ACTIVE ? loadout : null;
-		return current != null && (isCustomItem(current, item) || isListedPotion(current, item));
+		return current != null && (isCustomItem(current, item) || isListedPotion(current, item)
+			|| current.listsGearItem(item.getId(), item.getName()));
 	}
 
 	/** Forget the current quest's state; the next quest tick starts from scratch. */
@@ -300,6 +303,8 @@ public class QuestCombatHandler
 			}
 		}
 		activeQuest = quest;
+		// whatever the phase: without a starting inventory nothing can be told apart as gained during the quest
+		snapshotUserItems();
 
 		switch (phase)
 		{

@@ -11,6 +11,9 @@ final class QuestJournalSync {
 	/** Minimum gap between two attempts, so a journal that will not open is not clicked at forever. */
 	static final long RETRY_MS = 6_000;
 
+	/** Gap between tries once the quest list would not open: the sync is not abandoned, only slowed. */
+	static final long GIVE_UP_BACKOFF_MS = 60_000;
+
 	private QuestJournalSync() {
 	}
 
@@ -33,5 +36,10 @@ final class QuestJournalSync {
 
 	static boolean mayRetry(long now, long lastAttempt) {
 		return lastAttempt == 0 || now - lastAttempt >= RETRY_MS;
+	}
+
+	/** As above; after the attempts ran out the gap is {@link #GIVE_UP_BACKOFF_MS}. */
+	static boolean mayRetry(long now, long lastAttempt, boolean gaveUp) {
+		return gaveUp ? lastAttempt == 0 || now - lastAttempt >= GIVE_UP_BACKOFF_MS : mayRetry(now, lastAttempt);
 	}
 }

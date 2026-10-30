@@ -37,4 +37,12 @@ public class QuestJournalSyncTest {
 		assertFalse(QuestJournalSync.mayRetry(1_000 + QuestJournalSync.RETRY_MS - 1, 1_000));
 		assertTrue(QuestJournalSync.mayRetry(1_000 + QuestJournalSync.RETRY_MS, 1_000));
 	}
+
+	@Test
+	public void afterGivingUpTheSyncRetriesOnALongBackoff() {
+		long last = 5_000;
+		assertFalse(QuestJournalSync.mayRetry(last + QuestJournalSync.RETRY_MS, last, true));
+		assertTrue(QuestJournalSync.mayRetry(last + QuestJournalSync.GIVE_UP_BACKOFF_MS, last, true));
+		assertTrue(QuestJournalSync.mayRetry(last + QuestJournalSync.RETRY_MS, last, false));
+	}
 }

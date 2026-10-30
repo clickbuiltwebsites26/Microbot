@@ -1721,12 +1721,13 @@ public class QuestScript extends Script {
 			journalTabKey = syncKey;
 			journalTabAttempts = 0;
 		}
-		if (journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS) {
+		long now = System.currentTimeMillis();
+		boolean gaveUp = journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS;
+		if (!QuestJournalSync.mayRetry(now, lastJournalSyncAtMs, gaveUp)) {
 			return false;
 		}
-		long now = System.currentTimeMillis();
-		if (!QuestJournalSync.mayRetry(now, lastJournalSyncAtMs)) {
-			return false;
+		if (gaveUp) {
+			journalTabAttempts = 0; // a new round of tries after the backoff
 		}
 		lastJournalSyncAtMs = now;
 		String name = quest.getQuest().getName();
@@ -1757,10 +1758,13 @@ public class QuestScript extends Script {
 		}
 		// the helper reads the journal text on its own tick: wait for the step to move on or change its text
 		List<String> textBefore = step.getText() == null ? null : new ArrayList<>(step.getText());
-		sleepUntil(() -> {
+		boolean advanced = sleepUntil(() -> {
 			QuestStep active = quest.getCurrentStep() == null ? null : quest.getCurrentStep().getActiveStep();
 			return active != step || !Objects.equals(textBefore, step.getText());
 		}, 1_500);
+		if (!advanced) {
+			Microbot.log("[QuestHelper] journal sync: the step did not advance after the " + name + " journal opened", Level.INFO);
+		}
 		Rs2Widget.clickWidget(InterfaceID.Questjournal.CLOSE >>> 16, InterfaceID.Questjournal.CLOSE & 0xFFFF);
 		if (!sleepUntil(() -> !Rs2Widget.isWidgetVisible(InterfaceID.Questjournal.TITLE), 2_000)) {
 			Microbot.log("[QuestHelper] journal sync: the " + name + " journal did not close", Level.WARN);
@@ -1798,7 +1802,7 @@ public class QuestScript extends Script {
 			return true;
 		}
 		if (journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS) {
-			Microbot.log("[QuestHelper] journal sync: the Quest List button did not open the quest list; giving up on the sync", Level.WARN);
+			Microbot.log("[QuestHelper] journal sync: the Quest List button did not open the quest list; trying again in a minute", Level.WARN);
 		}
 		return false;
 	}
@@ -2986,6 +2990,7 @@ public class QuestScript extends Script {
 			// the game says nothing about a drop: only the slot count shows it went
 			if (!sleepUntil(() -> Rs2Inventory.emptySlotCount() > before, 2_500)) {
 				Microbot.log("Quest helper: dropping " + item.name() + " did not free a slot", Level.WARN);
+				junkIdleUntilMs = System.currentTimeMillis() + QuestJunkPicker.IDLE_COOLDOWN_MS;
 				break;
 			}
 			Microbot.log("Quest helper: inventory full, dropped " + item.name() + " (not needed by the quest)", Level.INFO);
