@@ -16,6 +16,7 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.recovery.CantReachTargetRecovery;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
+import net.runelite.client.plugins.microbot.util.gameobject.Rs2ObjectOcclusion;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.api.IEntity;
 import net.runelite.client.plugins.microbot.api.boat.Rs2BoatCache;
@@ -632,6 +633,13 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
             }
 
 
+            // click where the object is visible and on top: a menu entry injected through a tree in front would still go through
+            Rectangle clickArea = Rs2ObjectOcclusion.findClickArea(tileObject, getRuneLiteWorldLocation());
+            if (clickArea == null) {
+                log.warn("Failed to interact with object {} - it stays covered by a nearer object", getId());
+                return false;
+            }
+
             Microbot.doInvoke(new NewMenuEntry()
                             .param0(param0)
                             .param1(param1)
@@ -643,7 +651,7 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
                             .setWorldViewId(worldView.getId())
                             .gameObject(tileObject)
                     ,
-                    Rs2UiHelper.getObjectClickbox(tileObject));
+                    clickArea);
 // MenuEntryImpl(getOption=Use, getTarget=Barrier, getIdentifier=43700, getType=GAME_OBJECT_THIRD_OPTION, getParam0=53, getParam1=51, getItemId=-1, isForceLeftClick=true, getWorldViewId=-1, isDeprioritized=false)
             //Rs2Reflection.invokeMenu(param0, param1, menuAction.getId(), object.getId(),-1, "", "", -1, -1);
 

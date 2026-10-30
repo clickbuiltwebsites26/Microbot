@@ -9,6 +9,7 @@ import net.runelite.client.plugins.microbot.util.input.InputLoop;
 import net.runelite.client.plugins.microbot.util.input.PointerState;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
+import net.runelite.client.plugins.microbot.util.gameobject.Rs2ObjectOcclusion;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
 
 import javax.inject.Inject;
@@ -130,7 +131,7 @@ public class VirtualMouse extends Mouse {
                 }
 
                 if (Rs2UiHelper.isGameObject(entry)) {
-                    newPoint = retarget(Rs2UiHelper.getObjectClickbox(entry.getGameObject()), newPoint);
+                    newPoint = retarget(Rs2ObjectOcclusion.visibleClickArea(entry.getGameObject()), newPoint);
                 }
             }
 
