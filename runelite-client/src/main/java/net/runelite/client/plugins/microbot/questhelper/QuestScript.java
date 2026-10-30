@@ -174,6 +174,7 @@ public class QuestScript extends Script {
     /** Last NPC/player dialogue line seen; used to gate choices that carry an expected previous line. */
     private volatile String lastDialogueLine = "";
     private long lastCombatAtMs;
+    private long lastJournalSyncAtMs;
 
     /**
      * Whether a fight is really on: the player's target, or an NPC attacking the player, shows a health bar (it appears
@@ -1704,9 +1705,6 @@ public class QuestScript extends Script {
 				.anyMatch(a -> a != null && (a.equalsIgnoreCase("Wear") || a.equalsIgnoreCase("Wield")));
 	}
 
-	/** After the bank trips: buys a style-swap kit the bank lacked, or stops the quest when it cannot be had. */
-	private long lastJournalSyncAtMs;
-
 	/**
 	 * Steps like "Open the quest's journal to sync your current quest state" clear only while the
 	 * journal is open, so nothing else the script does can finish them. Opens it, gives the helper
@@ -1787,6 +1785,7 @@ public class QuestScript extends Script {
 		}).orElse(false);
 	}
 
+	/** After the bank trips: buys a style-swap kit the bank lacked, or stops the quest when it cannot be had. */
 	private boolean handleSwapKit() {
 		if (!combat.swapKitWanted()) {
 			return false;
