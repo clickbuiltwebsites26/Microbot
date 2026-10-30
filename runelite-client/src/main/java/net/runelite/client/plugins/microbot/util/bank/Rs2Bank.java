@@ -45,6 +45,7 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2RouteRequest;
 import net.runelite.client.plugins.microbot.util.walker.Rs2RouteResult;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
+import net.runelite.client.util.Text;
 
 import java.awt.*;
 import java.awt.event.KeyEvent;
@@ -2047,7 +2048,7 @@ public class Rs2Bank {
             );
 
             if (nearestObj.isPresent()) {
-                if (!Rs2GameObject.interact(nearestObj.get(), "Bank")) return false;
+                if (!Rs2GameObject.interact(nearestObj.get(), bankOpenAction(nearestObj.get()))) return false;
             } else {
                 final Rs2NpcModel banker = Rs2Npc.getBankerNPC();
                 if (banker == null || !Rs2Npc.interact(banker, "Bank")) return false;
@@ -2197,6 +2198,22 @@ public class Rs2Bank {
         return openBank(new Rs2NpcModel(npc));
     }
 
+    /** Booths offer "Bank"; bank chests only offer "Use" (and "Collect"). */
+    private static String bankOpenAction(TileObject object) {
+        ObjectComposition comp = Rs2GameObject.convertToObjectComposition(object);
+        return bankOpenAction(comp == null ? null : comp.getActions());
+    }
+
+    static String bankOpenAction(String[] actions) {
+        if (actions == null) return "Bank";
+        List<String> cleaned = Arrays.stream(actions)
+                .filter(Objects::nonNull)
+                .map(a -> Text.removeTags(a).toLowerCase())
+                .collect(Collectors.toList());
+        if (cleaned.contains("bank")) return "Bank";
+        return cleaned.contains("use") ? "Use" : "Bank";
+    }
+
     /**
      * open bank identified by tile object.
      *
@@ -2214,7 +2231,7 @@ public class Rs2Bank {
 
             int epochBeforeInteract = BANK_LIVE_EPOCH.get();
 
-            boolean interactResult = Rs2GameObject.interact(object, "bank");
+            boolean interactResult = Rs2GameObject.interact(object, bankOpenAction(object));
 
             if (!interactResult) {
                 return false;
