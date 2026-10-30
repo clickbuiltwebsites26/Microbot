@@ -118,6 +118,8 @@ public class QuestScript extends Script {
 	private static final TickGuard BUY_GUARD = new TickGuard();
 	private static final TickGuard TICK_GUARD = new TickGuard();
 	private volatile boolean stopInterruptSent;
+	/** Whether the last main-loop tick had automation on; a window is only dismissed on the running-to-stopped edge. */
+	private boolean wasRunning;
 	private int windowNonce = Integer.MIN_VALUE;
 	private String windowQuestKey;
 	private boolean windowDone = true;
@@ -232,11 +234,18 @@ public class QuestScript extends Script {
                 net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(
                         config.pathVariation() && !escortActive, config.pathVariationStrength().getLevel());
                 QuestWalkRule.setActive(config.startStopQuestHelper() && !QuestPause.isPaused());
-                if (!config.startStopQuestHelper()) {
+                boolean running = config.startStopQuestHelper();
+                boolean justStopped = QuestRunEdge.justStopped(wasRunning, running);
+                wasRunning = running;
+                if (!running) {
                     net.runelite.client.plugins.microbot.util.walker.WalkPathVariation.configure(false, 2);
                     restoreAutoRetaliate();
                     combat.reset();
                     resetPreflightOnStop();
+                    if (justStopped) {
+                        // only on the edge: the planner is opened while automation is off and must stay open
+                        net.runelite.client.plugins.microbot.questhelper.planner.QuestWindow.dismiss();
+                    }
                     return;
                 }
                 if (QuestPause.isPaused()) {
@@ -3809,7 +3818,7 @@ public class QuestScript extends Script {
 		return QuestPause.awaitResume(() -> config != null && config.startStopQuestHelper(), 150);
 	}
 
-	/** Stop: the preflight goes back to idle and any plan or window of the run is dropped. */
+	/** Stop: the preflight goes back to idle and the plan of the run is dropped (idempotent, runs every stopped tick). */
 	private void resetPreflightOnStop() {
 		QuestPause.resume();
 		QuestPreflight.resetToIdle();
@@ -3825,7 +3834,6 @@ public class QuestScript extends Script {
 		windowQuestKey = null;
 		queueRunner.setWindowResult(null, null);
 		QuestPurchasePlan.setCurrent(null);
-		net.runelite.client.plugins.microbot.questhelper.planner.QuestWindow.dismiss();
 	}
 
 	/** While automation is switched off, a main loop still inside the preflight or a Grand Exchange routine is interrupted. */
