@@ -258,6 +258,9 @@ final class Rs2WalkerMovement {
     }
 
     static int staminaThreshold() {
+        if (staminaThresholdOverride >= 0) {
+            return staminaThresholdOverride;
+        }
         String name = null;
         try {
             var player = Microbot.getClient().getLocalPlayer();
