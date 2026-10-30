@@ -159,8 +159,9 @@ public class VirtualMouse extends Mouse {
         if (Rs2ObjectOcclusion.visibleAt(object, Microbot.getMouse().getMousePosition())) {
             return current;
         }
-        Rectangle visible = Rs2ObjectOcclusion.visibleClickArea(object);
-        return visible == null || Rs2UiHelper.isFallbackRectangle(visible) ? current : aimAt(visible);
+        Rectangle area = Rs2ObjectOcclusion.visibleClickArea(object);
+        Rectangle visible = area == null || Rs2UiHelper.isFallbackRectangle(area) ? null : Rs2UiHelper.clipToCanvas(area);
+        return visible == null ? current : aimAt(visible);
     }
 
     private static Point aimAt(Rectangle visible) {

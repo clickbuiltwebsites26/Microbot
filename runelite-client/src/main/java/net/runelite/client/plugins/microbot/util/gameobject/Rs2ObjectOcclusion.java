@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static net.runelite.client.plugins.microbot.util.Global.sleepUntil;
@@ -59,9 +60,12 @@ public final class Rs2ObjectOcclusion {
 	private static final int CLEAR_VIEW_SEARCH_TILES = 5;
 	private static final int CLEAR_VIEW_MAX_TARGET_DISTANCE = 7;
 	private static final long COVERED_REPORT_MAX_AGE_MS = 15_000;
+	private static final long REFUSAL_COOLDOWN_MS = 10_000;
 
 	/** The last object a click refused because it stayed covered. */
 	private static volatile CoverReport lastCovered;
+	/** When each object (by hash) was last refused, so a repeat click does not spin the camera again. */
+	private static final Map<Long, Long> refusals = new ConcurrentHashMap<>();
 
 	private Rs2ObjectOcclusion() {
 	}
@@ -75,13 +79,16 @@ public final class Rs2ObjectOcclusion {
 		/** The target centre in world tiles. */
 		final Point2D.Double targetCentre;
 		final int plane;
+		/** The object has no clickbox on the viewport, so nothing can be said about what covers it. */
+		final boolean offScreen;
 
-		Scan(Area onScreen, List<Shape> occluders, List<Point2D.Double> offsets, Point2D.Double targetCentre, int plane) {
+		Scan(Area onScreen, List<Shape> occluders, List<Point2D.Double> offsets, Point2D.Double targetCentre, int plane, boolean offScreen) {
 			this.onScreen = onScreen;
 			this.occluders = occluders;
 			this.offsets = offsets;
 			this.targetCentre = targetCentre;
 			this.plane = plane;
+			this.offScreen = offScreen;
 		}
 	}
 
@@ -102,31 +109,68 @@ public final class Rs2ObjectOcclusion {
 
 	/**
 	 * The rectangle to click for {@code object}: its normal clickbox bounds when nothing covers it, a small
-	 * rectangle on its visible part when something does, or null when it stays covered after turning the
-	 * camera. Call from a script thread.
+	 * rectangle on its visible part when something does, or null when it is off screen or stays covered after
+	 * turning the camera (which is then put back where it was). Call from a script thread.
 	 */
 	public static Rectangle findClickArea(TileObject object) {
+		if (recentlyRefused(object)) {
+			log.warn("Object {} was refused a moment ago as off screen or covered, not turning the camera again", object.getId());
+			return null;
+		}
 		Scan scan = scan(object);
 		Rectangle area = clickAreaOf(object, scan);
 		if (area != null) {
-			return area;
+			return accepted(object, area);
 		}
-		log.info("Object {} is covered by {} nearer object(s), turning the camera", object.getId(), scan.occluders.size());
+		log.info("Object {} is {}, turning the camera", object.getId(),
+				scan.offScreen ? "off screen" : "covered by " + scan.occluders.size() + " nearer object(s)");
 		Set<Point2D.Double> offsets = new LinkedHashSet<>(scan.offsets);
+		Point2D.Double targetCentre = scan.targetCentre;
+		int plane = scan.plane;
 		int startYaw = Rs2Camera.getYaw();
+		if (scan.offScreen) {
+			Rs2Camera.turnTo(object);
+			scan = scan(object);
+			area = clickAreaOf(object, scan);
+			if (area != null) {
+				return accepted(object, area);
+			}
+			offsets.addAll(scan.offsets);
+		}
 		for (int step : YAW_STEPS) {
 			turnCameraTo(Math.floorMod(startYaw + step, FULL_TURN));
-			Scan turned = scan(object);
-			area = clickAreaOf(object, turned);
+			scan = scan(object);
+			area = clickAreaOf(object, scan);
 			if (area != null) {
 				log.info("Object {} is clear after turning the camera {} units", object.getId(), step);
-				return area;
+				return accepted(object, area);
 			}
-			offsets.addAll(turned.offsets);
+			offsets.addAll(scan.offsets);
+			if (!scan.offScreen && !scan.occluders.isEmpty()) {
+				targetCentre = scan.targetCentre;
+				plane = scan.plane;
+			}
 		}
-		log.warn("Object {} is still covered after turning the camera", object.getId());
-		lastCovered = new CoverReport(object, offsets, scan.targetCentre, scan.plane);
+		log.warn("Object {} is still {} after turning the camera", object.getId(), offsets.isEmpty() ? "off screen" : "covered");
+		turnCameraTo(startYaw);
+		refusals.put(object.getHash(), System.currentTimeMillis());
+		lastCovered = offsets.isEmpty() ? null : new CoverReport(object, offsets, targetCentre, plane);
 		return null;
+	}
+
+	/** Whether a click on {@code object} was refused as off screen or covered within the last few seconds. */
+	public static boolean recentlyRefused(TileObject object) {
+		Long at = refusals.get(object.getHash());
+		return at != null && System.currentTimeMillis() - at < REFUSAL_COOLDOWN_MS;
+	}
+
+	private static Rectangle accepted(TileObject object, Rectangle area) {
+		refusals.remove(object.getHash());
+		CoverReport report = lastCovered;
+		if (report != null && report.object == object) {
+			lastCovered = null;
+		}
+		return area;
 	}
 
 	/** The rectangle to click for {@code object} right now, without turning the camera; null when it is covered. */
@@ -142,7 +186,7 @@ public final class Rs2ObjectOcclusion {
 			Rectangle visible = Rs2UiHelper.isFallbackRectangle(plain) ? null : Rs2UiHelper.clipToCanvas(plain);
 			return visible == null || visible.contains(point);
 		}
-		return VisibleClickPoint.isClickable(VisibleClickPoint.visibleArea(scan.onScreen, scan.occluders), point);
+		return VisibleClickPoint.visibleArea(scan.onScreen, scan.occluders).contains(point);
 	}
 
 	/**
@@ -170,11 +214,18 @@ public final class Rs2ObjectOcclusion {
 				bestDistance = reachable.getValue();
 			}
 		}
+		if (best != null) {
+			// the player is about to move, so the next click should look again
+			refusals.remove(object.getHash());
+		}
 		return best;
 	}
 
 	/** The click rectangle for what {@code scan} saw: the plain clickbox, a rectangle on the visible part, or null if covered. */
 	private static Rectangle clickAreaOf(TileObject object, Scan scan) {
+		if (scan.offScreen) {
+			return null;
+		}
 		if (scan.occluders.isEmpty()) {
 			return Rs2UiHelper.getObjectClickbox(object);
 		}
@@ -185,11 +236,16 @@ public final class Rs2ObjectOcclusion {
 
 	private static Scan scan(TileObject object) {
 		Scan scan = Microbot.getClientThread().runOnClientThreadOptional(() -> scanOnClientThread(object)).orElse(null);
-		return scan != null ? scan : uncovered();
+		return scan != null ? scan : unknown();
 	}
 
-	private static Scan uncovered() {
-		return new Scan(new Area(), Collections.emptyList(), Collections.emptyList(), new Point2D.Double(), 0);
+	/** Nothing is known to cover the object, or it is somewhere (a boat) this does not judge. */
+	private static Scan unknown() {
+		return new Scan(new Area(), Collections.emptyList(), Collections.emptyList(), new Point2D.Double(), 0, false);
+	}
+
+	private static Scan offScreen() {
+		return new Scan(new Area(), Collections.emptyList(), Collections.emptyList(), new Point2D.Double(), 0, true);
 	}
 
 	private static Scan scanOnClientThread(TileObject object) {
@@ -199,9 +255,11 @@ public final class Rs2ObjectOcclusion {
 		LocalPoint local = object.getLocalLocation();
 		WorldPoint world = object.getWorldLocation();
 		// boats and other worldviews have their own camera space, so their clicks stay as they were
-		if (worldView == null || clickbox == null || local == null || world == null
-				|| worldView.getId() != client.getTopLevelWorldView().getId()) {
-			return uncovered();
+		if (worldView == null || local == null || world == null || worldView.getId() != client.getTopLevelWorldView().getId()) {
+			return unknown();
+		}
+		if (clickbox == null) {
+			return offScreen();
 		}
 
 		Rectangle bounds = clickbox.getBounds().intersection(new Rectangle(client.getViewportXOffset(), client.getViewportYOffset(),
@@ -210,17 +268,18 @@ public final class Rs2ObjectOcclusion {
 		List<Point2D.Double> offsets = new ArrayList<>();
 		double centreX = local.getX() / (double) Perspective.LOCAL_TILE_SIZE;
 		double centreY = local.getY() / (double) Perspective.LOCAL_TILE_SIZE;
-		if (!bounds.isEmpty()) {
-			collectNearerClickboxes(client, worldView, object, local, bounds, occluders, offsets);
+		if (bounds.isEmpty()) {
+			return offScreen();
 		}
+		collectNearerClickboxes(client, worldView, object, local, bounds, occluders, offsets);
 		if (occluders.isEmpty()) {
-			return uncovered();
+			return unknown();
 		}
 		Area onScreen = new Area(clickbox);
 		onScreen.intersect(new Area(bounds));
 		// local coordinates are scene tiles times the tile size, so this puts the centre in world tiles
 		Point2D.Double targetCentre = new Point2D.Double(world.getX() - local.getSceneX() + centreX, world.getY() - local.getSceneY() + centreY);
-		return new Scan(onScreen, occluders, offsets, targetCentre, world.getPlane());
+		return new Scan(onScreen, occluders, offsets, targetCentre, world.getPlane(), false);
 	}
 
 	/** Clickboxes of the named, actionable game objects near {@code target} that stand in front of it and overlap {@code bounds}. */

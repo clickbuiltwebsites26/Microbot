@@ -127,9 +127,9 @@ public class VisibleClickPointTest {
 	}
 
 	@Test
-	public void clickableNeedsMarginAroundThePoint() {
-		Area visible = new Area(new Rectangle(0, 0, 20, 20));
-		assertTrue(VisibleClickPoint.isClickable(visible, new Point(10, 10)));
-		assertFalse(VisibleClickPoint.isClickable(visible, new Point(0, 10)));
+	public void pointOnTheCoveredPartIsNotInTheVisibleArea() {
+		Area visible = VisibleClickPoint.visibleArea(TARGET, List.of(new Rectangle(100, 100, 40, 40)));
+		assertTrue(visible.contains(new Point(120, 150)));
+		assertFalse(visible.contains(new Point(120, 120)));
 	}
 }

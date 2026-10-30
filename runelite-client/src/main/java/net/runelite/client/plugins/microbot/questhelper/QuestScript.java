@@ -4843,14 +4843,16 @@ public class QuestScript extends Script {
             boolean clicked;
             if (itemId == -1) {
                 String option = fallbackUsed ? chooseFallbackObjectOption(step, object) : chooseCorrectObjectOption(step, object);
-                clicked = clickVerified(step, () -> clickedObject.click(option), () -> turnCameraTo(clickedObject), "object " + option);
+                clicked = clickVerified(step, () -> clickedObject.click(option), () -> turnCameraUnlessRefused(clickedObject), "object " + option);
             } else {
                 // the item is selected inside the click, so the verified retry selects it again
                 clicked = clickVerified(step, () -> Rs2Inventory.use(itemId) && clickedObject.click(""),
-                        () -> turnCameraTo(clickedObject), "object");
+                        () -> turnCameraUnlessRefused(clickedObject), "object");
             }
-            // another object stands in front of it and turning the camera did not help: look at it from elsewhere next tick
-            if (!clicked && walkForClearView(clickedObject)) {
+            // off screen or covered by another object with the camera turned every way: not clicked, so not handled.
+            // Look at it from elsewhere and try again next tick.
+            if (!clicked && Rs2ObjectOcclusion.recentlyRefused(clickedObject.getTileObject())) {
+                walkForClearView(clickedObject);
                 return false;
             }
 
@@ -4871,20 +4873,26 @@ public class QuestScript extends Script {
     private static final long CLEAR_VIEW_WALK_INTERVAL_MS = 15_000;
     private long lastClearViewWalkAt;
 
+    /** The verified retry's camera turn is skipped for an object the click refused: the click already turned it every way. */
+    private void turnCameraUnlessRefused(Rs2TileObjectModel object) {
+        if (!Rs2ObjectOcclusion.recentlyRefused(object.getTileObject())) {
+            turnCameraTo(object);
+        }
+    }
+
     /** Walks to a tile that sees a covered object from another side; at most once per interval. */
-    private boolean walkForClearView(Rs2TileObjectModel object) {
+    private void walkForClearView(Rs2TileObjectModel object) {
         long now = System.currentTimeMillis();
         if (now - lastClearViewWalkAt < CLEAR_VIEW_WALK_INTERVAL_MS) {
-            return false;
+            return;
         }
         WorldPoint spot = Rs2ObjectOcclusion.findClearViewTile(object.getTileObject());
         if (spot == null) {
-            return false;
+            return;
         }
         lastClearViewWalkAt = now;
         Microbot.log("Quest helper: " + object.getName() + " is covered by another object, walking to " + spot + " for a clear view", Level.INFO);
         Rs2Walker.walkTo(spot, 0);
-        return true;
     }
 
     private static final int APPROACH_MAX_CANDIDATES = 8;

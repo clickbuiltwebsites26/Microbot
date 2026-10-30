@@ -81,11 +81,6 @@ public final class VisibleClickPoint {
 		return clear.isEmpty() ? Optional.empty() : Optional.of(clear.get(random.nextInt(clear.size())));
 	}
 
-	/** True when {@code point} has {@link #MARGIN} px of visible area around it. */
-	public static boolean isClickable(Area visible, Point point) {
-		return hasClearance(visible, point);
-	}
-
 	/**
 	 * Whether {@code candidate} is drawn in front of {@code target} for a camera at ({@code cameraX}, {@code cameraY}):
 	 * the footprints are disjoint (an object standing on a table is not hidden by it) and the candidate edge
