@@ -8,6 +8,8 @@ import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.api.gameval.InterfaceID;
+import net.runelite.client.plugins.microbot.questhelper.tools.QuestWidgets;
 import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
@@ -498,6 +500,10 @@ public class QuestScript extends Script {
 					 * If we do not prioritize this, the script will think we are missing items
 					 */
 					if (manageAutoRetaliate(questStep)) {
+						return;
+					}
+
+					if (questStep instanceof DetailedQuestStep && handleJournalSync(selectedQuest, (DetailedQuestStep) questStep)) {
 						return;
 					}
 
@@ -1699,6 +1705,88 @@ public class QuestScript extends Script {
 	}
 
 	/** After the bank trips: buys a style-swap kit the bank lacked, or stops the quest when it cannot be had. */
+	private long lastJournalSyncAtMs;
+
+	/**
+	 * Steps like "Open the quest's journal to sync your current quest state" clear only while the
+	 * journal is open, so nothing else the script does can finish them. Opens it, gives the helper
+	 * a tick to read it, and closes it again. Returns true when this tick was spent on the journal.
+	 */
+	private boolean handleJournalSync(QuestHelper quest, DetailedQuestStep step) {
+		if (!QuestJournalSync.isSyncStep(step.getText())) {
+			return false;
+		}
+		long now = System.currentTimeMillis();
+		if (!QuestJournalSync.mayRetry(now, lastJournalSyncAtMs)) {
+			return false;
+		}
+		lastJournalSyncAtMs = now;
+		String name = quest.getQuest().getName();
+		Microbot.status = "Quest helper: reading the " + name + " journal";
+
+		if (!Rs2Tab.switchTo(InterfaceTab.QUESTS)
+				|| !sleepUntil(() -> Rs2Widget.isWidgetVisible(QuestWidgets.QUEST_CONTAINER.getGroupId(), QuestWidgets.QUEST_CONTAINER.getChildId()), 3_000)) {
+			Microbot.log("[QuestHelper] journal sync: the quest list did not open", Level.WARN);
+			return true;
+		}
+		if (!scrollQuestListTo(name)) {
+			Microbot.log("[QuestHelper] journal sync: " + name + " is not in the quest list", Level.WARN);
+			return true;
+		}
+		// the scroll script moves the entry on the next client tick
+		sleep(300, 500);
+		Widget entry = Microbot.getClientThread().runOnClientThreadOptional(() -> findQuestListEntry(name)).orElse(null);
+		if (entry == null || !Rs2Widget.clickWidget(entry)) {
+			Microbot.log("[QuestHelper] journal sync: could not click the " + name + " entry", Level.WARN);
+			return true;
+		}
+		boolean open = sleepUntil(() -> Microbot.getClientThread().runOnClientThreadOptional(() -> {
+			Widget title = Microbot.getClient().getWidget(InterfaceID.Questjournal.TITLE);
+			return title != null && !title.isHidden() && name.equals(Text.removeTags(title.getText()));
+		}).orElse(false), 3_000);
+		if (!open) {
+			Microbot.log("[QuestHelper] journal sync: the " + name + " journal did not open", Level.WARN);
+			return true;
+		}
+		// the helper reads the journal text on its own tick
+		sleep(700, 1_000);
+		Rs2Widget.clickWidget(InterfaceID.Questjournal.CLOSE >>> 16, InterfaceID.Questjournal.CLOSE & 0xFFFF);
+		if (!sleepUntil(() -> !Rs2Widget.isWidgetVisible(InterfaceID.Questjournal.TITLE), 2_000)) {
+			Microbot.log("[QuestHelper] journal sync: the " + name + " journal did not close", Level.WARN);
+		}
+		return true;
+	}
+
+	/** Client thread only. */
+	private static Widget findQuestListEntry(String name) {
+		Widget list = Microbot.getClient().getWidget(QuestWidgets.QUEST_CONTAINER.getPackedId());
+		Widget[] entries = list == null ? null : list.getDynamicChildren();
+		if (entries == null) {
+			return null;
+		}
+		for (Widget entry : entries) {
+			if (entry != null && name.equals(entry.getText())) {
+				return entry;
+			}
+		}
+		return null;
+	}
+
+	/** Scrolls the quest list so the quest's entry is in view; false when the list has no such entry. */
+	private static boolean scrollQuestListTo(String name) {
+		return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+			Widget entry = findQuestListEntry(name);
+			Widget view = Microbot.getClient().getWidget(QuestWidgets.QUESTLIST_CONTAINER.getPackedId());
+			if (entry == null || view == null) {
+				return false;
+			}
+			int scroll = QuestJournalSync.scrollToCentre(entry.getRelativeY(), entry.getHeight(), view.getHeight(), view.getScrollHeight());
+			Microbot.getClient().runScript(ScriptID.UPDATE_SCROLLBAR,
+					QuestWidgets.QUESTLIST_SCROLLBAR.getId(), QuestWidgets.QUESTLIST_CONTAINER.getId(), scroll);
+			return true;
+		}).orElse(false);
+	}
+
 	private boolean handleSwapKit() {
 		if (!combat.swapKitWanted()) {
 			return false;
