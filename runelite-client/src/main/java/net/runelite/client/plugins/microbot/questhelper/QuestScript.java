@@ -82,6 +82,7 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import org.slf4j.event.Level;
 import net.runelite.api.coords.WorldArea;
+import net.runelite.client.plugins.microbot.util.coords.InstanceCoordinates;
 
 public class QuestScript extends Script {
     public static double version = 0.6;
@@ -197,9 +198,10 @@ public class QuestScript extends Script {
     private QuestStep combinedOnStep;
     private Set<Integer> combinedIds = new HashSet<>();
     private QuestStep menuStep;
+    /** Conversation key (step text) the chosen options belong to; a new step starts a fresh conversation. */
+    private String menuConversationKey;
     /** Menu options the fallback chose during the current step, so it rotates to the ones not yet asked. */
     private final Set<String> chosenFallbackOptions = new HashSet<>();
-    private Set<String> chosenMenuOptions = new HashSet<>();
     private boolean menuWasVisible;
     private final Map<String, Integer> menuAppearances = new HashMap<>();
     private String menuLoggedKey;
@@ -357,10 +359,11 @@ public class QuestScript extends Script {
                         //if there is no quest option in the dialogue, just click player location to remove
                         // the dialogue to avoid getting stuck in an infinite loop of dialogues
                         if (!hasOption) {
-                            if (pickFallbackMenuOption(questStep)) {
+                            // a quest-start question is answered before any fallback guesses
+                            if (Rs2Dialogue.acceptQuestStartDialogue()) {
                                 return;
                             }
-                            if (Rs2Dialogue.acceptQuestStartDialogue()) {
+                            if (pickFallbackMenuOption(questStep)) {
                                 return;
                             }
                             if (selectedQuest != null &&
@@ -806,11 +809,16 @@ public class QuestScript extends Script {
 		String key = options.stream().map(QuestDialogueRules::normalize).collect(Collectors.joining("|"));
 		// Count how often this menu has appeared since the step began, across the box closing and the NPC being
 		// talked to again: a conversation that loops without progress then tries the next-best option.
+		String conversationKey = step == null || step.getText() == null ? "" : String.join(" ", step.getText());
 		if (step != menuStep) {
 			menuStep = step;
 			menuAppearances.clear();
+		}
+		// The options picked are remembered per step (by its text, not the object, which can be rebuilt) so an
+		// informational option is never asked twice, however the menu changes between asks.
+		if (!conversationKey.equals(menuConversationKey)) {
+			menuConversationKey = conversationKey;
 			chosenFallbackOptions.clear();
-			chosenMenuOptions = new HashSet<>();
 		}
 		if (!menuWasVisible) {
 			menuWasVisible = true;
@@ -833,25 +841,34 @@ public class QuestScript extends Script {
 				}
 			}
 		}
-		Set<String> menuOptions = options.stream().map(QuestDialogueRules::normalize).collect(Collectors.toSet());
-		if (!chosenMenuOptions.isEmpty() && java.util.Collections.disjoint(chosenMenuOptions, menuOptions)) {
-			// a different menu altogether: what was chosen in the last one says nothing about this one
-			chosenFallbackOptions.clear();
+		// a missing required item makes "Can I have another ..." a wanted option (and nothing else)
+		List<String> missingItems = new ArrayList<>();
+		if (step instanceof DetailedQuestStep) {
+			for (Requirement requirement : ((DetailedQuestStep) step).getRequirements()) {
+				if (requirement instanceof ItemRequirement && ((ItemRequirement) requirement).getName() != null
+						&& !Microbot.getClientThread().runOnClientThreadOptional(
+						() -> requirement.check(Microbot.getClient())).orElse(true)) {
+					missingItems.add(((ItemRequirement) requirement).getName());
+				}
+			}
 		}
-		chosenMenuOptions = menuOptions;
-		String pick = QuestDialogueRules.pickFallbackOption(options, hints, questName, attempt, lastDialogueLine,
-				chosenFallbackOptions);
+		// on a talk step, once something informational was asked, a polite exit ("That'll be all") ends it
+		boolean preferExit = step instanceof NpcStep && !chosenFallbackOptions.isEmpty()
+				&& QuestDialogueRules.firstExitOption(options) != null;
+		String pick = QuestDialogueRules.pickOptionOrExit(options, hints, questName, missingItems, attempt,
+				lastDialogueLine, chosenFallbackOptions, preferExit);
 		if (pick == null) {
 			return false;
 		}
 		if (!key.equals(menuLoggedKey)) {
 			menuLoggedKey = key;
-			Microbot.log("Quest helper: no configured dialogue option matched, choosing \"" + normalizeDialogText(pick)
-					+ "\" (try " + (attempt + 1) + ")", Level.INFO);
+            Microbot.log("Quest helper: no configured dialogue option matched, choosing \"" + normalizeDialogText(pick)
+					+ "\" (try " + (attempt + 1) + (QuestDialogueRules.isExitOption(pick) ? ", exit" : "") + ")", Level.INFO);
 		}
 		Widget[] children = Rs2Widget.getWidget(ComponentID.DIALOG_OPTION_OPTIONS).getDynamicChildren();
 		boolean chose = children != null && selectDialogChoice(children, normalizeDialogText(pick));
-		if (chose) {
+		// only informational options are remembered: a "Yes" may have to be chosen again
+		if (chose && !QuestDialogueRules.isConfirmOption(pick) && !QuestDialogueRules.isExitOption(pick)) {
 			chosenFallbackOptions.add(QuestDialogueRules.normalize(pick));
 		}
 		return chose;
@@ -4180,6 +4197,9 @@ public class QuestScript extends Script {
 
     public boolean applyStep(QuestStep step) {
         if (step == null) return false;
+        // a new step forgets which instance passages the scene walker used for the last one
+        net.runelite.client.plugins.microbot.util.walker.Rs2SceneWalker.onQuestStep(
+                step.getText() == null ? "" : String.join(" ", step.getText()));
 
         if (step instanceof ObjectStep) {
             return applyObjectStep((ObjectStep) step);
@@ -4221,7 +4241,7 @@ public class QuestScript extends Script {
             // citizens) must not be held to it.
             WorldPoint me = Rs2Player.getWorldLocation();
             npcs = QuestObjectApproach.orderForSearch(npcs, QuestScript::showsMew,
-                    Comparator.comparingInt(n -> me.distanceTo(n.getWorldLocation())));
+                    Comparator.comparingInt(n -> me.distanceTo(n.getTemplateWorldLocation())));
         }
         if (killStep) {
             // a target another player is fighting answers "Someone else is fighting that"
@@ -4248,7 +4268,7 @@ public class QuestScript extends Script {
 
         if (step.isAllowMultipleHighlights()) {
             npc = multiNpcTarget.select(step, npcs, Rs2NpcModel::getIndex, npcsHandled,
-                    Comparator.comparing(x -> Rs2Player.getWorldLocation().distanceTo(x.getWorldLocation())),
+                    Comparator.comparing(x -> Rs2Player.getWorldLocation().distanceTo(x.getTemplateWorldLocation())),
                     System.currentTimeMillis());
         }
 
@@ -4263,22 +4283,22 @@ public class QuestScript extends Script {
         // A kill target already in melee range is attacked even when pathfinding says "unreachable" (arena gates,
         // fight cages): otherwise we walk at it forever while it hits us and never click Attack.
         boolean npcOnScreen = npc != null && npc.getLocalLocation() != null && Rs2Camera.isTileOnScreen(npc.getLocalLocation());
-        int npcDistance = npc == null || npc.getWorldLocation() == null
-                ? Integer.MAX_VALUE : npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
+        int npcDistance = npc == null || npc.getTemplateWorldLocation() == null
+                ? Integer.MAX_VALUE : npc.getTemplateWorldLocation().distanceTo(Rs2Player.getWorldLocation());
         // A kill target in sight is attacked at once, on screen or not: walking back to the step's tile with the
         // monkeys right there only ever took the player away from them.
         boolean killClickFailed = npc != null && npc.getIndex() == failedClickNpcIndex
                 && System.currentTimeMillis() < failedClickUntilMs;
         boolean closeKillTarget = killStep && !killClickFailed && npc != null && npc.getLocalLocation() != null
-                && npc.getWorldLocation() != null
-                && KillStepRule.attackAtOnce(npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()),
+                && npc.getTemplateWorldLocation() != null
+                && KillStepRule.attackAtOnce(npc.getTemplateWorldLocation().distanceTo(Rs2Player.getWorldLocation()),
                 npc.hasLineOfSight());
         boolean npcKnown = npc != null && npc.getLocalLocation() != null;
         if (npcKnown && kittenSearch && !Microbot.getClient().isInInstancedRegion()
                 && !standsBesideWithoutWall(npc.getWorldLocation())) {
             // Search each from a tile that touches it with no wall or fence between: a crate on the far side of a wall
             // answers "I can't reach that!" however close it looks.
-            WorldPoint at = npc.getWorldLocation();
+            WorldPoint at = npc.getTemplateWorldLocation();
             WorldPoint stand = chooseObjectApproachTile(at, Collections.singletonList(at));
             if (stand == null) {
                 npcsHandled.add(npc.getIndex()); // no way to reach it: skip it
@@ -4291,7 +4311,7 @@ public class QuestScript extends Script {
                 && System.currentTimeMillis() < failedClickUntilMs;
         boolean inSight = npcKnown && npc.hasLineOfSight();
         boolean reachable = inSight && !clickFailedRecently && npcDistance > QuestNpcApproach.POINT_BLANK
-                && Rs2Walker.canReach(npc.getWorldLocation());
+                && Rs2Walker.canReach(npc.getTemplateWorldLocation());
         if (npcKnown && (QuestNpcApproach.decide(inSight, reachable, npcDistance, clickFailedRecently)
                 == QuestNpcApproach.Move.INTERACT
                 || closeKillTarget || (npcOnScreen && Microbot.getClient().isInInstancedRegion()))) {
@@ -4321,8 +4341,8 @@ public class QuestScript extends Script {
             }
 
             if (step.getIconItemID() == -1 && hasNoActions(npc)) {
-                if (npc.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) > 3) {
-                    Rs2Walker.walkTo(npc.getWorldLocation(), 2);
+                if (npc.getTemplateWorldLocation().distanceTo(Rs2Player.getWorldLocation()) > 3) {
+                    Rs2Walker.walkTo(npc.getTemplateWorldLocation(), 2);
                 }
                 return true;
             }
@@ -4356,9 +4376,9 @@ public class QuestScript extends Script {
                 sleepUntil(Rs2Dialogue::isInDialogue);
             }
         } else if (npc != null && npc.getLocalLocation() != null && !npcOnScreen) {
-            Rs2Walker.walkTo(npc.getWorldLocation(), 2);
-        } else if (npc != null && (!npc.hasLineOfSight() || !Rs2Walker.canReach(npc.getWorldLocation()))) {
-            Rs2Walker.walkTo(npc.getWorldLocation(), 2);
+            Rs2Walker.walkTo(npc.getTemplateWorldLocation(), 2);
+        } else if (npc != null && (!npc.hasLineOfSight() || !Rs2Walker.canReach(npc.getTemplateWorldLocation()))) {
+            Rs2Walker.walkTo(npc.getTemplateWorldLocation(), 2);
         } else {
             if (step.getDefinedPoint().getWorldPoint().distanceTo(Rs2Player.getWorldLocation()) > 3) {
                 Rs2Walker.walkTo(step.getDefinedPoint().getWorldPoint(), 2);
@@ -4386,7 +4406,7 @@ public class QuestScript extends Script {
             return false;
         }
         WorldPoint home = step.getDefinedPoint().getWorldPoint();
-        WorldPoint at = npc.getWorldLocation();
+        WorldPoint at = npc.getTemplateWorldLocation();
         return at != null && home.getPlane() == at.getPlane() && home.distanceTo(at) > KILL_AREA_RADIUS;
     }
 
@@ -4491,7 +4511,7 @@ public class QuestScript extends Script {
                 .min(Comparator
                         .comparingInt((Rs2NpcModel n) -> wantedLevel > 0 && n.getCombatLevel() == wantedLevel ? 0 : 1)
                         .thenComparingInt((Rs2NpcModel n) -> -n.getCombatLevel())
-                        .thenComparingInt(n -> n.getWorldLocation() == null ? Integer.MAX_VALUE : me.distanceTo(n.getWorldLocation())))
+                        .thenComparingInt(n -> n.getTemplateWorldLocation() == null ? Integer.MAX_VALUE : me.distanceTo(n.getTemplateWorldLocation())))
                 .orElse(null);
     }
 
@@ -4631,6 +4651,8 @@ public class QuestScript extends Script {
     private final StepCommitment<QuestStep> conditionalCommitment = new StepCommitment<>(2);
 
     public boolean applyObjectStep(ObjectStep step) {
+        // a step without a point (Cut off Sourhog's foot) has no defined point at all: it uses whatever object is visible
+        final WorldPoint definedWp = step.getDefinedPoint() == null ? null : step.getDefinedPoint().getWorldPoint();
         Rs2TileObjectModel object = step.getObjects().stream()
                 .filter(Objects::nonNull)
                 .map(Rs2TileObjectModel::new)
@@ -4647,7 +4669,7 @@ public class QuestScript extends Script {
             WorldPoint me = Rs2Player.getWorldLocation();
             object = QuestObjectApproach.nextToSearch(stepObjects, x -> objectsHandeled.contains(x.getHash()),
                     Comparator.comparingInt((Rs2TileObjectModel x) -> x.isReachable() ? 0 : 1)
-                            .thenComparingInt(x -> me.distanceTo(x.getWorldLocation())));
+                            .thenComparingInt(x -> me.distanceTo(x.getTemplateWorldLocation())));
         }
 
         // Stale object id (game update): nothing tracked near the step's point, so look the object up by name.
@@ -4665,8 +4687,11 @@ public class QuestScript extends Script {
                     .where(x -> x.getTileObjectType() == TileObjectType.WALL)
                     .toList();
 
-            for (var tile : Rs2Tile.getWalkableTilesAroundTile(object.getWorldLocation(), unreachableTargetCheckDist)) {
-                if (tileObjects.stream().noneMatch(x -> x.getWorldLocation().equals(tile))) {
+            // the tile lookup works on the object's raw tile; its results are converted to template space
+            var view = Microbot.getRs2PlayerStateCache().getLocalPlayerWorldView();
+            for (var rawTile : Rs2Tile.getWalkableTilesAroundTile(object.getWorldLocation(), unreachableTargetCheckDist)) {
+                final WorldPoint tile = InstanceCoordinates.toTemplate(view, rawTile);
+                if (tileObjects.stream().noneMatch(x -> x.getTemplateWorldLocation().equals(tile))) {
                     if (!Rs2Walker.walkTo(tile) && !Rs2PathApi.getActiveRouteStatus().isPresent())
                         return false;
 
@@ -4687,9 +4712,9 @@ public class QuestScript extends Script {
         // with it. The object's own tile is never the question (a boat on water or a door in a wall is never
         // walkable), and a closed door or a wall between us still makes it unreachable, so the walker gets us
         // to the right side before we interact.
-        if (step.getDefinedPoint().getWorldPoint() != null && Rs2Player.getWorldLocation().distanceTo2D(step.getDefinedPoint().getWorldPoint()) > 1
+        if (definedWp != null && Rs2Player.getWorldLocation().distanceTo2D(definedWp) > 1
                 && (object == null || !isInteractableFromReachableTile(step, object))) {
-            WorldPoint stepLocation = object == null ? step.getDefinedPoint().getWorldPoint() : object.getWorldLocation();
+            WorldPoint stepLocation = object == null ? definedWp : object.getTemplateWorldLocation();
             WorldPoint targetTile = chooseObjectApproachTile(stepLocation, objectFootprint(object, stepLocation));
             if (targetTile == null) {
                 // Nowhere to stand that the planner can reach: let the walker path as close as it can (it opens
@@ -4706,7 +4731,7 @@ public class QuestScript extends Script {
             if (activeRoute.isPresent()) {
                 var endpoint = activeRoute.getEndpoint();
                 if (endpoint.isPresent()
-                        && endpoint.get().distanceTo(step.getDefinedPoint().getWorldPoint()) <= 1)
+                        && endpoint.get().distanceTo(definedWp) <= 1)
                     return false;
             } else if (walkState == WalkerState.ARRIVED || mainScheduledFuture.isCancelled() || !hasLineOfSightToObject(object))
                 return false;
@@ -4735,7 +4760,7 @@ public class QuestScript extends Script {
             // inventory change) must not make a multi-object search step pick the same crate forever.
             objectsHandeled.add(object.getHash());
         } else if (object != null) {
-            Rs2Walker.walkTo(object.getWorldLocation(), 1);
+            Rs2Walker.walkTo(object.getTemplateWorldLocation(), 1);
             return false;
         }
 
@@ -4772,7 +4797,7 @@ public class QuestScript extends Script {
 
     /** Every tile the object stands on (a staircase covers several), or just its defined tile when unknown. */
     private static List<WorldPoint> objectFootprint(Rs2TileObjectModel object, WorldPoint fallbackTile) {
-        WorldArea area = object == null ? null : object.getWorldArea();
+        WorldArea area = object == null ? null : object.getTemplateWorldArea();
         return area == null ? Collections.singletonList(fallbackTile) : area.toWorldPointList();
     }
 
@@ -4930,9 +4955,9 @@ public class QuestScript extends Script {
         if (me == null || me.getPlane() != point.getPlane()) {
             return false;
         }
-        return tracked.stream().noneMatch(o -> o.getWorldLocation() != null
-                && o.getWorldLocation().getPlane() == point.getPlane()
-                && o.getWorldLocation().distanceTo(point) <= TRACKED_OBJECT_RADIUS);
+        return tracked.stream().noneMatch(o -> o.getTemplateWorldLocation() != null
+                && o.getTemplateWorldLocation().getPlane() == point.getPlane()
+                && o.getTemplateWorldLocation().distanceTo(point) <= TRACKED_OBJECT_RADIUS);
     }
 
     private List<String> resolveStepObjectNames(ObjectStep step) {
@@ -4969,15 +4994,16 @@ public class QuestScript extends Script {
         String stepText = String.join(" ", step.getText());
         String wantedAction = wantedObjectAction(step);
         for (String name : resolveStepObjectNames(step)) {
+            // compared in template space, the space of the step's point and the player (an instance reports raw tiles)
             List<Rs2TileObjectModel> candidates = Microbot.getRs2TileObjectCache().query()
                     .withName(name)
-                    .within(point, FALLBACK_OBJECT_RADIUS)
                     .toListOnClientThread();
             candidates = candidates.stream()
-                    .filter(o -> o.getWorldLocation() != null && o.getWorldLocation().getPlane() == point.getPlane())
+                    .filter(o -> o.getTemplateWorldLocation() != null && o.getTemplateWorldLocation().getPlane() == point.getPlane()
+                            && o.getTemplateWorldLocation().distanceTo(point) <= FALLBACK_OBJECT_RADIUS)
                     .sorted(Comparator.comparingInt((Rs2TileObjectModel o) ->
                                     wantedAction != null && o.hasAction(wantedAction) ? 0 : 1)
-                            .thenComparingInt(o -> o.getWorldLocation().distanceTo(point)))
+                            .thenComparingInt(o -> o.getTemplateWorldLocation().distanceTo(point)))
                     .collect(Collectors.toList());
             if (!candidates.isEmpty()) {
                 Rs2TileObjectModel found = candidates.get(0);
@@ -5145,6 +5171,11 @@ public class QuestScript extends Script {
 
 		WorldArea objectArea = object.getWorldLocation().toWorldArea();
 		WorldArea playerArea = Rs2Player.getWorldLocation().toWorldArea();
+		if (InstanceCoordinates.isTopLevelInstance(Microbot.getClient().getTopLevelWorldView())) {
+			// line of sight reads the scene's collision: both ends in instance space (the object already is)
+			playerArea = Microbot.getClientThread().runOnClientThreadOptional(() -> WorldPoint.fromLocal(Microbot.getClient(),
+					Microbot.getClient().getLocalPlayer().getLocalLocation()).toWorldArea()).orElse(playerArea);
+		}
 
 		return Microbot.getClient().getTopLevelWorldView() != null
 				&& playerArea.hasLineOfSightTo(Microbot.getClient().getTopLevelWorldView(), objectArea);

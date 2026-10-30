@@ -8,6 +8,7 @@ import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldArea;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.util.coords.InstanceCoordinates;
 import net.runelite.client.plugins.microbot.api.player.models.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
@@ -249,6 +250,26 @@ public class Rs2TileObjectModel implements TileObject, IEntity {
         GameObject gameObject = (GameObject) tileObject;
         Integer size = Microbot.getClientThread().invoke(() -> gameObject.sizeY());
         return size != null ? size : 1;
+    }
+
+    /**
+     * Opt-in: {@link #getWorldLocation()} in template space, the space of the player's position and the quest helper's
+     * step points. {@code getWorldLocation()} itself stays the raw tile RuneLite reports, which inside an instanced
+     * region is the instance tile. Outside an instance this is the same tile.
+     */
+    public @NotNull WorldPoint getTemplateWorldLocation() {
+        return InstanceCoordinates.toTemplate(getWorldView(), getWorldLocation());
+    }
+
+    /** Opt-in: {@link #getWorldArea()} in template space (both corners converted, so rotated chunks keep their shape). */
+    public @Nullable WorldArea getTemplateWorldArea() {
+        WorldArea raw = getWorldArea();
+        if (raw == null) {
+            return null;
+        }
+        WorldArea template = InstanceCoordinates.toTemplateArea(getWorldView(),
+                new WorldPoint(raw.getX(), raw.getY(), raw.getPlane()), raw.getWidth(), raw.getHeight());
+        return template != null ? template : raw;
     }
 
     public @Nullable WorldArea getWorldArea() {
