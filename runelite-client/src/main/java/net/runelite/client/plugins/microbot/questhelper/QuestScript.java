@@ -1713,7 +1713,15 @@ public class QuestScript extends Script {
 	 * a tick to read it, and closes it again. Returns true when this tick was spent on the journal.
 	 */
 	private boolean handleJournalSync(QuestHelper quest, DetailedQuestStep step) {
-		if (!QuestJournalSync.isSyncStep(step.getText()) || journalTabAttempts >= QUEST_LIST_BUTTONS.length) {
+		if (!QuestJournalSync.isSyncStep(step.getText())) {
+			return false;
+		}
+		String syncKey = quest.getQuest().getName() + "|" + String.join(" ", step.getText());
+		if (!syncKey.equals(journalTabKey)) {
+			journalTabKey = syncKey;
+			journalTabAttempts = 0;
+		}
+		if (journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS) {
 			return false;
 		}
 		long now = System.currentTimeMillis();
@@ -1764,28 +1772,33 @@ public class QuestScript extends Script {
 		return Rs2Widget.isWidgetVisible(QuestWidgets.QUEST_CONTAINER.getGroupId(), QuestWidgets.QUEST_CONTAINER.getChildId());
 	}
 
-	/** The side journal's sub-tab buttons to try for the quest list, most likely first (interface 629). */
-	private static final int[] QUEST_LIST_BUTTONS = {
-			InterfaceID.SideJournal.TAB_2_1, InterfaceID.SideJournal.TAB_1_1, InterfaceID.SideJournal.TAB_3_1};
+	private static final int JOURNAL_TAB_MAX_ATTEMPTS = 3;
+	/** The quest and step the attempts below belong to; a different one starts again. */
+	private String journalTabKey;
 	private int journalTabAttempts;
 
 	/**
-	 * The quest tab remembers its last sub-tab (Character Summary, Achievement Diaries, Kourend), which hides the quest
-	 * list: clicks the next quest-list button candidate. After all of them failed it gives up and warns once.
+	 * The quest tab remembers its last sub-tab (Character Summary, Achievement Diaries), which hides the quest list:
+	 * clicks the "Quest List" button of the side journal (interface 629). After {@link #JOURNAL_TAB_MAX_ATTEMPTS}
+	 * failed tries for the same step it gives up with one warning, and handleJournalSync stops running.
 	 */
 	private boolean openQuestList() {
 		if (sleepUntil(QuestScript::questListVisible, 1_500)) {
 			journalTabAttempts = 0;
 			return true;
 		}
-		int button = QUEST_LIST_BUTTONS[journalTabAttempts++];
+		if (journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS) {
+			return false;
+		}
+		journalTabAttempts++;
+		int button = InterfaceID.SideJournal.QUEST_LIST;
 		Rs2Widget.clickWidget(button >>> 16, button & 0xFFFF);
 		if (sleepUntil(QuestScript::questListVisible, 3_000)) {
 			journalTabAttempts = 0;
 			return true;
 		}
-		if (journalTabAttempts >= QUEST_LIST_BUTTONS.length) {
-			Microbot.log("[QuestHelper] journal sync: no side-journal button opened the quest list; giving up on the sync", Level.WARN);
+		if (journalTabAttempts >= JOURNAL_TAB_MAX_ATTEMPTS) {
+			Microbot.log("[QuestHelper] journal sync: the Quest List button did not open the quest list; giving up on the sync", Level.WARN);
 		}
 		return false;
 	}
